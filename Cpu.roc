@@ -6,17 +6,22 @@ Regs : { r0 : U32, r1 : U32, r2 : U32, r3 : U32, r4 : U32, r5 : U32, r6 : U32, r
 
 Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL]
 
-ALUOpCode : [AND, EOR, SUB, RSB, ADD, ADC, SBC, RSC, TST, TEQ, CMP, CMN, ORR, MOV, BIC, MVN]
-
 ShiftType : [LSL, LSR, ASR, ROR]
 
 ArmInstructions : [DataProcessingPSRTransfer, Multiply, MultiplyLong, SingleDataSwap, BranchAndExchange, HalfwordDataTransferRegOffset, HalfwordDataTransferImmediateOffset, SingleDataTransfer, Undefined, Branch, CoprocessorDataTransfer, CoprocessorDataOperation, CoprocessorRegisterTransfer, SoftwareInterrupt, BlockDataTransfer]
 
 DataProcessingKind : [DataProcessing, PSRTransfer]
 
+# Alias can be Data Processing
+ALUOpCode : [AND, EOR, SUB, RSB, ADD, ADC, SBC, RSC, TST, TEQ, CMP, CMN, ORR, MOV, BIC, MVN]
+
+PSRTransferOpCode : [MSR, MRS]
+
 Cpu := { regs : Regs, cpsr : U32, spsr_fiq : U32, spsr_svc : U32, spsr_irq : U32, spsr_und : U32, spsr_abt : U32 }
 
 U32_carry : { val : U32, carry : Bool }
+
+U32_carry_overflow : { val : U32, carry : Bool, overflow : Bool }
 
 rotate_right_u32 : U32, U8 -> U32
 rotate_right_u32 = |i, j| {
@@ -39,6 +44,29 @@ arithmetic_shift_right = |i, j| {
 		} else {
 			arithmetic_shift_right(i // 2, j - 1)
 		}
+	}
+}
+
+add_with_carry : U32, U32, Bool -> U32_carry_overflow
+add_with_carry = |i, j, b| {
+	c = if b {
+		1
+	} else {
+		0
+	}
+	partial = U32.to_u64(i) + U32.to_u64(j) + U32.to_u64(c)
+	res = U64.to_u32_wrap(partial)
+	{
+		val: res,
+		carry: partial > U32.to_u64(U32.highest),
+		overflow: match I64.to_i32_try(
+			I32.to_i64(U32.to_i32_wrap(i)) +
+				I32.to_i64(U32.to_i32_wrap(j)) +
+				U32.to_i64(c),
+		) {
+			Ok(_) => Bool.False
+			_ => Bool.True
+		},
 	}
 }
 
@@ -111,10 +139,70 @@ data_processing_get_rn = |i| {
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
 
+data_processing_get_rn_value : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis])
+data_processing_get_rn_value = |i, c| {
+	rn = data_processing_get_rn(i)?
+	Ok(data_processing_operand_reg_value(i, rn, c)?)
+}
+
 data_processing_get_rd : U32 -> Try(GPR, [WTFisThis])
 data_processing_get_rd = |i| {
 	tmp = get_seg_of_u32_certain(i, 12, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
+}
+
+# Man it's always the PC being different
+data_processing_operand_reg_value : U32, GPR, Cpu -> Try(U32, [InvalidMode])
+data_processing_operand_reg_value = |i, gpr, c| {
+	match gpr {
+		R15 => if get_ith_bit_u32_certain(i, 25) {
+			Ok(c.regs.r15 + 8)
+		} else if get_ith_bit_u32_certain(i, 4) {
+			Ok(c.regs.r15 + 12)
+		} else {
+			Ok(c.regs.r15 + 8)
+		}
+		_ => cpu_getReg(gpr, c)
+	}
+}
+
+data_processing_operands_register : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC])
+data_processing_operands_register = |i, c| {
+	rm = data_processing_get_rm(i)?
+	rm_val = data_processing_operand_reg_value(i, rm, c)?
+	shift_type = data_processing_get_shift_type(i)
+	c_flag = cpsr_getC(c.cpsr)
+	if get_ith_bit_u32_certain(i, 4) {
+		x = data_processing_get_rs(i)?
+		match x {
+			R15 => Err(UB_ShiftbyPC)
+			_ => Ok(data_processing_shift_by_register(shift_type, rm_val, cpu_getReg(x, c)?, c_flag))
+		}
+	} else {
+		shift_imm = data_processing_get_shift_imm(i)
+		Ok(data_processing_shift_by_immediate(shift_type, rm_val, shift_imm, c_flag))
+	}
+}
+
+data_processing_operands_immediate : U32, Bool -> U32_carry
+data_processing_operands_immediate = |i, c_flag| {
+	rotate_imm = data_processing_rotate_imm(i)
+	tmp = rotate_right_u32(U8.to_u32(data_processing_get_immed_8(i)), rotate_imm * 2)
+	if rotate_imm == 0 {
+		{ val: tmp, carry: c_flag }
+	} else {
+		{ val: tmp, carry: get_ith_bit_u32_certain(tmp, 31) }
+	}
+}
+
+data_processing_operand2 : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC])
+data_processing_operand2 = |i, c| {
+	c_flag = cpsr_getC(c.cpsr)
+	if data_processing_uses_immediate(i) {
+		Ok(data_processing_operands_immediate(i, c_flag))
+	} else {
+		data_processing_operands_register(i, c)
+	}
 }
 
 data_processing_decode : U32 -> ALUOpCode
@@ -184,6 +272,27 @@ data_processing_lsl_by_register = |rm_val, rs_val, c_flag| {
 		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 0) }
 	} else {
 		{ val: 0, carry: Bool.False }
+	}
+}
+
+# [LSL, LSR, ASR, ROR]
+data_processing_shift_by_immediate : ShiftType, U32, U8, Bool -> U32_carry
+data_processing_shift_by_immediate = |s, rm_val, shift_imm, c_flag| {
+	match s {
+		ASR => data_processing_asr_by_immediate(rm_val, shift_imm)
+		LSR => data_processing_lsr_by_immediate(rm_val, shift_imm)
+		LSL => data_processing_lsl_by_immediate(rm_val, shift_imm, c_flag)
+		ROR => data_processing_ror_by_immediate(rm_val, shift_imm, c_flag)
+	}
+}
+
+data_processing_shift_by_register : ShiftType, U32, U32, Bool -> U32_carry
+data_processing_shift_by_register = |s, rm_val, rs_val, c_flag| {
+	match s {
+		ASR => data_processing_asr_by_register(rm_val, rs_val, c_flag)
+		LSR => data_processing_lsr_by_register(rm_val, rs_val, c_flag)
+		LSL => data_processing_lsl_by_register(rm_val, rs_val, c_flag)
+		ROR => data_processing_ror_by_register(rm_val, rs_val, c_flag)
 	}
 }
 
@@ -260,6 +369,23 @@ data_processing_ror_by_immediate = |rm_val, shift_imm, c_flag| {
 	}
 }
 
+data_processing_ror_by_register : U32, U32, Bool -> U32_carry
+data_processing_ror_by_register = |rm_val, rs_val, c_flag| {
+	if U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 8)) == 0 {
+		{ val: rm_val, carry: c_flag }
+	} else {
+		tmp = U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 5))
+		if tmp == 0 {
+			{ val: rm_val, carry: get_ith_bit_u32_certain(rm_val, 31) }
+		} else {
+			{
+				val: rotate_right_u32(rm_val, tmp),
+				carry: get_ith_bit_u32_certain(rm_val, tmp - 1),
+			}
+		}
+	}
+}
+
 data_processing_get_shift_imm : U32 -> U8
 data_processing_get_shift_imm = |i| {
 	U32.to_u8_wrap(get_seg_of_u32_certain(i, 7, 5))
@@ -312,6 +438,32 @@ arm_instructions_decoder = |i| {
 	}
 }
 
+data_processing_writes_rd : ALUOpCode -> Bool
+data_processing_writes_rd = |op| {
+	match op {
+		TST | TEQ | CMP | CMN => Bool.False
+		_ => Bool.True
+	}
+}
+
+data_processing_alu : ALUOpCode, U32, U32_carry, Bool, Bool -> U32_carry_overflow
+data_processing_alu = |alu_op, op1, op2, c_flag, v_flag| {
+	match alu_op {
+		AND | TST => { val: U32.bitwise_and(op1, op2.val), carry: op2.carry, overflow: v_flag }
+		EOR | TEQ => { val: U32.bitwise_xor(op1, op2.val), carry: op2.carry, overflow: v_flag }
+		ORR => { val: U32.bitwise_or(op1, op2.val), carry: op2.carry, overflow: v_flag }
+		MOV => { val: op2.val, carry: op2.carry, overflow: v_flag }
+		BIC => { val: U32.bitwise_and(op1, U32.bitwise_not(op2.val)), carry: op2.carry, overflow: v_flag }
+		MVN => { val: U32.bitwise_not(op2.val), carry: op2.carry, overflow: v_flag }
+		SUB | CMP => add_with_carry(op1, U32.bitwise_not(op2.val), Bool.True)
+		RSB => add_with_carry(op2.val, U32.bitwise_not(op1), Bool.True)
+		ADD | CMN => add_with_carry(op1, op2.val, Bool.False)
+		ADC => add_with_carry(op1, op2.val, c_flag)
+		SBC => add_with_carry(op1, U32.bitwise_not(op2.val), c_flag)
+		RSC => add_with_carry(op2.val, U32.bitwise_not(op1), c_flag)
+	}
+}
+
 data_processing_kind : U32 -> DataProcessingKind
 data_processing_kind = |i| {
 	if bits_match(i, 0b11001_00000_00000_00000_00000, 0b10000_00000_00000_00000_00000) {
@@ -319,6 +471,16 @@ data_processing_kind = |i| {
 	} else {
 		DataProcessing
 	}
+}
+
+data_processing_calculate : U32, Cpu -> Try(U32_carry_overflow, [InvalidMode, WTFisThis, UB_ShiftbyPC])
+data_processing_calculate = |instruction, c| {
+	alu_opc = data_processing_decode(instruction)
+	rn_val = data_processing_get_rn_value(instruction, c)?
+	c_flag = cpsr_getC(c.cpsr)
+	v_flag = cpsr_getV(c.cpsr)
+	op2 = data_processing_operand2(instruction, c)?
+	Ok(data_processing_alu(alu_opc, rn_val, op2, c_flag, v_flag))
 }
 
 data_processing_uses_immediate : U32 -> Bool
@@ -336,17 +498,6 @@ data_processing_get_immed_8 = |i| {
 	U32.to_u8_wrap(get_seg_of_u32_certain(i, 0, 8))
 }
 
-data_processing_operands_immediate : U32, Bool -> U32_carry
-data_processing_operands_immediate = |i, b| {
-	rotate_imm = data_processing_rotate_imm(i)
-	tmp = rotate_right_u32(U8.to_u32(data_processing_get_immed_8(i)), rotate_imm * 2)
-	if rotate_imm == 0 {
-		{ val: tmp, carry: b }
-	} else {
-		{ val: tmp, carry: get_ith_bit_u32_certain(tmp, 31) }
-	}
-}
-
 data_processing_get_shift_type : U32 -> ShiftType
 data_processing_get_shift_type = |i| {
 	if bits_match(i, 0b1100000, 0) {
@@ -358,6 +509,54 @@ data_processing_get_shift_type = |i| {
 	} else {
 		ROR
 	}
+}
+
+psr_transfer_decode : U32 -> PSRTransferOpCode
+psr_transfer_decode = |op| {
+	if get_ith_bit_u32_certain(op, 21) {
+		MSR
+	} else {
+		MRS
+	}
+}
+
+psr_transfer_uses_spsr : U32 -> Bool
+psr_transfer_uses_spsr = |op| {
+	get_ith_bit_u32_certain(op, 22)
+}
+
+psr_transfer_uses_immediate : U32 -> Bool
+psr_transfer_uses_immediate = |op| {
+	get_ith_bit_u32_certain(op, 25)
+}
+
+psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis])
+psr_transfer_mrs_get_rd = |op| {
+	data_processing_get_rd(op)
+}
+
+psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source])
+psr_transfer_msr_operand = |op, c| {
+	if psr_transfer_uses_immediate(op) {
+		# Does not care about c_flag
+		Ok(data_processing_operands_immediate(op, Bool.False).val)
+	} else {
+		# Had to write this in such awkward way to avoid a compiler bug
+		# I should fix this when a new nightly is here.
+		match data_processing_get_rm(op) {
+			Ok(R15) => Err(UB_PSR_PC_as_source)
+			Err(_) => Err(WTFisThis)
+			Ok(x) => match cpu_getReg(x, c) {
+				Ok(o) => Ok(o)
+				Err(_) => Err(InvalidMode)
+			}
+		}
+	}
+}
+
+psr_transfer_field_mask : U32 -> U8
+psr_transfer_field_mask = |op| {
+	U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4))
 }
 
 condition_pass : Conds, U32 -> Bool
@@ -710,4 +909,9 @@ cpu_setSPSR = |c, i| {
 		Undefined => Ok({ ..c, spsr_und: i })
 		User | Sys => Err(NoSPSR)
 	}
+}
+
+cpsr_setNZCV : U32, U32_carry_overflow -> U32
+cpsr_setNZCV = |old_cpsr, alu_op_res| {
+	cpsr_setC(cpsr_setV(cpsr_setZ(cpsr_setN(old_cpsr, get_ith_bit_u32_certain(alu_op_res.val, 31)), alu_op_res.val == 0), alu_op_res.overflow), alu_op_res.carry)
 }
