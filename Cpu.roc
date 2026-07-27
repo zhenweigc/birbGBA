@@ -82,7 +82,7 @@ get_ith_bit_u32 = |i, j| {
 
 get_ith_bit_u32_certain : U32, U8 -> Bool
 get_ith_bit_u32_certain = |i, j| {
-	U32.shift_right_by(U32.shift_left_by(i, 32 - j - 1), 31) == 1
+	U32.shr_wrap(U32.shl_wrap(i, 32 - j - 1), 31) == 1
 }
 
 arm_s_flag : U32 -> Bool
@@ -102,7 +102,7 @@ get_seg_of_u32 = |i, lsb, len| {
 get_seg_of_u32_certain : U32, U8, U8 -> U32
 get_seg_of_u32_certain = |i, lsb, len| {
 	tmp = 32 - len
-	U32.shift_right_by(U32.shift_left_by(U32.shift_right_by(i, lsb), tmp), tmp)
+	U32.shr_wrap(U32.shl_wrap(U32.shr_wrap(i, lsb), tmp), tmp)
 }
 
 bits_match : U32, U32, U32 -> Bool
@@ -141,8 +141,14 @@ data_processing_get_rn = |i| {
 
 data_processing_get_rn_value : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis])
 data_processing_get_rn_value = |i, c| {
-	rn = data_processing_get_rn(i)?
-	Ok(data_processing_operand_reg_value(i, rn, c)?)
+	# Wrote in this ugly way because error widening is dead.
+	match data_processing_get_rn(i) {
+		Ok(rn) => match data_processing_operand_reg_value(i, rn, c) {
+			Ok(rn_val) => Ok(rn_val)
+			_ => Err(InvalidMode)
+		}
+		_ => Err(WTFisThis)
+	}
 }
 
 data_processing_get_rd : U32 -> Try(GPR, [WTFisThis])
@@ -255,7 +261,7 @@ data_processing_lsl_by_immediate = |rm_val, shift_imm, c_flag| {
 		{ val: rm_val, carry: c_flag }
 	} else {
 		{
-			val: U32.shift_left_by(rm_val, shift_imm),
+			val: U32.shl_wrap(rm_val, shift_imm),
 			carry: get_ith_bit_u32_certain(rm_val, 32 - shift_imm),
 		}
 	}
@@ -267,7 +273,7 @@ data_processing_lsl_by_register = |rm_val, rs_val, c_flag| {
 	if tmp == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else if tmp < 32 {
-		{ val: U32.shift_left_by(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, 32 - tmp) }
+		{ val: U32.shl_wrap(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, 32 - tmp) }
 	} else if tmp == 32 {
 		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 0) }
 	} else {
@@ -301,7 +307,7 @@ data_processing_lsr_by_immediate = |rm_val, shift_imm| {
 	if shift_imm == 0 {
 		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 31) }
 	} else {
-		{ val: U32.shift_right_by(rm_val, shift_imm), carry: get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
+		{ val: U32.shr_wrap(rm_val, shift_imm), carry: get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
 	}
 }
 
@@ -311,7 +317,7 @@ data_processing_lsr_by_register = |rm_val, rs_val, c_flag| {
 	if tmp == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else if tmp < 32 {
-		{ val: U32.shift_right_by(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, tmp - 1) }
+		{ val: U32.shr_wrap(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, tmp - 1) }
 	} else if tmp == 32 {
 		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 31) }
 	} else {
@@ -353,8 +359,8 @@ data_processing_rrx : U32, Bool -> U32_carry
 data_processing_rrx = |rm_val, c_flag| {
 	{
 		val: match c_flag {
-			Bool.True => U32.bitwise_or(2147483648, U32.shift_right_by(rm_val, 1))
-			_ => U32.shift_right_by(rm_val, 1)
+			Bool.True => U32.bitwise_or(2147483648, U32.shr_wrap(rm_val, 1))
+			_ => U32.shr_wrap(rm_val, 1)
 		},
 		carry: get_ith_bit_u32_certain(rm_val, 0),
 	}
@@ -530,9 +536,30 @@ psr_transfer_uses_immediate = |op| {
 	get_ith_bit_u32_certain(op, 25)
 }
 
-psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis])
+psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis, UB_PSR_PC_as_dest])
 psr_transfer_mrs_get_rd = |op| {
-	data_processing_get_rd(op)
+	# Err propagation bug from compiler made me write like this.
+	match data_processing_get_rd(op) {
+		Ok(R15) => Err(UB_PSR_PC_as_dest)
+		Ok(x) => Ok(x)
+		_ => Err(WTFisThis)
+	}
+}
+
+psr_transfer_mrs_value : U32, Cpu -> Try(U32, [InvalidMode, NoSPSR])
+psr_transfer_mrs_value = |op, c| {
+	if psr_transfer_uses_spsr(op) {
+		cpu_getSPSR(c)
+	} else {
+		Ok(c.cpsr)
+	}
+}
+
+psr_transfer_mrs_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest])
+psr_transfer_mrs_execute = |op, c| {
+	rd = psr_transfer_mrs_get_rd(op)?
+	val = psr_transfer_mrs_value(op, c)?
+	cpu_setReg(rd, c, val)
 }
 
 psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source])
@@ -557,6 +584,48 @@ psr_transfer_msr_operand = |op, c| {
 psr_transfer_field_mask : U32 -> U8
 psr_transfer_field_mask = |op| {
 	U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4))
+}
+
+psr_transfer_msr_byte_mask : U8 -> U32
+psr_transfer_msr_byte_mask = |mask| {
+	one_to_FF = |res, m, k| if m == 0 {
+		res
+	} else {
+		one_to_FF(res + U32.shl_wrap(255, k) * U8.to_u32(U8.mod_by(m, 2)), m // 2, k + 8)
+	}
+	one_to_FF(0, mask, 0)
+}
+
+psr_transfer_msr_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state])
+psr_transfer_msr_execute = |op, c| {
+	operand = psr_transfer_msr_operand(op, c)?
+	if U32.bitwise_and(operand, 0x0FFFFF00) != 0 {
+		Err(UB_PSR_reserved_bits)
+	} else {
+		# Turns out DDI01001 is wrong
+		# Privileged MSR must not set CPSR.T; SPSR.T is writable.
+		byte_mask = psr_transfer_msr_byte_mask(psr_transfer_field_mask(op))
+		if psr_transfer_uses_spsr(op) {
+			old_spsr = cpu_getSPSR(c)?
+			final_mask = U32.bitwise_and(byte_mask, 0xF00000FF)
+			cpu_setSPSR(c, U32.bitwise_or(U32.bitwise_and(old_spsr, U32.bitwise_not(final_mask)), U32.bitwise_and(operand, final_mask)))
+		} else {
+			mode = cpsr_getMode(c.cpsr)?
+			if mode != User {
+				if cpsr_getT(operand) {
+					Err(UB_PSR_non_ARM_state)
+				} else {
+					mask = U32.bitwise_and(byte_mask, 0xF00000DF)
+					old_cpsr = c.cpsr
+					Ok({ ..c, cpsr: U32.bitwise_or(U32.bitwise_and(old_cpsr, U32.bitwise_not(mask)), U32.bitwise_and(operand, mask)) })
+				}
+			} else {
+				mask = U32.bitwise_and(byte_mask, 0xF0000000)
+				old_cpsr = c.cpsr
+				Ok({ ..c, cpsr: U32.bitwise_or(U32.bitwise_and(old_cpsr, U32.bitwise_not(mask)), U32.bitwise_and(operand, mask)) })
+			}
+		}
+	}
 }
 
 condition_pass : Conds, U32 -> Bool
@@ -614,7 +683,7 @@ softReset = |prev| {
 
 cpsr_getN : U32 -> Bool
 cpsr_getN = |i| {
-	U32.shift_right_by(i, 31) == 1
+	U32.shr_wrap(i, 31) == 1
 }
 
 cpsr_setN : U32, Bool -> U32
@@ -628,7 +697,7 @@ cpsr_setN = |i, b| {
 
 cpsr_getZ : U32 -> Bool
 cpsr_getZ = |i| {
-	U32.is_odd(U32.shift_right_by(i, 30))
+	U32.is_odd(U32.shr_wrap(i, 30))
 }
 
 cpsr_setZ : U32, Bool -> U32
@@ -642,7 +711,7 @@ cpsr_setZ = |i, b| {
 
 cpsr_getC : U32 -> Bool
 cpsr_getC = |i| {
-	U32.shift_right_by(U32.shift_left_by(i, 2), 31) == 1
+	U32.shr_wrap(U32.shl_wrap(i, 2), 31) == 1
 }
 
 cpsr_setC : U32, Bool -> U32
@@ -656,7 +725,7 @@ cpsr_setC = |i, b| {
 
 cpsr_getV : U32 -> Bool
 cpsr_getV = |i| {
-	U32.shift_right_by(U32.shift_left_by(i, 3), 31) == 1
+	U32.shr_wrap(U32.shl_wrap(i, 3), 31) == 1
 }
 
 cpsr_setV : U32, Bool -> U32
@@ -670,7 +739,7 @@ cpsr_setV = |i, b| {
 
 cpsr_getI : U32 -> Bool
 cpsr_getI = |i| {
-	U32.shift_right_by(U32.shift_left_by(i, 24), 31) == 1
+	U32.shr_wrap(U32.shl_wrap(i, 24), 31) == 1
 }
 
 cpsr_setI : U32, Bool -> U32
@@ -684,7 +753,7 @@ cpsr_setI = |i, b| {
 
 cpsr_getF : U32 -> Bool
 cpsr_getF = |i| {
-	U32.shift_right_by(U32.shift_left_by(i, 25), 31) == 1
+	U32.shr_wrap(U32.shl_wrap(i, 25), 31) == 1
 }
 
 cpsr_setF : U32, Bool -> U32
@@ -698,7 +767,7 @@ cpsr_setF = |i, b| {
 
 cpsr_getT : U32 -> Bool
 cpsr_getT = |i| {
-	U32.shift_right_by(U32.shift_left_by(i, 26), 31) == 1
+	U32.shr_wrap(U32.shl_wrap(i, 26), 31) == 1
 }
 
 cpsr_setT : U32, Bool -> U32
@@ -712,7 +781,7 @@ cpsr_setT = |i, b| {
 
 cpsr_getMode : U32 -> Try(Mode, [InvalidMode])
 cpsr_getMode = |j| {
-	i = U32.shift_right_by(U32.shift_left_by(j, 27), 27)
+	i = U32.shr_wrap(U32.shl_wrap(j, 27), 27)
 	if U32.bitwise_xor(i, 16) == 0 {
 		Ok(User)
 	} else if U32.bitwise_xor(i, 17) == 0 {
@@ -734,7 +803,7 @@ cpsr_getMode = |j| {
 
 cpsr_setMode : Mode, U32 -> U32
 cpsr_setMode = |m, i| {
-	j = U32.shift_left_by(U32.shift_right_by(i, 5), 5)
+	j = U32.shl_wrap(U32.shr_wrap(i, 5), 5)
 	match m {
 		User => U32.bitwise_or(j, 16)
 		FIQ => U32.bitwise_or(j, 17)
@@ -862,7 +931,7 @@ cpu_setReg = |r, cpu, i| {
 
 opcode_parse_cond : U32 -> Try(Conds, [ReservedinArm7, Huh])
 opcode_parse_cond = |i| {
-	tmp = U32.shift_right_by(i, 28)
+	tmp = U32.shr_wrap(i, 28)
 	match tmp {
 		0 => Ok(EQ)
 		1 => Ok(NE)
