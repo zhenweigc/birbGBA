@@ -17,6 +17,10 @@ ALUOpCode : [AND, EOR, SUB, RSB, ADD, ADC, SBC, RSC, TST, TEQ, CMP, CMN, ORR, MO
 
 PSRTransferOpCode : [MSR, MRS]
 
+MultiplyOpCode : [MUL, MLA]
+
+MultiplyLongOpCode : [UMULL, UMLAL, SMULL, SMLAL]
+
 Cpu := { regs : Regs, cpsr : U32, spsr_fiq : U32, spsr_svc : U32, spsr_irq : U32, spsr_und : U32, spsr_abt : U32 }
 
 U32_carry : { val : U32, carry : Bool }
@@ -624,6 +628,104 @@ psr_transfer_msr_execute = |op, c| {
 				old_cpsr = c.cpsr
 				Ok({ ..c, cpsr: U32.bitwise_or(U32.bitwise_and(old_cpsr, U32.bitwise_not(mask)), U32.bitwise_and(operand, mask)) })
 			}
+		}
+	}
+}
+
+psr_transfer_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state])
+psr_transfer_execute = |op, c| {
+	match psr_transfer_decode(op) {
+		MSR => psr_transfer_msr_execute(op, c)
+		MRS => psr_transfer_mrs_execute(op, c)
+	}
+}
+
+multiply_decode : U32 -> MultiplyOpCode
+multiply_decode = |op| {
+	if get_ith_bit_u32_certain(op, 21) {
+		MLA
+	} else {
+		MUL
+	}
+}
+
+# Do not confuse with multiply Long
+multiply_execute : U32, Cpu -> Try(Cpu, [WTFisThis, UB_multiply_rd_rm_same, UB_multiply_use_of_R15, InvalidMode])
+multiply_execute = |op, c| {
+	catch_R15 = |gpr| match gpr {
+		R15 => Err(UB_multiply_use_of_R15)
+		x => Ok(x)
+	}
+	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 0, 4)))?)?
+	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 8, 4)))?)?
+	rd = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4)))?)?
+	rm_val = cpu_getReg(rm, c)?
+	rs_val = cpu_getReg(rs, c)?
+	if rd == rm {
+		Err(UB_multiply_rd_rm_same)
+	} else {
+		res = if multiply_decode(op) == MLA {
+			rn = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 12, 4)))?)?
+			rn_val = cpu_getReg(rn, c)?
+			U32.plus_wrap(U32.times_wrap(rm_val, rs_val), rn_val)
+		} else {
+			U32.times_wrap(rm_val, rs_val)
+		}
+		if get_ith_bit_u32_certain(op, 20) {
+			Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(res, 31)), res == 0) })
+		} else {
+			cpu_setReg(rd, c, res)
+		}
+	}
+}
+
+multiplyLong_decode : U32 -> MultiplyLongOpCode
+multiplyLong_decode = |op| {
+	match get_seg_of_u32_certain(op, 21, 2) {
+		0b00 => UMULL
+		0b01 => UMLAL
+		0b10 => SMULL
+		_ => SMLAL
+	}
+}
+
+multiplyLong_execute : U32, Cpu -> Try(Cpu, [WTFisThis, UB_multiplyLong_rd_same_hi_lo, UB_multiplyLong_same_rdlo_rm, UB_multiplyLong_same_rdhi_rm, UB_multiplyLong_use_of_R15, InvalidMode])
+multiplyLong_execute = |op, c| {
+	catch_R15 = |gpr| match gpr {
+		R15 => Err(UB_multiplyLong_use_of_R15)
+		x => Ok(x)
+	}
+	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 0, 4)))?)?
+	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 8, 4)))?)?
+	rdhi = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4)))?)?
+	rdlo = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 12, 4)))?)?
+	rm_val = cpu_getReg(rm, c)?
+	rs_val = cpu_getReg(rs, c)?
+	if rdhi == rdlo {
+		Err(UB_multiplyLong_rd_same_hi_lo)
+	} else if rdhi == rm {
+		Err(UB_multiplyLong_same_rdhi_rm)
+	} else if rdlo == rm {
+		Err(UB_multiplyLong_same_rdlo_rm)
+	} else {
+		rdhi_val = cpu_getReg(rdhi, c)?
+		rdlo_val = cpu_getReg(rdlo, c)?
+		m = multiplyLong_decode(op)
+		res = if m == UMLAL {
+			U64.plus_wrap(U64.times(U32.to_u64(rm_val), U32.to_u64(rs_val)), U64.bitwise_or(U64.shl_wrap(U32.to_u64(rdhi_val), 32), U32.to_u64(rdlo_val)))
+		} else if m == SMLAL {
+			I64.to_u64_wrap(I64.plus_wrap(I64.times(I32.to_i64(U32.to_i32_wrap(rm_val)), I32.to_i64(U32.to_i32_wrap(rs_val))), I64.bitwise_or(I64.shl_wrap(U32.to_i64(rdhi_val), 32), U32.to_i64(rdlo_val))))
+		} else if m == UMULL {
+			U64.times(U32.to_u64(rm_val), U32.to_u64(rs_val))
+		} else {
+			I64.to_u64_wrap(I64.times(I32.to_i64(U32.to_i32_wrap(rm_val)), I32.to_i64(U32.to_i32_wrap(rs_val))))
+		}
+		hi = U64.to_u32_wrap(U64.shr_wrap(res, 32))
+		lo = U64.to_u32_wrap(res)
+		if get_ith_bit_u32_certain(op, 20) {
+			Ok({ ..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)) })
+		} else {
+			cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)
 		}
 	}
 }
