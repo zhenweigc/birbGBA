@@ -166,11 +166,11 @@ data_processing_operand_reg_value : U32, GPR, Cpu -> Try(U32, [InvalidMode])
 data_processing_operand_reg_value = |i, gpr, c| {
 	match gpr {
 		R15 => if get_ith_bit_u32_certain(i, 25) {
-			Ok(c.regs.r15 + 8)
+			Ok(U32.plus_wrap(c.regs.r15, 8))
 		} else if get_ith_bit_u32_certain(i, 4) {
-			Ok(c.regs.r15 + 12)
+			Ok(U32.plus_wrap(c.regs.r15, 12))
 		} else {
-			Ok(c.regs.r15 + 8)
+			Ok(U32.plus_wrap(c.regs.r15, 8))
 		}
 		_ => cpu_getReg(gpr, c)
 	}
@@ -285,7 +285,6 @@ data_processing_lsl_by_register = |rm_val, rs_val, c_flag| {
 	}
 }
 
-# [LSL, LSR, ASR, ROR]
 data_processing_shift_by_immediate : ShiftType, U32, U8, Bool -> U32_carry
 data_processing_shift_by_immediate = |s, rm_val, shift_imm, c_flag| {
 	match s {
@@ -493,6 +492,29 @@ data_processing_calculate = |instruction, c| {
 	Ok(data_processing_alu(alu_opc, rn_val, op2, c_flag, v_flag))
 }
 
+data_processing_execute : U32, Cpu -> Try(Cpu, [InvalidMode, WTFisThis, UB_ShiftbyPC, NoSPSR])
+data_processing_execute = |op, c| {
+	alu_op = data_processing_decode(op)
+	res = data_processing_calculate(op, c)?
+	if data_processing_writes_rd(alu_op) {
+		rd = data_processing_get_rd(op)?
+		match rd {
+			R15 => if arm_s_flag(op) {
+				Ok({ ..cpu_setReg(rd, c, res.val)?, cpsr: cpu_getSPSR(c)? })
+			} else {
+				cpu_setReg(rd, c, res.val)
+			}
+			_ => if arm_s_flag(op) {
+				Ok({ ..cpu_setReg(rd, c, res.val)?, cpsr: cpsr_setNZCV(c.cpsr, res) })
+			} else {
+				cpu_setReg(rd, c, res.val)
+			}
+		}
+	} else {
+		Ok({ ..c, cpsr: cpsr_setNZCV(c.cpsr, res) })
+	}
+}
+
 data_processing_uses_immediate : U32 -> Bool
 data_processing_uses_immediate = |i| {
 	get_ith_bit_u32_certain(i, 25)
@@ -521,12 +543,16 @@ data_processing_get_shift_type = |i| {
 	}
 }
 
-psr_transfer_decode : U32 -> PSRTransferOpCode
+psr_transfer_decode : U32 -> Try(PSRTransferOpCode, [UnknownPSRType])
 psr_transfer_decode = |op| {
-	if get_ith_bit_u32_certain(op, 21) {
-		MSR
+	if bits_match(op, 0b0000_1111_1011_1111_0000_1111_1111_1111, 0b0000_0001_0000_1111_0000000000000000) {
+		Ok(MRS)
+	} else if bits_match(op, 0b11_0_11_0_1111111111_000000000000, 0b00_0_10_0_1010001111_000000000000) {
+		Ok(MSR) # transfer register contents or immdiate value to PSR flag bits only
+	} else if bits_match(op, 0b11111_0_1111111111_11111111_0000, 0b00010_0_1010011111_00000000_0000) {
+		Ok(MSR) # transfer register contents to PSR
 	} else {
-		MRS
+		Err(UnknownPSRType)
 	}
 }
 
@@ -566,12 +592,12 @@ psr_transfer_mrs_execute = |op, c| {
 	cpu_setReg(rd, c, val)
 }
 
-psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source])
+psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source, UB_MSR_bad_encode])
 psr_transfer_msr_operand = |op, c| {
 	if psr_transfer_uses_immediate(op) {
 		# Does not care about c_flag
 		Ok(data_processing_operands_immediate(op, Bool.False).val)
-	} else {
+	} else if get_seg_of_u32_certain(op, 4, 8) == 0 {
 		# Had to write this in such awkward way to avoid a compiler bug
 		# I should fix this when a new nightly is here.
 		match data_processing_get_rm(op) {
@@ -582,6 +608,8 @@ psr_transfer_msr_operand = |op, c| {
 				Err(_) => Err(InvalidMode)
 			}
 		}
+	} else {
+		Err(UB_MSR_bad_encode)
 	}
 }
 
@@ -600,7 +628,7 @@ psr_transfer_msr_byte_mask = |mask| {
 	one_to_FF(0, mask, 0)
 }
 
-psr_transfer_msr_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state])
+psr_transfer_msr_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state, UB_MSR_bad_encode])
 psr_transfer_msr_execute = |op, c| {
 	operand = psr_transfer_msr_operand(op, c)?
 	if U32.bitwise_and(operand, 0x0FFFFF00) != 0 {
@@ -632,9 +660,9 @@ psr_transfer_msr_execute = |op, c| {
 	}
 }
 
-psr_transfer_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state])
+psr_transfer_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state, UnknownPSRType, UB_MSR_bad_encode])
 psr_transfer_execute = |op, c| {
-	match psr_transfer_decode(op) {
+	match psr_transfer_decode(op)? {
 		MSR => psr_transfer_msr_execute(op, c)
 		MRS => psr_transfer_mrs_execute(op, c)
 	}
@@ -671,7 +699,7 @@ multiply_execute = |op, c| {
 		} else {
 			U32.times_wrap(rm_val, rs_val)
 		}
-		if get_ith_bit_u32_certain(op, 20) {
+		if arm_s_flag(op) {
 			Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(res, 31)), res == 0) })
 		} else {
 			cpu_setReg(rd, c, res)
@@ -722,7 +750,7 @@ multiplyLong_execute = |op, c| {
 		}
 		hi = U64.to_u32_wrap(U64.shr_wrap(res, 32))
 		lo = U64.to_u32_wrap(res)
-		if get_ith_bit_u32_certain(op, 20) {
+		if arm_s_flag(op) {
 			Ok({ ..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)) })
 		} else {
 			cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)
