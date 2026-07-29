@@ -8,7 +8,7 @@ Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL]
 
 ShiftType : [LSL, LSR, ASR, ROR]
 
-ArmInstructions : [DataProcessingPSRTransfer, Multiply, MultiplyLong, SingleDataSwap, BranchAndExchange, HalfwordDataTransferRegOffset, HalfwordDataTransferImmediateOffset, SingleDataTransfer, Undefined, Branch, CoprocessorDataTransfer, CoprocessorDataOperation, CoprocessorRegisterTransfer, SoftwareInterrupt, BlockDataTransfer]
+ArmInstructions : [DataProcessingPSRTransfer, Multiply, MultiplyLong, SingleDataSwap, BranchAndExchange, HalfwordDataTransferRegOffset, HalfwordDataTransferImmediateOffset, SingleDataTransfer, UndefinedInstruction, ArchitecturallyUndefined, Branch, CoprocessorDataTransfer, CoprocessorDataOperation, CoprocessorRegisterTransfer, SoftwareInterrupt, BlockDataTransfer]
 
 DataProcessingKind : [DataProcessing, PSRTransfer]
 
@@ -412,7 +412,11 @@ data_processing_get_rs = |i| {
 
 arm_instructions_decoder : U32 -> Try(ArmInstructions, [WTFisThis])
 arm_instructions_decoder = |i| {
-	if bits_match(i, 251658240, 251658240) {
+	if bits_match(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
+		Ok(UndefinedInstruction)
+	} else if bits_match(i, 0b111_11111_000000000000_1111_0000, 0b011_11111_000000000000_1111_0000) {
+		Ok(ArchitecturallyUndefined)
+	} else if bits_match(i, 251658240, 251658240) {
 		Ok(SoftwareInterrupt)
 	} else if bits_match(i, 0b0000_1111_1100_0000_0000_0000_1111_0000, 144) {
 		Ok(Multiply)
@@ -426,8 +430,6 @@ arm_instructions_decoder = |i| {
 		Ok(HalfwordDataTransferRegOffset)
 	} else if bits_match(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
 		Ok(HalfwordDataTransferImmediateOffset)
-	} else if bits_match(i, 234881040, 100663312) {
-		Ok(Undefined)
 	} else if bits_match(i, 234881024, 134217728) {
 		Ok(BlockDataTransfer)
 	} else if bits_match(i, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
@@ -440,6 +442,8 @@ arm_instructions_decoder = |i| {
 		Ok(CoprocessorRegisterTransfer)
 	} else if bits_match(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
 		Ok(SingleDataTransfer)
+	} else if !get_ith_bit_u32_certain(i, 25) and get_ith_bit_u32_certain(i, 4) and get_ith_bit_u32_certain(i, 7) {
+		Err(WTFisThis) # A5-3 DDI01001
 	} else if bits_match(i, 0b1100_00000000000000000000_0000, 0) {
 		Ok(DataProcessingPSRTransfer)
 	} else {
@@ -543,14 +547,26 @@ data_processing_get_shift_type = |i| {
 	}
 }
 
-psr_transfer_decode : U32 -> Try(PSRTransferOpCode, [UnknownPSRType])
+psr_transfer_decode : U32 -> Try(PSRTransferOpCode, [UnknownPSRType, PSR_malformed_MSR_immediate, PSR_malformed_MSR_register, PSR_malformed_MRS])
 psr_transfer_decode = |op| {
-	if bits_match(op, 0b0000_1111_1011_1111_0000_1111_1111_1111, 0b0000_0001_0000_1111_0000000000000000) {
-		Ok(MRS)
-	} else if bits_match(op, 0b11_0_11_0_1111111111_000000000000, 0b00_0_10_0_1010001111_000000000000) {
-		Ok(MSR) # transfer register contents or immdiate value to PSR flag bits only
-	} else if bits_match(op, 0b11111_0_1111111111_11111111_0000, 0b00010_0_1010011111_00000000_0000) {
-		Ok(MSR) # transfer register contents to PSR
+	if bits_match(op, 0b0000_1111_1011_000000000000_1111_0000, 0b0000_0001_0000_000000000000_0000_0000) {
+		if get_seg_of_u32_certain(op, 16, 4) != 0xF or get_seg_of_u32_certain(op, 0, 12) != 0 {
+			Err(PSR_malformed_MRS)
+		} else {
+			Ok(MRS)
+		}
+	} else if bits_match(op, 0b11111_0_11_00000000000000000000, 0b00110_0_10_00000000000000000000) {
+		if get_seg_of_u32_certain(op, 12, 4) != 0xF {
+			Err(PSR_malformed_MSR_immediate)
+		} else {
+			Ok(MSR) # transfer immediate
+		}
+	} else if bits_match(op, 0b11111_0_11_0000_0000_0000_1111_0000, 0b00010_0_10_0000_0000_0000_0000_0000) {
+		if get_seg_of_u32_certain(op, 12, 4) != 0xF or get_seg_of_u32_certain(op, 8, 4) != 0 {
+			Err(PSR_malformed_MSR_register)
+		} else {
+			Ok(MSR) # transfer register contents to PSR
+		}
 	} else {
 		Err(UnknownPSRType)
 	}
@@ -592,12 +608,12 @@ psr_transfer_mrs_execute = |op, c| {
 	cpu_setReg(rd, c, val)
 }
 
-psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source, UB_MSR_bad_encode])
+psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source])
 psr_transfer_msr_operand = |op, c| {
 	if psr_transfer_uses_immediate(op) {
 		# Does not care about c_flag
 		Ok(data_processing_operands_immediate(op, Bool.False).val)
-	} else if get_seg_of_u32_certain(op, 4, 8) == 0 {
+	} else {
 		# Had to write this in such awkward way to avoid a compiler bug
 		# I should fix this when a new nightly is here.
 		match data_processing_get_rm(op) {
@@ -608,8 +624,6 @@ psr_transfer_msr_operand = |op, c| {
 				Err(_) => Err(InvalidMode)
 			}
 		}
-	} else {
-		Err(UB_MSR_bad_encode)
 	}
 }
 
@@ -628,7 +642,7 @@ psr_transfer_msr_byte_mask = |mask| {
 	one_to_FF(0, mask, 0)
 }
 
-psr_transfer_msr_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state, UB_MSR_bad_encode])
+psr_transfer_msr_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state])
 psr_transfer_msr_execute = |op, c| {
 	operand = psr_transfer_msr_operand(op, c)?
 	if U32.bitwise_and(operand, 0x0FFFFF00) != 0 {
@@ -660,7 +674,7 @@ psr_transfer_msr_execute = |op, c| {
 	}
 }
 
-psr_transfer_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state, UnknownPSRType, UB_MSR_bad_encode])
+psr_transfer_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state, UnknownPSRType, PSR_malformed_MSR_immediate, PSR_malformed_MSR_register, PSR_malformed_MRS])
 psr_transfer_execute = |op, c| {
 	match psr_transfer_decode(op)? {
 		MSR => psr_transfer_msr_execute(op, c)
