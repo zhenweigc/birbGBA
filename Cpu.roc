@@ -661,6 +661,8 @@ psr_transfer_msr_execute = |op, c| {
 				if cpsr_getT(operand) {
 					Err(UB_PSR_non_ARM_state)
 				} else {
+					# Note: DDI 0100I A2-14: reserved CPSR M[4:0] values are UNPREDICTABLE.
+					# Valid ROMs avoid them; malformed writes can make later cpsr_getMode calls fail.
 					mask = U32.bitwise_and(byte_mask, 0xF00000DF)
 					old_cpsr = c.cpsr
 					Ok({ ..c, cpsr: U32.bitwise_or(U32.bitwise_and(old_cpsr, U32.bitwise_not(mask)), U32.bitwise_and(operand, mask)) })
@@ -768,6 +770,52 @@ multiplyLong_execute = |op, c| {
 			Ok({ ..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)) })
 		} else {
 			cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)
+		}
+	}
+}
+
+branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_UnKnown])
+branch_execute = |op, c| {
+	if bits_match(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
+		old_PC = cpu_getReg(R15, c)?
+		signed_immed_24 = get_seg_of_u32_certain(op, 0, 24)
+		pc = U32.plus_wrap(
+			old_PC,
+			U32.plus_wrap(
+				8,
+				if get_ith_bit_u32_certain(signed_immed_24, 23) {
+					U32.times_wrap(U32.bitwise_or(signed_immed_24, 0b111111_000000000000000000000000), 4)
+				} else {
+					U32.times_wrap(signed_immed_24, 4)
+				},
+			),
+		)
+		if get_ith_bit_u32_certain(op, 24) {
+			cpu_setReg(R15, cpu_setReg(R14, c, U32.plus_wrap(old_PC, 4))?, pc)
+		} else {
+			cpu_setReg(R15, c, pc)
+		}
+	} else {
+		Err(Branch_Type_UnKnown)
+	}
+}
+
+branch_exchange_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Exchange_malformed, WTFisThis])
+branch_exchange_execute = |op, c| {
+	if get_seg_of_u32_certain(op, 8, 12) != 0b1111_1111_1111 {
+		Err(Branch_Exchange_malformed)
+	} else {
+		rm = gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 0, 4)))?
+		rm_val = if (rm != R15) {
+			cpu_getReg(rm, c)?
+		} else {
+			# Here we go again
+			U32.plus_wrap(cpu_getReg(rm, c)?, 8)
+		}
+		if get_seg_of_u32_certain(rm_val, 0, 2) == 2 {
+			Err(Branch_Exchange_malformed)
+		} else {
+			Ok({ ..cpu_setReg(R15, c, U32.bitwise_and(rm_val, 0xFFFFFFFE))?, cpsr: cpsr_setT(c.cpsr, get_ith_bit_u32_certain(rm_val, 0)) })
 		}
 	}
 }
