@@ -170,7 +170,7 @@ bits_match = |i, mask, target| {
 	U32.bitwise_and(i, mask) == target
 }
 
-gpr_from_idx : U8 -> Try(GPR, [WTFisThis])
+gpr_from_idx : U8 -> Try(GPR, [WTFisThis, ..])
 gpr_from_idx = |i| {
 	match i {
 		0 => Ok(R0)
@@ -193,32 +193,26 @@ gpr_from_idx = |i| {
 	}
 }
 
-data_processing_get_rn : U32 -> Try(GPR, [WTFisThis])
+data_processing_get_rn : U32 -> Try(GPR, [WTFisThis, ..])
 data_processing_get_rn = |i| {
 	tmp = get_seg_of_u32_certain(i, 16, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
 
-data_processing_get_rn_value : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis])
+data_processing_get_rn_value : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, ..])
 data_processing_get_rn_value = |i, c| {
-	# Wrote in this ugly way because error widening is dead.
-	match data_processing_get_rn(i) {
-		Ok(rn) => match data_processing_operand_reg_value(i, rn, c) {
-			Ok(rn_val) => Ok(rn_val)
-			_ => Err(InvalidMode)
-		}
-		_ => Err(WTFisThis)
-	}
+	rn = data_processing_get_rn(i)?
+	data_processing_operand_reg_value(i, rn, c)
 }
 
-data_processing_get_rd : U32 -> Try(GPR, [WTFisThis])
+data_processing_get_rd : U32 -> Try(GPR, [WTFisThis, ..])
 data_processing_get_rd = |i| {
 	tmp = get_seg_of_u32_certain(i, 12, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
 
 # Man it's always the PC being different
-data_processing_operand_reg_value : U32, GPR, Cpu -> Try(U32, [InvalidMode])
+data_processing_operand_reg_value : U32, GPR, Cpu -> Try(U32, [InvalidMode, ..])
 data_processing_operand_reg_value = |i, gpr, c| {
 	match gpr {
 		R15 => if get_ith_bit_u32_certain(i, 25) {
@@ -232,7 +226,7 @@ data_processing_operand_reg_value = |i, gpr, c| {
 	}
 }
 
-data_processing_operands_register : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC])
+data_processing_operands_register : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC, ..])
 data_processing_operands_register = |i, c| {
 	rm = data_processing_get_rm(i)?
 	rm_val = data_processing_operand_reg_value(i, rm, c)?
@@ -261,7 +255,7 @@ data_processing_operands_immediate = |i, c_flag| {
 	}
 }
 
-data_processing_operand2 : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC])
+data_processing_operand2 : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC, ..])
 data_processing_operand2 = |i, c| {
 	c_flag = cpsr_getC(c.cpsr)
 	if data_processing_uses_immediate(i) {
@@ -456,17 +450,17 @@ data_processing_get_shift_imm = |i| {
 	U32.to_u8_wrap(get_seg_of_u32_certain(i, 7, 5))
 }
 
-data_processing_get_rm : U32 -> Try(GPR, [WTFisThis])
+data_processing_get_rm : U32 -> Try(GPR, [WTFisThis, ..])
 data_processing_get_rm = |i| {
 	gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(i, 0, 4)))
 }
 
-data_processing_get_rs : U32 -> Try(GPR, [WTFisThis])
+data_processing_get_rs : U32 -> Try(GPR, [WTFisThis, ..])
 data_processing_get_rs = |i| {
 	gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(i, 8, 4)))
 }
 
-arm_instructions_decoder : U32 -> Try(ArmInstructions, [WTFisThis])
+arm_instructions_decoder : U32 -> Try(ArmInstructions, [WTFisThis, ..])
 arm_instructions_decoder = |i| {
 	if bits_match(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
 		Ok(UndefinedInstruction)
@@ -592,7 +586,7 @@ data_processing_kind = |i| {
 	}
 }
 
-data_processing_calculate : U32, Cpu -> Try(U32_carry_overflow, [InvalidMode, WTFisThis, UB_ShiftbyPC])
+data_processing_calculate : U32, Cpu -> Try(U32_carry_overflow, [InvalidMode, WTFisThis, UB_ShiftbyPC, ..])
 data_processing_calculate = |instruction, c| {
 	alu_opc = data_processing_decode(instruction)
 	rn_val = data_processing_get_rn_value(instruction, c)?
@@ -602,7 +596,7 @@ data_processing_calculate = |instruction, c| {
 	Ok(data_processing_alu(alu_opc, rn_val, op2, c_flag, v_flag))
 }
 
-data_processing_execute : U32, Cpu -> Try(Cpu, [InvalidMode, WTFisThis, UB_ShiftbyPC, NoSPSR])
+data_processing_execute : U32, Cpu -> Try(Cpu, [InvalidMode, WTFisThis, UB_ShiftbyPC, NoSPSR, ..])
 data_processing_execute = |op, c| {
 	alu_op = data_processing_decode(op)
 	res = data_processing_calculate(op, c)?
@@ -660,6 +654,7 @@ psr_transfer_decode : U32 -> Try(
 		PSR_malformed_MSR_immediate,
 		PSR_malformed_MSR_register,
 		PSR_malformed_MRS,
+		..,
 	],
 )
 psr_transfer_decode = |op| {
@@ -696,17 +691,15 @@ psr_transfer_uses_immediate = |op| {
 	get_ith_bit_u32_certain(op, 25)
 }
 
-psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis, UB_PSR_PC_as_dest])
+psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis, UB_PSR_PC_as_dest, ..])
 psr_transfer_mrs_get_rd = |op| {
-	# Err propagation bug from compiler made me write like this.
-	match data_processing_get_rd(op) {
-		Ok(R15) => Err(UB_PSR_PC_as_dest)
-		Ok(x) => Ok(x)
-		_ => Err(WTFisThis)
+	match data_processing_get_rd(op)? {
+		R15 => Err(UB_PSR_PC_as_dest)
+		x => Ok(x)
 	}
 }
 
-psr_transfer_mrs_value : U32, Cpu -> Try(U32, [InvalidMode, NoSPSR])
+psr_transfer_mrs_value : U32, Cpu -> Try(U32, [InvalidMode, NoSPSR, ..])
 psr_transfer_mrs_value = |op, c| {
 	if psr_transfer_uses_spsr(op) {
 		cpu_getSPSR(c)
@@ -715,28 +708,32 @@ psr_transfer_mrs_value = |op, c| {
 	}
 }
 
-psr_transfer_mrs_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest])
+psr_transfer_mrs_execute : U32,
+Cpu -> Try(
+	Cpu,
+	[
+		InvalidMode,
+		NoSPSR,
+		WTFisThis,
+		UB_PSR_PC_as_dest,
+		..,
+	],
+)
 psr_transfer_mrs_execute = |op, c| {
 	rd = psr_transfer_mrs_get_rd(op)?
 	val = psr_transfer_mrs_value(op, c)?
 	cpu_setReg(rd, c, val)
 }
 
-psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source])
+psr_transfer_msr_operand : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, UB_PSR_PC_as_source, ..])
 psr_transfer_msr_operand = |op, c| {
 	if psr_transfer_uses_immediate(op) {
 		# Does not care about c_flag
 		Ok(data_processing_operands_immediate(op, Bool.False).val)
 	} else {
-		# Had to write this in such awkward way to avoid a compiler bug
-		# I should fix this when a new nightly is here.
-		match data_processing_get_rm(op) {
-			Ok(R15) => Err(UB_PSR_PC_as_source)
-			Err(_) => Err(WTFisThis)
-			Ok(x) => match cpu_getReg(x, c) {
-				Ok(o) => Ok(o)
-				Err(_) => Err(InvalidMode)
-			}
+		match data_processing_get_rm(op)? {
+			R15 => Err(UB_PSR_PC_as_source)
+			x => cpu_getReg(x, c)
 		}
 	}
 }
@@ -766,6 +763,7 @@ Cpu -> Try(
 		UB_PSR_PC_as_source,
 		UB_PSR_reserved_bits,
 		UB_PSR_non_ARM_state,
+		..,
 	],
 )
 psr_transfer_msr_execute = |op, c| {
@@ -816,6 +814,7 @@ Cpu -> Try(
 		PSR_malformed_MSR_immediate,
 		PSR_malformed_MSR_register,
 		PSR_malformed_MRS,
+		..,
 	],
 )
 psr_transfer_execute = |op, c| {
@@ -835,7 +834,17 @@ multiply_decode = |op| {
 }
 
 # Do not confuse with multiply Long
-multiply_execute : U32, Cpu -> Try(Cpu, [WTFisThis, UB_multiply_rd_rm_same, UB_multiply_use_of_R15, InvalidMode])
+multiply_execute : U32,
+Cpu -> Try(
+	Cpu,
+	[
+		WTFisThis,
+		UB_multiply_rd_rm_same,
+		UB_multiply_use_of_R15,
+		InvalidMode,
+		..,
+	],
+)
 multiply_execute = |op, c| {
 	catch_R15 = |gpr| match gpr {
 		R15 => Err(UB_multiply_use_of_R15)
@@ -884,6 +893,7 @@ Cpu -> Try(
 		UB_multiplyLong_same_rdhi_rm,
 		UB_multiplyLong_use_of_R15,
 		InvalidMode,
+		..,
 	],
 )
 multiplyLong_execute = |op, c| {
@@ -926,7 +936,7 @@ multiplyLong_execute = |op, c| {
 	}
 }
 
-branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_UnKnown])
+branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_UnKnown, ..])
 branch_execute = |op, c| {
 	if bits_match(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
 		old_PC = cpu_getReg(R15, c)?
@@ -952,7 +962,7 @@ branch_execute = |op, c| {
 	}
 }
 
-branch_exchange_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Exchange_malformed, WTFisThis])
+branch_exchange_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Exchange_malformed, WTFisThis, ..])
 branch_exchange_execute = |op, c| {
 	if get_seg_of_u32_certain(op, 8, 12) != 0b1111_1111_1111 {
 		Err(Branch_Exchange_malformed)
@@ -1136,7 +1146,7 @@ cpsr_setT = |i, b| {
 	}
 }
 
-cpsr_getMode : U32 -> Try(Mode, [InvalidMode])
+cpsr_getMode : U32 -> Try(Mode, [InvalidMode, ..])
 cpsr_getMode = |j| {
 	i = U32.shr_wrap(U32.shl_wrap(j, 27), 27)
 	if U32.bitwise_xor(i, 16) == 0 {
@@ -1274,19 +1284,19 @@ regs_set = |r, m, regs, i| {
 	}
 }
 
-cpu_getReg : GPR, Cpu -> Try(U32, [InvalidMode])
+cpu_getReg : GPR, Cpu -> Try(U32, [InvalidMode, ..])
 cpu_getReg = |r, cpu| {
 	m = cpsr_getMode(cpu.cpsr)?
 	Ok(regs_get(r, m, cpu.regs))
 }
 
-cpu_setReg : GPR, Cpu, U32 -> Try(Cpu, [InvalidMode])
+cpu_setReg : GPR, Cpu, U32 -> Try(Cpu, [InvalidMode, ..])
 cpu_setReg = |r, cpu, i| {
 	m = cpsr_getMode(cpu.cpsr)?
 	Ok({ ..cpu, regs: regs_set(r, m, cpu.regs, i) })
 }
 
-opcode_parse_cond : U32 -> Try(Conds, [ReservedinArm7, Huh])
+opcode_parse_cond : U32 -> Try(Conds, [ReservedinArm7, Huh, ..])
 opcode_parse_cond = |i| {
 	tmp = U32.shr_wrap(i, 28)
 	match tmp {
@@ -1311,7 +1321,7 @@ opcode_parse_cond = |i| {
 }
 
 # Mode : [FIQ, Sup, Abort, IRQ, Undefined, User, Sys]
-cpu_getSPSR : Cpu -> Try(U32, [InvalidMode, NoSPSR])
+cpu_getSPSR : Cpu -> Try(U32, [InvalidMode, NoSPSR, ..])
 cpu_getSPSR = |c| {
 	m = cpsr_getMode(c.cpsr)?
 	match m {
@@ -1324,7 +1334,7 @@ cpu_getSPSR = |c| {
 	}
 }
 
-cpu_setSPSR : Cpu, U32 -> Try(Cpu, [InvalidMode, NoSPSR])
+cpu_setSPSR : Cpu, U32 -> Try(Cpu, [InvalidMode, NoSPSR, ..])
 cpu_setSPSR = |c, i| {
 	m = cpsr_getMode(c.cpsr)?
 	match m {
