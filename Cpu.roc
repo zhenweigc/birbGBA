@@ -2,13 +2,62 @@ GPR : [R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15]
 
 Mode : [FIQ, Sup, Abort, IRQ, Undefined, User, Sys]
 
-Regs : { r0 : U32, r1 : U32, r2 : U32, r3 : U32, r4 : U32, r5 : U32, r6 : U32, r7 : U32, r8 : U32, r8_fiq : U32, r9 : U32, r9_fiq : U32, r10 : U32, r10_fiq : U32, r11 : U32, r11_fiq : U32, r12 : U32, r12_fiq : U32, r13 : U32, r13_fiq : U32, r13_svc : U32, r13_abt : U32, r13_irq : U32, r13_und : U32, r14 : U32, r14_fiq : U32, r14_svc : U32, r14_abt : U32, r14_irq : U32, r14_und : U32, r15 : U32 }
+Regs : {
+	r0 : U32,
+	r1 : U32,
+	r2 : U32,
+	r3 : U32,
+	r4 : U32,
+	r5 : U32,
+	r6 : U32,
+	r7 : U32,
+	r8 : U32,
+	r8_fiq : U32,
+	r9 : U32,
+	r9_fiq : U32,
+	r10 : U32,
+	r10_fiq : U32,
+	r11 : U32,
+	r11_fiq : U32,
+	r12 : U32,
+	r12_fiq : U32,
+	r13 : U32,
+	r13_fiq : U32,
+	r13_svc : U32,
+	r13_abt : U32,
+	r13_irq : U32,
+	r13_und : U32,
+	r14 : U32,
+	r14_fiq : U32,
+	r14_svc : U32,
+	r14_abt : U32,
+	r14_irq : U32,
+	r14_und : U32,
+	r15 : U32,
+}
 
 Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL]
 
 ShiftType : [LSL, LSR, ASR, ROR]
 
-ArmInstructions : [DataProcessingPSRTransfer, Multiply, MultiplyLong, SingleDataSwap, BranchAndExchange, HalfwordDataTransferRegOffset, HalfwordDataTransferImmediateOffset, SingleDataTransfer, UndefinedInstruction, ArchitecturallyUndefined, Branch, CoprocessorDataTransfer, CoprocessorDataOperation, CoprocessorRegisterTransfer, SoftwareInterrupt, BlockDataTransfer]
+ArmInstructions : [
+	DataProcessingPSRTransfer,
+	Multiply,
+	MultiplyLong,
+	SingleDataSwap,
+	BranchAndExchange,
+	HalfwordDataTransferRegOffset,
+	HalfwordDataTransferImmediateOffset,
+	SingleDataTransfer,
+	UndefinedInstruction,
+	ArchitecturallyUndefined,
+	Branch,
+	CoprocessorDataTransfer,
+	CoprocessorDataOperation,
+	CoprocessorRegisterTransfer,
+	SoftwareInterrupt,
+	BlockDataTransfer,
+]
 
 DataProcessingKind : [DataProcessing, PSRTransfer]
 
@@ -21,11 +70,18 @@ MultiplyOpCode : [MUL, MLA]
 
 MultiplyLongOpCode : [UMULL, UMLAL, SMULL, SMLAL]
 
+SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
+
 Cpu := { regs : Regs, cpsr : U32, spsr_fiq : U32, spsr_svc : U32, spsr_irq : U32, spsr_und : U32, spsr_abt : U32 }
 
 U32_carry : { val : U32, carry : Bool }
 
 U32_carry_overflow : { val : U32, carry : Bool, overflow : Bool }
+
+pc_inc : U32, U32 -> U32
+pc_inc = |r15, val| {
+	U32.plus_wrap(r15, val)
+}
 
 rotate_right_u32 : U32, U8 -> U32
 rotate_right_u32 = |i, j| {
@@ -166,11 +222,11 @@ data_processing_operand_reg_value : U32, GPR, Cpu -> Try(U32, [InvalidMode])
 data_processing_operand_reg_value = |i, gpr, c| {
 	match gpr {
 		R15 => if get_ith_bit_u32_certain(i, 25) {
-			Ok(U32.plus_wrap(c.regs.r15, 8))
+			Ok(pc_inc(c.regs.r15, 8))
 		} else if get_ith_bit_u32_certain(i, 4) {
-			Ok(U32.plus_wrap(c.regs.r15, 12))
+			Ok(pc_inc(c.regs.r15, 12))
 		} else {
-			Ok(U32.plus_wrap(c.regs.r15, 8))
+			Ok(pc_inc(c.regs.r15, 8))
 		}
 		_ => cpu_getReg(gpr, c)
 	}
@@ -451,6 +507,56 @@ arm_instructions_decoder = |i| {
 	}
 }
 
+arm_instructions_execute : U32,
+Cpu -> Try(
+	Cpu,
+	[
+		ReservedinArm7,
+		Huh,
+		WTFisThis,
+		InvalidMode,
+		UB_ShiftbyPC,
+		NoSPSR,
+		PSR_malformed_MRS,
+		PSR_malformed_MSR_immediate,
+		PSR_malformed_MSR_register,
+		UB_PSR_PC_as_dest,
+		UB_PSR_PC_as_source,
+		UB_PSR_non_ARM_state,
+		UB_PSR_reserved_bits,
+		UnknownPSRType,
+		Branch_Exchange_malformed,
+		Branch_Type_UnKnown,
+		UB_multiply_rd_rm_same,
+		UB_multiply_use_of_R15,
+		UB_multiplyLong_rd_same_hi_lo,
+		UB_multiplyLong_same_rdlo_rm,
+		UB_multiplyLong_same_rdhi_rm,
+		UB_multiplyLong_use_of_R15,
+	],
+)
+arm_instructions_execute = |op, c| {
+	cond = opcode_parse_cond(op)?
+	if condition_pass(cond, c.cpsr) {
+		action = arm_instructions_decoder(op)?
+		match action {
+			UndefinedInstruction => Ok(c)
+			ArchitecturallyUndefined => Ok(c)
+			DataProcessingPSRTransfer => match data_processing_kind(op) {
+				DataProcessing => data_processing_execute(op, c)
+				PSRTransfer => psr_transfer_execute(op, c)
+			}
+			BranchAndExchange => branch_exchange_execute(op, c)
+			Branch => branch_execute(op, c)
+			Multiply => multiply_execute(op, c)
+			MultiplyLong => multiplyLong_execute(op, c)
+			_ => Ok(c)
+		}
+	} else {
+		Ok(c)
+	}
+}
+
 data_processing_writes_rd : ALUOpCode -> Bool
 data_processing_writes_rd = |op| {
 	match op {
@@ -547,7 +653,15 @@ data_processing_get_shift_type = |i| {
 	}
 }
 
-psr_transfer_decode : U32 -> Try(PSRTransferOpCode, [UnknownPSRType, PSR_malformed_MSR_immediate, PSR_malformed_MSR_register, PSR_malformed_MRS])
+psr_transfer_decode : U32 -> Try(
+	PSRTransferOpCode,
+	[
+		UnknownPSRType,
+		PSR_malformed_MSR_immediate,
+		PSR_malformed_MSR_register,
+		PSR_malformed_MRS,
+	],
+)
 psr_transfer_decode = |op| {
 	if bits_match(op, 0b0000_1111_1011_000000000000_1111_0000, 0b0000_0001_0000_000000000000_0000_0000) {
 		if get_seg_of_u32_certain(op, 16, 4) != 0xF or get_seg_of_u32_certain(op, 0, 12) != 0 {
@@ -642,7 +756,18 @@ psr_transfer_msr_byte_mask = |mask| {
 	one_to_FF(0, mask, 0)
 }
 
-psr_transfer_msr_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state])
+psr_transfer_msr_execute : U32,
+Cpu -> Try(
+	Cpu,
+	[
+		InvalidMode,
+		NoSPSR,
+		WTFisThis,
+		UB_PSR_PC_as_source,
+		UB_PSR_reserved_bits,
+		UB_PSR_non_ARM_state,
+	],
+)
 psr_transfer_msr_execute = |op, c| {
 	operand = psr_transfer_msr_operand(op, c)?
 	if U32.bitwise_and(operand, 0x0FFFFF00) != 0 {
@@ -676,7 +801,23 @@ psr_transfer_msr_execute = |op, c| {
 	}
 }
 
-psr_transfer_execute : U32, Cpu -> Try(Cpu, [InvalidMode, NoSPSR, WTFisThis, UB_PSR_PC_as_dest, UB_PSR_PC_as_source, UB_PSR_reserved_bits, UB_PSR_non_ARM_state, UnknownPSRType, PSR_malformed_MSR_immediate, PSR_malformed_MSR_register, PSR_malformed_MRS])
+psr_transfer_execute : U32,
+Cpu -> Try(
+	Cpu,
+	[
+		InvalidMode,
+		NoSPSR,
+		WTFisThis,
+		UB_PSR_PC_as_dest,
+		UB_PSR_PC_as_source,
+		UB_PSR_reserved_bits,
+		UB_PSR_non_ARM_state,
+		UnknownPSRType,
+		PSR_malformed_MSR_immediate,
+		PSR_malformed_MSR_register,
+		PSR_malformed_MRS,
+	],
+)
 psr_transfer_execute = |op, c| {
 	match psr_transfer_decode(op)? {
 		MSR => psr_transfer_msr_execute(op, c)
@@ -733,7 +874,18 @@ multiplyLong_decode = |op| {
 	}
 }
 
-multiplyLong_execute : U32, Cpu -> Try(Cpu, [WTFisThis, UB_multiplyLong_rd_same_hi_lo, UB_multiplyLong_same_rdlo_rm, UB_multiplyLong_same_rdhi_rm, UB_multiplyLong_use_of_R15, InvalidMode])
+multiplyLong_execute : U32,
+Cpu -> Try(
+	Cpu,
+	[
+		WTFisThis,
+		UB_multiplyLong_rd_same_hi_lo,
+		UB_multiplyLong_same_rdlo_rm,
+		UB_multiplyLong_same_rdhi_rm,
+		UB_multiplyLong_use_of_R15,
+		InvalidMode,
+	],
+)
 multiplyLong_execute = |op, c| {
 	catch_R15 = |gpr| match gpr {
 		R15 => Err(UB_multiplyLong_use_of_R15)
@@ -791,7 +943,7 @@ branch_execute = |op, c| {
 			),
 		)
 		if get_ith_bit_u32_certain(op, 24) {
-			cpu_setReg(R15, cpu_setReg(R14, c, U32.plus_wrap(old_PC, 4))?, pc)
+			cpu_setReg(R15, cpu_setReg(R14, c, pc_inc(old_PC, 4))?, pc)
 		} else {
 			cpu_setReg(R15, c, pc)
 		}
@@ -810,13 +962,26 @@ branch_exchange_execute = |op, c| {
 			cpu_getReg(rm, c)?
 		} else {
 			# Here we go again
-			U32.plus_wrap(cpu_getReg(rm, c)?, 8)
+			pc_inc(cpu_getReg(rm, c)?, 8)
 		}
 		if get_seg_of_u32_certain(rm_val, 0, 2) == 2 {
 			Err(Branch_Exchange_malformed)
 		} else {
 			Ok({ ..cpu_setReg(R15, c, U32.bitwise_and(rm_val, 0xFFFFFFFE))?, cpsr: cpsr_setT(c.cpsr, get_ith_bit_u32_certain(rm_val, 0)) })
 		}
+	}
+}
+
+single_data_transfer_decode : U32 -> SingleDataTransferOpCode
+single_data_transfer_decode = |op| {
+	if bits_match(op, 0b101_00000_00000_00000_00000, 0b0) {
+		STR
+	} else if bits_match(op, 0b101_00000_00000_00000_00000, 0b001_00000_00000_00000_00000) {
+		LDR
+	} else if bits_match(op, 0b101_00000_00000_00000_00000, 0b101_00000_00000_00000_00000) {
+		LDRB
+	} else {
+		STRB
 	}
 }
 
