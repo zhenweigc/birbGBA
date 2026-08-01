@@ -466,7 +466,7 @@ arm_instructions_decoder = |i| {
 		Ok(UndefinedInstruction)
 	} else if bits_match(i, 0b111_11111_000000000000_1111_0000, 0b011_11111_000000000000_1111_0000) {
 		Ok(ArchitecturallyUndefined)
-	} else if bits_match(i, 251658240, 251658240) {
+	} else if bits_match(i, 0b1111_000000000000000000000000, 0b1111_000000000000000000000000) {
 		Ok(SoftwareInterrupt)
 	} else if bits_match(i, 0b0000_1111_1100_0000_0000_0000_1111_0000, 144) {
 		Ok(Multiply)
@@ -534,8 +534,6 @@ arm_instructions_execute = |op, c| {
 	if condition_pass(cond, c.cpsr) {
 		action = arm_instructions_decoder(op)?
 		match action {
-			UndefinedInstruction => Ok(c)
-			ArchitecturallyUndefined => Ok(c)
 			DataProcessingPSRTransfer => match data_processing_kind(op) {
 				DataProcessing => data_processing_execute(op, c)
 				PSRTransfer => psr_transfer_execute(op, c)
@@ -544,6 +542,8 @@ arm_instructions_execute = |op, c| {
 			Branch => branch_execute(op, c)
 			Multiply => multiply_execute(op, c)
 			MultiplyLong => multiplyLong_execute(op, c)
+			SoftwareInterrupt => software_interrupt_execute(c)
+			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => undefined_instruction_execute(c)
 			_ => Ok(c)
 		}
 	} else {
@@ -993,6 +993,26 @@ single_data_transfer_decode = |op| {
 	} else {
 		STRB
 	}
+}
+
+software_interrupt_execute : Cpu -> Try(Cpu, [InvalidMode, NoSPSR, ..])
+software_interrupt_execute = |c| {
+	pc_val = cpu_getReg(R15, c)?
+	r14_svc_new_val = pc_inc(pc_val, 4)
+	old_cpsr = c.cpsr
+	new_cpsr = cpsr_setI(cpsr_setT(cpsr_setMode(Sup, old_cpsr), Bool.False), Bool.True)
+	c_sup = { ..c, cpsr: new_cpsr }
+	cpu_setSPSR(cpu_setReg(R15, cpu_setReg(R14, c_sup, r14_svc_new_val)?, 0x8)?, old_cpsr)
+}
+
+undefined_instruction_execute : Cpu -> Try(Cpu, [InvalidMode, NoSPSR, ..])
+undefined_instruction_execute = |c| {
+	pc_val = cpu_getReg(R15, c)?
+	r14_und_new_val = pc_inc(pc_val, 4)
+	old_cpsr = c.cpsr
+	new_cpsr = cpsr_setI(cpsr_setT(cpsr_setMode(Undefined, old_cpsr), Bool.False), Bool.True)
+	c_und = { ..c, cpsr: new_cpsr }
+	cpu_setSPSR(cpu_setReg(R15, cpu_setReg(R14, c_und, r14_und_new_val)?, 0x4)?, old_cpsr)
 }
 
 condition_pass : Conds, U32 -> Bool
