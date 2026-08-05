@@ -74,6 +74,10 @@ SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
 
 Cpu := { regs : Regs, cpsr : U32, spsr_fiq : U32, spsr_svc : U32, spsr_irq : U32, spsr_und : U32, spsr_abt : U32 }
 
+PC_status : [PCSequential, PCWritten]
+
+Execution_outcome : { cpu : Cpu, pc_status : PC_status }
+
 U32_carry : { val : U32, carry : Bool }
 
 U32_carry_overflow : { val : U32, carry : Bool, overflow : Bool }
@@ -501,9 +505,23 @@ arm_instructions_decoder = |i| {
 	}
 }
 
+arm_instructions_finalize : Execution_outcome -> Cpu
+arm_instructions_finalize = |outcome| {
+	match outcome.pc_status {
+		PCSequential => {
+			..outcome.cpu,
+			regs: {
+				..outcome.cpu.regs,
+				r15: pc_inc(outcome.cpu.regs.r15, 4),
+			},
+		}
+		_ => outcome.cpu
+	}
+}
+
 arm_instructions_execute : U32,
 Cpu -> Try(
-	Cpu,
+	Execution_outcome,
 	[
 		ReservedinArm7,
 		Huh,
@@ -527,6 +545,7 @@ Cpu -> Try(
 		UB_multiplyLong_same_rdlo_rm,
 		UB_multiplyLong_same_rdhi_rm,
 		UB_multiplyLong_use_of_R15,
+		Temp_not_done,
 	],
 )
 arm_instructions_execute = |op, c| {
@@ -536,18 +555,42 @@ arm_instructions_execute = |op, c| {
 		match action {
 			DataProcessingPSRTransfer => match data_processing_kind(op) {
 				DataProcessing => data_processing_execute(op, c)
-				PSRTransfer => psr_transfer_execute(op, c)
+				PSRTransfer => Ok({
+					cpu: psr_transfer_execute(op, c)?,
+					pc_status: PCSequential,
+				})
 			}
-			BranchAndExchange => branch_exchange_execute(op, c)
-			Branch => branch_execute(op, c)
-			Multiply => multiply_execute(op, c)
-			MultiplyLong => multiplyLong_execute(op, c)
-			SoftwareInterrupt => software_interrupt_execute(c)
-			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => undefined_instruction_execute(c)
-			_ => Ok(c)
+			BranchAndExchange => Ok({
+				cpu: branch_exchange_execute(op, c)?,
+				pc_status: PCWritten,
+			})
+			Branch => Ok({
+				cpu: branch_execute(op, c)?,
+				pc_status: PCWritten,
+			})
+			Multiply => Ok({
+				cpu: multiply_execute(op, c)?,
+				pc_status: PCSequential,
+			})
+			MultiplyLong => Ok({
+				cpu: multiplyLong_execute(op, c)?,
+				pc_status: PCSequential,
+			})
+			SoftwareInterrupt => Ok({
+				cpu: software_interrupt_execute(c)?,
+				pc_status: PCWritten,
+			})
+			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => Ok({
+				cpu: undefined_instruction_execute(c)?,
+				pc_status: PCWritten,
+			})
+			_ => Err(Temp_not_done)
 		}
 	} else {
-		Ok(c)
+		Ok({
+			cpu: c,
+			pc_status: PCSequential,
+		})
 	}
 }
 
@@ -586,9 +629,8 @@ data_processing_kind = |i| {
 	}
 }
 
-data_processing_calculate : U32, Cpu -> Try(U32_carry_overflow, [InvalidMode, WTFisThis, UB_ShiftbyPC, ..])
-data_processing_calculate = |instruction, c| {
-	alu_opc = data_processing_decode(instruction)
+data_processing_calculate : U32, Cpu, ALUOpCode -> Try(U32_carry_overflow, [InvalidMode, WTFisThis, UB_ShiftbyPC, ..])
+data_processing_calculate = |instruction, c, alu_opc| {
 	rn_val = data_processing_get_rn_value(instruction, c)?
 	c_flag = cpsr_getC(c.cpsr)
 	v_flag = cpsr_getV(c.cpsr)
@@ -596,26 +638,35 @@ data_processing_calculate = |instruction, c| {
 	Ok(data_processing_alu(alu_opc, rn_val, op2, c_flag, v_flag))
 }
 
-data_processing_execute : U32, Cpu -> Try(Cpu, [InvalidMode, WTFisThis, UB_ShiftbyPC, NoSPSR, ..])
+data_processing_execute : U32, Cpu -> Try(Execution_outcome, [InvalidMode, WTFisThis, UB_ShiftbyPC, NoSPSR, ..])
 data_processing_execute = |op, c| {
 	alu_op = data_processing_decode(op)
-	res = data_processing_calculate(op, c)?
+	res = data_processing_calculate(op, c, alu_op)?
 	if data_processing_writes_rd(alu_op) {
 		rd = data_processing_get_rd(op)?
 		match rd {
 			R15 => if arm_s_flag(op) {
-				Ok({ ..cpu_setReg(rd, c, res.val)?, cpsr: cpu_getSPSR(c)? })
+				Ok({ cpu: { ..cpu_setReg(rd, c, res.val)?, cpsr: cpu_getSPSR(c)? }, pc_status: PCWritten })
 			} else {
-				cpu_setReg(rd, c, res.val)
+				Ok({ cpu: cpu_setReg(rd, c, res.val)?, pc_status: PCWritten })
 			}
 			_ => if arm_s_flag(op) {
-				Ok({ ..cpu_setReg(rd, c, res.val)?, cpsr: cpsr_setNZCV(c.cpsr, res) })
+				Ok({
+					cpu: { ..cpu_setReg(rd, c, res.val)?, cpsr: cpsr_setNZCV(c.cpsr, res) },
+					pc_status: PCSequential,
+				})
 			} else {
-				cpu_setReg(rd, c, res.val)
+				Ok({
+					cpu: cpu_setReg(rd, c, res.val)?,
+					pc_status: PCSequential,
+				})
 			}
 		}
 	} else {
-		Ok({ ..c, cpsr: cpsr_setNZCV(c.cpsr, res) })
+		Ok({
+			cpu: { ..c, cpsr: cpsr_setNZCV(c.cpsr, res) },
+			pc_status: PCSequential,
+		})
 	}
 }
 
