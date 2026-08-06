@@ -72,11 +72,83 @@ MultiplyLongOpCode : [UMULL, UMLAL, SMULL, SMLAL]
 
 SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
 
-Cpu := { regs : Regs, cpsr : U32, spsr_fiq : U32, spsr_svc : U32, spsr_irq : U32, spsr_und : U32, spsr_abt : U32 }
+Cpu := {
+	regs : Regs,
+	cpsr : U32,
+	spsr_fiq : U32,
+	spsr_svc : U32,
+	spsr_irq : U32,
+	spsr_und : U32,
+	spsr_abt : U32,
+}.{
+	Execution_outcome : { cpu : Cpu, pc_status : PC_status }
+	ReqWidth : [W8, W16, W32]
+
+	Execution_state : [
+		Complete(Cpu),
+		R(
+			{
+				cpu : Cpu,
+				addr : U32,
+				width : ReqWidth,
+			},
+		),
+		W(
+			{
+				cpu : Cpu,
+				addr : U32,
+				width : ReqWidth,
+				val : U32,
+			},
+		),
+	]
+
+	is_thumb : Cpu -> Bool
+	is_thumb = |c| {
+		cpsr_getT(c.cpsr)
+	}
+
+	getPC : Cpu -> U32
+	getPC = |c| {
+		c.regs.r15
+	}
+
+	execute_arm_opcode : Cpu,
+	U32 -> Try(
+		Execution_state,
+		[
+			ReservedinArm7,
+			Huh,
+			WTFisThis,
+			InvalidMode,
+			UB_ShiftbyPC,
+			NoSPSR,
+			PSR_malformed_MRS,
+			PSR_malformed_MSR_immediate,
+			PSR_malformed_MSR_register,
+			UB_PSR_PC_as_dest,
+			UB_PSR_PC_as_source,
+			UB_PSR_non_ARM_state,
+			UB_PSR_reserved_bits,
+			UnknownPSRType,
+			Branch_Exchange_malformed,
+			Branch_Type_UnKnown,
+			UB_multiply_rd_rm_same,
+			UB_multiply_use_of_R15,
+			UB_multiplyLong_rd_same_hi_lo,
+			UB_multiplyLong_same_rdlo_rm,
+			UB_multiplyLong_same_rdhi_rm,
+			UB_multiplyLong_use_of_R15,
+			Temp_not_done,
+			..,
+		],
+	)
+	execute_arm_opcode = |c, op| {
+		arm_instructions_execute(op, c)
+	}
+}
 
 PC_status : [PCSequential, PCWritten]
-
-Execution_outcome : { cpu : Cpu, pc_status : PC_status }
 
 U32_carry : { val : U32, carry : Bool }
 
@@ -506,22 +578,27 @@ arm_instructions_decoder = |i| {
 }
 
 arm_instructions_finalize : Execution_outcome -> Cpu
-arm_instructions_finalize = |outcome| {
-	match outcome.pc_status {
+arm_instructions_finalize = |content| {
+	match content.pc_status {
 		PCSequential => {
-			..outcome.cpu,
+			..content.cpu,
 			regs: {
-				..outcome.cpu.regs,
-				r15: pc_inc(outcome.cpu.regs.r15, 4),
+				..content.cpu.regs,
+				r15: pc_inc(content.cpu.regs.r15, 4),
 			},
 		}
-		_ => outcome.cpu
+		_ => content.cpu
 	}
+}
+
+arm_instructions_settle : Execution_outcome -> Execution_state
+arm_instructions_settle = |outcome| {
+	Complete(arm_instructions_finalize(outcome))
 }
 
 arm_instructions_execute : U32,
 Cpu -> Try(
-	Execution_outcome,
+	Execution_state,
 	[
 		ReservedinArm7,
 		Huh,
@@ -546,6 +623,7 @@ Cpu -> Try(
 		UB_multiplyLong_same_rdhi_rm,
 		UB_multiplyLong_use_of_R15,
 		Temp_not_done,
+		..,
 	],
 )
 arm_instructions_execute = |op, c| {
@@ -554,43 +632,59 @@ arm_instructions_execute = |op, c| {
 		action = arm_instructions_decoder(op)?
 		match action {
 			DataProcessingPSRTransfer => match data_processing_kind(op) {
-				DataProcessing => data_processing_execute(op, c)
-				PSRTransfer => Ok({
-					cpu: psr_transfer_execute(op, c)?,
-					pc_status: PCSequential,
-				})
+				DataProcessing => Ok(arm_instructions_settle(data_processing_execute(op, c)?))
+				PSRTransfer => Ok(
+					arm_instructions_settle({
+						cpu: psr_transfer_execute(op, c)?,
+						pc_status: PCSequential,
+					}),
+				)
 			}
-			BranchAndExchange => Ok({
-				cpu: branch_exchange_execute(op, c)?,
-				pc_status: PCWritten,
-			})
-			Branch => Ok({
-				cpu: branch_execute(op, c)?,
-				pc_status: PCWritten,
-			})
-			Multiply => Ok({
-				cpu: multiply_execute(op, c)?,
-				pc_status: PCSequential,
-			})
-			MultiplyLong => Ok({
-				cpu: multiplyLong_execute(op, c)?,
-				pc_status: PCSequential,
-			})
-			SoftwareInterrupt => Ok({
-				cpu: software_interrupt_execute(c)?,
-				pc_status: PCWritten,
-			})
-			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => Ok({
-				cpu: undefined_instruction_execute(c)?,
-				pc_status: PCWritten,
-			})
+			BranchAndExchange => Ok(
+				arm_instructions_settle({
+					cpu: branch_exchange_execute(op, c)?,
+					pc_status: PCWritten,
+				}),
+			)
+			Branch => Ok(
+				arm_instructions_settle({
+					cpu: branch_execute(op, c)?,
+					pc_status: PCWritten,
+				}),
+			)
+			Multiply => Ok(
+				arm_instructions_settle({
+					cpu: multiply_execute(op, c)?,
+					pc_status: PCSequential,
+				}),
+			)
+			MultiplyLong => Ok(
+				arm_instructions_settle({
+					cpu: multiplyLong_execute(op, c)?,
+					pc_status: PCSequential,
+				}),
+			)
+			SoftwareInterrupt => Ok(
+				arm_instructions_settle({
+					cpu: software_interrupt_execute(c)?,
+					pc_status: PCWritten,
+				}),
+			)
+			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => Ok(
+				arm_instructions_settle({
+					cpu: undefined_instruction_execute(c)?,
+					pc_status: PCWritten,
+				}),
+			)
 			_ => Err(Temp_not_done)
 		}
 	} else {
-		Ok({
-			cpu: c,
-			pc_status: PCSequential,
-		})
+		Ok(
+			arm_instructions_settle({
+				cpu: c,
+				pc_status: PCSequential,
+			}),
+		)
 	}
 }
 
@@ -1032,6 +1126,11 @@ branch_exchange_execute = |op, c| {
 		}
 	}
 }
+
+# single_data_transfer_execute : U32, Cpu -> Try(Cpu, [,..])
+# single_data_transfer_execute = |op, c| {
+
+# }
 
 single_data_transfer_decode : U32 -> SingleDataTransferOpCode
 single_data_transfer_decode = |op| {

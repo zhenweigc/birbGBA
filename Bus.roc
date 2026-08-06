@@ -123,6 +123,7 @@ Bus :: {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
+			..,
 		],
 	)
 	read32 = |bus, addr| {
