@@ -36,6 +36,7 @@ Machine :: {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
+			Resume_Read_Impossible_intermediate_State,
 		],
 	)
 	step_forward = |m| {
@@ -46,9 +47,24 @@ Machine :: {
 			instruction = Bus.read32(m.bus, cur_pc)?
 			match Cpu.execute_arm_opcode(m.cpu, instruction)? {
 				Complete(c) => Ok({ ..m, cpu: c })
+				R(box) => {
+					raw_val = match box.width {
+						W8 => U8.to_u32(m.bus.read8(box.addr)?)
+						W16 => U16.to_u32(m.bus.read16(box.addr)?)
+						W32 => m.bus.read32(box.addr)?
+					}
+					cpu_continue = Cpu.resume_read(
+						box.cpu,
+						raw_val,
+						box.continuation,
+					)?
+					match cpu_continue {
+						Complete(c) => Ok({ ..m, cpu: c })
+						_ => Err(Temp_not_done)
+					}
+				}
 				_ => Err(Temp_not_done)
 			}
-
 		}
 	}
 }

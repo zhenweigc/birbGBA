@@ -83,6 +83,8 @@ Cpu := {
 }.{
 	Execution_outcome : { cpu : Cpu, pc_status : PC_status }
 	ReqWidth : [W8, W16, W32]
+	Rotation : [Identity, RotRight(U8)]
+	WriteBackAction : [NoWriteBack, WriteBack({ rn : GPR, val : U32 })]
 
 	Execution_state : [
 		Complete(Cpu),
@@ -91,6 +93,7 @@ Cpu := {
 				cpu : Cpu,
 				addr : U32,
 				width : ReqWidth,
+				continuation : ReadContinuation,
 			},
 		),
 		W(
@@ -99,9 +102,59 @@ Cpu := {
 				addr : U32,
 				width : ReqWidth,
 				val : U32,
+				continuation : WriteContinuation,
 			},
 		),
 	]
+
+	ReadContinuation : [
+		SetRegAndFinish(
+			{
+				rd : GPR,
+				rot : Rotation,
+				wba : WriteBackAction,
+			},
+		),
+	]
+
+	WriteContinuation : [StoreAndFinish({ wba : WriteBackAction })]
+
+	resume_read : Cpu,
+	U32,
+	ReadContinuation -> Try(
+		Execution_state,
+		[
+			InvalidMode,
+			..,
+		],
+	)
+	resume_read = |c, raw_val, rc| {
+		match rc {
+			SetRegAndFinish(x) => post_memory_operation(
+				cpu_setReg(x.rd, c, rotate(x.rot, raw_val))?,
+				x.wba,
+				if x.rd == R15 {
+					PCWritten
+				} else {
+					PCSequential
+				},
+			)
+		}
+	}
+
+	resume_write : Cpu,
+	WriteContinuation -> Try(
+		Execution_state,
+		[
+			InvalidMode,
+			..,
+		],
+	)
+	resume_write = |c, wc| {
+		match wc {
+			StoreAndFinish(x) => post_memory_operation(c, x.wba, PCSequential)
+		}
+	}
 
 	is_thumb : Cpu -> Bool
 	is_thumb = |c| {
@@ -148,6 +201,18 @@ Cpu := {
 	}
 }
 
+post_memory_operation : Cpu, WriteBackAction, PC_status -> Try(Execution_state, [InvalidMode, ..])
+post_memory_operation = |c, wba, pcs| {
+	Ok(
+		arm_instructions_settle(
+			match wba {
+				NoWriteBack => { cpu: c, pc_status: pcs }
+				WriteBack(x) => { cpu: cpu_setReg(x.rn, c, x.val)?, pc_status: pcs }
+			},
+		),
+	)
+}
+
 PC_status : [PCSequential, PCWritten]
 
 U32_carry : { val : U32, carry : Bool }
@@ -166,6 +231,14 @@ rotate_right_u32 = |i, j| {
 		i
 	} else {
 		rotate_right_u32(i // 2 + 2147483648 * (i % 2), tmp - 1)
+	}
+}
+
+rotate : Rotation, U32 -> U32
+rotate = |r, val| {
+	match r {
+		Identity => val
+		RotRight(i) => rotate_right_u32(val, i)
 	}
 }
 
