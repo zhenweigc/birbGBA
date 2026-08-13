@@ -18,7 +18,7 @@ Bus :: {
 		}
 	}
 
-	read8 : Bus, U32 -> Try(U8, [OutOfBounds, UnsupportedRegion(MemoryRegion),..])
+	read8 : Bus, U32 -> Try(U8, [OutOfBounds, UnsupportedRegion(MemoryRegion), ..])
 	read8 = |bus, addr| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		match region {

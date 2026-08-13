@@ -32,11 +32,13 @@ Machine :: {
 			UB_multiplyLong_same_rdlo_rm,
 			UB_multiplyLong_same_rdhi_rm,
 			UB_multiplyLong_use_of_R15,
+			UNPREDICTABLE,
 			Temp_not_done,
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			Resume_Read_Impossible_intermediate_State,
+			WriteIntoROM(U32),
 		],
 	)
 	step_forward = |m| {
@@ -63,7 +65,21 @@ Machine :: {
 						_ => Err(Temp_not_done)
 					}
 				}
-				_ => Err(Temp_not_done)
+				W(box) => {
+					post_write_bus = match box.width {
+						W8 => m.bus.write8(box.addr, U32.to_u8_wrap(box.val))?
+						W16 => m.bus.write16(box.addr, U32.to_u16_wrap(box.val))?
+						W32 => m.bus.write32(box.addr, box.val)?
+					}
+					cpu_continue = Cpu.resume_write(
+						box.cpu,
+						box.continuation,
+					)?
+					match cpu_continue {
+						Complete(c) => Ok({ ..m, cpu: c, bus: post_write_bus })
+						_ => Err(Temp_not_done)
+					}
+				}
 			}
 		}
 	}

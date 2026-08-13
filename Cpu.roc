@@ -125,20 +125,32 @@ Cpu := {
 		Execution_state,
 		[
 			InvalidMode,
+			UNPREDICTABLE,
 			..,
 		],
 	)
 	resume_read = |c, raw_val, rc| {
 		match rc {
-			SetRegAndFinish(x) => post_memory_operation(
-				cpu_setReg(x.rd, c, rotate(x.rot, raw_val))?,
-				x.wba,
-				if x.rd == R15 {
-					PCWritten
-				} else {
-					PCSequential
-				},
-			)
+			SetRegAndFinish(x) => {
+				post_memory_operation(
+					if x.rd == R15 {
+						if get_seg_of_u32_certain(raw_val, 0, 2) == 2 {
+							return Err(UNPREDICTABLE)
+						} else {
+							c_raw = cpu_setReg(x.rd, c, rotate(x.rot, raw_val))?
+							cpu_setReg(R15, c_raw, U32.bitwise_and(cpu_getReg(R15, c_raw)?, 0xFFFFFFFC))?
+						}
+					} else {
+						cpu_setReg(x.rd, c, rotate(x.rot, raw_val))?
+					},
+					x.wba,
+					if x.rd == R15 {
+						PCWritten
+					} else {
+						PCSequential
+					},
+				)
+			}
 		}
 	}
 
@@ -193,6 +205,7 @@ Cpu := {
 			UB_multiplyLong_same_rdhi_rm,
 			UB_multiplyLong_use_of_R15,
 			Temp_not_done,
+			UNPREDICTABLE,
 			..,
 		],
 	)
@@ -342,20 +355,20 @@ gpr_from_idx = |i| {
 	}
 }
 
-data_processing_get_rn : U32 -> Try(GPR, [WTFisThis, ..])
-data_processing_get_rn = |i| {
+get_gpr_16_19 : U32 -> Try(GPR, [WTFisThis, ..])
+get_gpr_16_19 = |i| {
 	tmp = get_seg_of_u32_certain(i, 16, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
 
 data_processing_get_rn_value : U32, Cpu -> Try(U32, [InvalidMode, WTFisThis, ..])
 data_processing_get_rn_value = |i, c| {
-	rn = data_processing_get_rn(i)?
+	rn = get_gpr_16_19(i)?
 	data_processing_operand_reg_value(i, rn, c)
 }
 
-data_processing_get_rd : U32 -> Try(GPR, [WTFisThis, ..])
-data_processing_get_rd = |i| {
+get_gpr_12_15 : U32 -> Try(GPR, [WTFisThis, ..])
+get_gpr_12_15 = |i| {
 	tmp = get_seg_of_u32_certain(i, 12, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
@@ -377,7 +390,7 @@ data_processing_operand_reg_value = |i, gpr, c| {
 
 data_processing_operands_register : U32, Cpu -> Try(U32_carry, [InvalidMode, WTFisThis, UB_ShiftbyPC, ..])
 data_processing_operands_register = |i, c| {
-	rm = data_processing_get_rm(i)?
+	rm = get_gpr_0_3(i)?
 	rm_val = data_processing_operand_reg_value(i, rm, c)?
 	shift_type = data_processing_get_shift_type(i)
 	c_flag = cpsr_getC(c.cpsr)
@@ -599,8 +612,8 @@ data_processing_get_shift_imm = |i| {
 	U32.to_u8_wrap(get_seg_of_u32_certain(i, 7, 5))
 }
 
-data_processing_get_rm : U32 -> Try(GPR, [WTFisThis, ..])
-data_processing_get_rm = |i| {
+get_gpr_0_3 : U32 -> Try(GPR, [WTFisThis, ..])
+get_gpr_0_3 = |i| {
 	gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(i, 0, 4)))
 }
 
@@ -639,6 +652,8 @@ arm_instructions_decoder = |i| {
 		Ok(CoprocessorDataOperation)
 	} else if bits_match(i, 0b1111_00000000000000000001_0000, 0b1110_00000000000000000001_0000) {
 		Ok(CoprocessorRegisterTransfer)
+	} else if bits_match(i, 0b111_00000000000000000000_1_0000, 0b011_00000000000000000000_1_0000) {
+		Ok(UndefinedInstruction) # 4.17 Undefined Instruction, arm-instructionset.pdf
 	} else if bits_match(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
 		Ok(SingleDataTransfer)
 	} else if !get_ith_bit_u32_certain(i, 25) and get_ith_bit_u32_certain(i, 4) and get_ith_bit_u32_certain(i, 7) {
@@ -687,6 +702,7 @@ Cpu -> Try(
 		UB_PSR_non_ARM_state,
 		UB_PSR_reserved_bits,
 		UnknownPSRType,
+		UNPREDICTABLE,
 		Branch_Exchange_malformed,
 		Branch_Type_UnKnown,
 		UB_multiply_rd_rm_same,
@@ -743,6 +759,7 @@ arm_instructions_execute = |op, c| {
 					pc_status: PCWritten,
 				}),
 			)
+			SingleDataTransfer => single_data_transfer_execute(op, c)
 			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => Ok(
 				arm_instructions_settle({
 					cpu: undefined_instruction_execute(c)?,
@@ -810,7 +827,7 @@ data_processing_execute = |op, c| {
 	alu_op = data_processing_decode(op)
 	res = data_processing_calculate(op, c, alu_op)?
 	if data_processing_writes_rd(alu_op) {
-		rd = data_processing_get_rd(op)?
+		rd = get_gpr_12_15(op)?
 		match rd {
 			R15 => if arm_s_flag(op) {
 				Ok({ cpu: { ..cpu_setReg(rd, c, res.val)?, cpsr: cpu_getSPSR(c)? }, pc_status: PCWritten })
@@ -911,7 +928,7 @@ psr_transfer_uses_immediate = |op| {
 
 psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis, UB_PSR_PC_as_dest, ..])
 psr_transfer_mrs_get_rd = |op| {
-	match data_processing_get_rd(op)? {
+	match get_gpr_12_15(op)? {
 		R15 => Err(UB_PSR_PC_as_dest)
 		x => Ok(x)
 	}
@@ -949,7 +966,7 @@ psr_transfer_msr_operand = |op, c| {
 		# Does not care about c_flag
 		Ok(data_processing_operands_immediate(op, Bool.False).val)
 	} else {
-		match data_processing_get_rm(op)? {
+		match get_gpr_0_3(op)? {
 			R15 => Err(UB_PSR_PC_as_source)
 			x => cpu_getReg(x, c)
 		}
@@ -1200,10 +1217,110 @@ branch_exchange_execute = |op, c| {
 	}
 }
 
-# single_data_transfer_execute : U32, Cpu -> Try(Cpu, [,..])
-# single_data_transfer_execute = |op, c| {
-
-# }
+single_data_transfer_execute : U32,
+Cpu -> Try(
+	Execution_state,
+	[
+		Temp_not_done,
+		WTFisThis,
+		InvalidMode,
+		UNPREDICTABLE,
+		..,
+	],
+)
+single_data_transfer_execute = |op, c| {
+	match single_data_transfer_decode(op) {
+		LDR => {
+			i_bit = get_ith_bit_u32_certain(op, 25)
+			p_bit = get_ith_bit_u32_certain(op, 24)
+			u_bit = get_ith_bit_u32_certain(op, 23)
+			w_bit = get_ith_bit_u32_certain(op, 21)
+			rd = get_gpr_12_15(op)?
+			rn = get_gpr_16_19(op)?
+			base = if rn == R15 {
+				pc_inc(c.regs.r15, 8)
+			} else {
+				cpu_getReg(rn, c)?
+			}
+			offset = if i_bit {
+				rm = get_gpr_0_3(op)?
+				pre_shift = match rm {
+					R15 => return Err(UNPREDICTABLE)
+					_ => cpu_getReg(rm, c)?
+				}
+				shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+				data_processing_shift_by_immediate(
+					data_processing_get_shift_type(op),
+					pre_shift,
+					shift_imm,
+					cpsr_getC(c.cpsr),
+				).val
+			} else {
+				get_seg_of_u32_certain(op, 0, 12)
+			}
+			adjusted = if u_bit {
+				U32.plus_wrap(base, offset)
+			} else {
+				U32.minus_wrap(base, offset)
+			}
+			addr = if p_bit {
+				if rd == R15 and get_seg_of_u32_certain(adjusted, 0, 2) != 0 {
+					return Err(UNPREDICTABLE)
+				} else {
+					U32.bitwise_and(adjusted, 0xFFFFFFFC)
+				}
+			} else {
+				if w_bit {
+					# LDRT should not fall here
+					# Maybe we can reroute this to LDRT?
+					return Err(Temp_not_done)
+				} else {
+					if rd == R15 and get_seg_of_u32_certain(base, 0, 2) != 0 {
+						return Err(UNPREDICTABLE)
+					} else {
+						U32.bitwise_and(base, 0xFFFFFFFC)
+					}
+				}
+			}
+			Ok(
+				R({
+					cpu: c,
+					addr: addr,
+					width: W32,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: RotRight(
+							U8.times_wrap(
+								8,
+								U32.to_u8_wrap(
+									get_seg_of_u32_certain(
+										if p_bit {
+											adjusted
+										} else {
+											base
+										},
+										0,
+										2,
+									),
+								),
+							),
+						),
+						wba: if w_bit or !(p_bit) {
+							if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
+								return Err(UNPREDICTABLE)
+							} else {
+								WriteBack({ rn: rn, val: adjusted })
+							}
+						} else {
+							NoWriteBack
+						},
+					}),
+				}),
+			)
+		}
+		_ => Err(Temp_not_done)
+	}
+}
 
 single_data_transfer_decode : U32 -> SingleDataTransferOpCode
 single_data_transfer_decode = |op| {
