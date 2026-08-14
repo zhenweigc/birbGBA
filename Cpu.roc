@@ -1381,7 +1381,132 @@ single_data_transfer_execute = |op, c| {
 				}),
 			)
 		}
-		_ => Err(Temp_not_done)
+		STRB => {
+			rd_val = if rd == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				cpu_getReg(rd, c)?
+			}
+			base = if rn == R15 {
+				pc_inc(c.regs.r15, 8)
+			} else {
+				cpu_getReg(rn, c)?
+			}
+			offset = if i_bit {
+				rm = get_gpr_0_3(op)?
+				pre_shift = match rm {
+					R15 => return Err(UNPREDICTABLE)
+					_ => cpu_getReg(rm, c)?
+				}
+				shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+				data_processing_shift_by_immediate(
+					data_processing_get_shift_type(op),
+					pre_shift,
+					shift_imm,
+					cpsr_getC(c.cpsr),
+				).val
+			} else {
+				get_seg_of_u32_certain(op, 0, 12)
+			}
+			adjusted = if u_bit {
+				U32.plus_wrap(base, offset)
+			} else {
+				U32.minus_wrap(base, offset)
+			}
+			addr = if p_bit {
+				adjusted
+			} else {
+				if w_bit {
+					# STRBT should not fall here
+					# Maybe we can reroute this to STRBT?
+					return Err(Temp_not_done)
+				} else {
+					base
+				}
+			}
+			Ok(
+				W({
+					cpu: c,
+					addr: addr,
+					width: W8,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: if w_bit or !(p_bit) {
+							if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
+								return Err(UNPREDICTABLE)
+							} else {
+								WriteBack({ rn: rn, val: adjusted })
+							}
+						} else {
+							NoWriteBack
+						},
+					}),
+				}),
+			)
+		}
+		LDRB => {
+			if rd == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				base = if rn == R15 {
+					pc_inc(c.regs.r15, 8)
+				} else {
+					cpu_getReg(rn, c)?
+				}
+				offset = if i_bit {
+					rm = get_gpr_0_3(op)?
+					pre_shift = match rm {
+						R15 => return Err(UNPREDICTABLE)
+						_ => cpu_getReg(rm, c)?
+					}
+					shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+					data_processing_shift_by_immediate(
+						data_processing_get_shift_type(op),
+						pre_shift,
+						shift_imm,
+						cpsr_getC(c.cpsr),
+					).val
+				} else {
+					get_seg_of_u32_certain(op, 0, 12)
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = if p_bit {
+					adjusted
+				} else {
+					if w_bit {
+						# LDRBT should not fall here
+						# Maybe we can reroute this to LDRBT?
+						return Err(Temp_not_done)
+					} else {
+						base
+					}
+				}
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W8,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: Identity,
+							wba: if w_bit or !(p_bit) {
+								if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
+									return Err(UNPREDICTABLE)
+								} else {
+									WriteBack({ rn: rn, val: adjusted })
+								}
+							} else {
+								NoWriteBack
+							},
+						}),
+					}),
+				)
+			}
+		}
 	}
 }
 
