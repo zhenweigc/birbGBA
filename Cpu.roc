@@ -1229,14 +1229,14 @@ Cpu -> Try(
 	],
 )
 single_data_transfer_execute = |op, c| {
+	i_bit = get_ith_bit_u32_certain(op, 25)
+	p_bit = get_ith_bit_u32_certain(op, 24)
+	u_bit = get_ith_bit_u32_certain(op, 23)
+	w_bit = get_ith_bit_u32_certain(op, 21)
+	rd = get_gpr_12_15(op)?
+	rn = get_gpr_16_19(op)?
 	match single_data_transfer_decode(op) {
 		LDR => {
-			i_bit = get_ith_bit_u32_certain(op, 25)
-			p_bit = get_ith_bit_u32_certain(op, 24)
-			u_bit = get_ith_bit_u32_certain(op, 23)
-			w_bit = get_ith_bit_u32_certain(op, 21)
-			rd = get_gpr_12_15(op)?
-			rn = get_gpr_16_19(op)?
 			base = if rn == R15 {
 				pc_inc(c.regs.r15, 8)
 			} else {
@@ -1305,6 +1305,69 @@ single_data_transfer_execute = |op, c| {
 								),
 							),
 						),
+						wba: if w_bit or !(p_bit) {
+							if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
+								return Err(UNPREDICTABLE)
+							} else {
+								WriteBack({ rn: rn, val: adjusted })
+							}
+						} else {
+							NoWriteBack
+						},
+					}),
+				}),
+			)
+		}
+		STR => {
+			rd_val = if rd == R15 {
+				pc_inc(c.regs.r15, 12)
+			} else {
+				cpu_getReg(rd, c)?
+			}
+			base = if rn == R15 {
+				pc_inc(c.regs.r15, 8)
+			} else {
+				cpu_getReg(rn, c)?
+			}
+			offset = if i_bit {
+				rm = get_gpr_0_3(op)?
+				pre_shift = match rm {
+					R15 => return Err(UNPREDICTABLE)
+					_ => cpu_getReg(rm, c)?
+				}
+				shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+				data_processing_shift_by_immediate(
+					data_processing_get_shift_type(op),
+					pre_shift,
+					shift_imm,
+					cpsr_getC(c.cpsr),
+				).val
+			} else {
+				get_seg_of_u32_certain(op, 0, 12)
+			}
+			adjusted = if u_bit {
+				U32.plus_wrap(base, offset)
+			} else {
+				U32.minus_wrap(base, offset)
+			}
+			addr = if p_bit {
+				U32.bitwise_and(adjusted, 0xFFFFFFFC)
+			} else {
+				if w_bit {
+					# STRT should not fall here
+					# Maybe we can reroute this to STRT?
+					return Err(Temp_not_done)
+				} else {
+					U32.bitwise_and(base, 0xFFFFFFFC)
+				}
+			}
+			Ok(
+				W({
+					cpu: c,
+					addr: addr,
+					width: W32,
+					val: rd_val,
+					continuation: StoreAndFinish({
 						wba: if w_bit or !(p_bit) {
 							if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
 								return Err(UNPREDICTABLE)
