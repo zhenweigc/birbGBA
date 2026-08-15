@@ -49,7 +49,6 @@ ArmInstructions : [
 	HalfwordDataTransferRegOffset,
 	HalfwordDataTransferImmediateOffset,
 	SingleDataTransfer,
-	UndefinedInstruction,
 	ArchitecturallyUndefined,
 	Branch,
 	CoprocessorDataTransfer,
@@ -57,6 +56,7 @@ ArmInstructions : [
 	CoprocessorRegisterTransfer,
 	SoftwareInterrupt,
 	BlockDataTransfer,
+	UndefinedInstruction,
 ]
 
 DataProcessingKind : [DataProcessing, PSRTransfer]
@@ -72,6 +72,8 @@ MultiplyLongOpCode : [UMULL, UMLAL, SMULL, SMLAL]
 
 SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
 
+HalfwordDataTransferOpCode : [LDRH, STRH, LDRSB, LDRSH, UndefinedInstruction]
+
 Cpu := {
 	regs : Regs,
 	cpsr : U32,
@@ -83,7 +85,7 @@ Cpu := {
 }.{
 	Execution_outcome : { cpu : Cpu, pc_status : PC_status }
 	ReqWidth : [W8, W16, W32]
-	Rotation : [Identity, RotRight(U8)]
+	Rotation : [Identity, RotRight(U8), SignedExtend8, SignedExtend16]
 	WriteBackAction : [NoWriteBack, WriteBack({ rn : GPR, val : U32 })]
 
 	Execution_state : [
@@ -247,11 +249,30 @@ rotate_right_u32 = |i, j| {
 	}
 }
 
+signed_extend_u32 : U32, U8 -> U32
+signed_extend_u32 = |val, e| {
+	if e == 0 or e >= 32 {
+		val
+	} else {
+		if get_ith_bit_u32_certain(val, e - 1) {
+			U32.bitwise_or(4294967295 - U32.pow(2, e.to_u32()) + 1, val)
+		} else {
+			val
+		}
+	}
+}
+
 rotate : Rotation, U32 -> U32
 rotate = |r, val| {
 	match r {
 		Identity => val
 		RotRight(i) => rotate_right_u32(val, i)
+		SignedExtend8 => {
+			signed_extend_u32(val, 8)
+		}
+		SignedExtend16 => {
+			signed_extend_u32(val, 16)
+		}
 	}
 }
 
@@ -622,7 +643,7 @@ data_processing_get_rs = |i| {
 	gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(i, 8, 4)))
 }
 
-arm_instructions_decoder : U32 -> Try(ArmInstructions, [WTFisThis, ..])
+arm_instructions_decoder : U32 -> Try(ArmInstructions, [WTFisThis, UNPREDICTABLE, ..])
 arm_instructions_decoder = |i| {
 	if bits_match(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
 		Ok(UndefinedInstruction)
@@ -638,8 +659,15 @@ arm_instructions_decoder = |i| {
 		Ok(SingleDataSwap)
 	} else if bits_match(i, 0b0000_1111_1111_1111_1111_1111_1111_0000, 0b1001011111111111100010000) {
 		Ok(BranchAndExchange)
-	} else if bits_match(i, 0b0000_1110_0100_0000_0000_1111_1001_0000, 0b10010000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
-		Ok(HalfwordDataTransferRegOffset)
+	} else if bits_match(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
+		if get_seg_of_u32_certain(i, 8, 4) == 0 {
+			Ok(HalfwordDataTransferRegOffset)
+		} else {
+			match halfword_data_transfer_decode(i) {
+				UndefinedInstruction => Ok(UndefinedInstruction)
+				_ => Err(UNPREDICTABLE)
+			}
+		}
 	} else if bits_match(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
 		Ok(HalfwordDataTransferImmediateOffset)
 	} else if bits_match(i, 234881024, 134217728) {
@@ -760,6 +788,7 @@ arm_instructions_execute = |op, c| {
 				}),
 			)
 			SingleDataTransfer => single_data_transfer_execute(op, c)
+			HalfwordDataTransferImmediateOffset | HalfwordDataTransferRegOffset => halfword_data_transfer_execute(op, c)
 			UndefinedInstruction | ArchitecturallyUndefined | CoprocessorDataOperation | CoprocessorDataTransfer | CoprocessorRegisterTransfer => Ok(
 				arm_instructions_settle({
 					cpu: undefined_instruction_execute(c)?,
@@ -1520,6 +1549,286 @@ single_data_transfer_decode = |op| {
 		LDRB
 	} else {
 		STRB
+	}
+}
+
+halfword_data_transfer_decode : U32 -> HalfwordDataTransferOpCode
+halfword_data_transfer_decode = |op| {
+	if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1011_0000) {
+		LDRH
+	} else if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0000_000000000000_1011_0000) {
+		STRH
+	} else if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1101_0000) {
+		LDRSB
+	} else if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1111_0000) {
+		LDRSH
+	} else {
+		UndefinedInstruction
+	}
+}
+
+halfword_data_transfer_execute : U32,
+Cpu -> Try(
+	Execution_state,
+	[
+		Temp_not_done,
+		WTFisThis,
+		InvalidMode,
+		UNPREDICTABLE,
+		NoSPSR,
+		..,
+	],
+)
+halfword_data_transfer_execute = |op, c| {
+	i_bit = get_ith_bit_u32_certain(op, 22)
+	p_bit = get_ith_bit_u32_certain(op, 24)
+	u_bit = get_ith_bit_u32_certain(op, 23)
+	w_bit = get_ith_bit_u32_certain(op, 21)
+	rd = get_gpr_12_15(op)?
+	rn = get_gpr_16_19(op)?
+	match halfword_data_transfer_decode(op) {
+		UndefinedInstruction => Ok(
+			arm_instructions_settle({
+				cpu: undefined_instruction_execute(c)?,
+				pc_status: PCWritten,
+			}),
+		)
+		LDRH => {
+			if rd == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				base = if rn == R15 {
+					pc_inc(c.regs.r15, 8)
+				} else {
+					cpu_getReg(rn, c)?
+				}
+				offset = if i_bit {
+					immedL = get_seg_of_u32_certain(op, 0, 4)
+					immedH = get_seg_of_u32_certain(op, 8, 4)
+					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
+				} else {
+					if get_gpr_0_3(op)? == R15 {
+						return Err(UNPREDICTABLE)
+					} else {
+						cpu_getReg(get_gpr_0_3(op)?, c)?
+					}
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = if p_bit {
+					adjusted
+				} else {
+					if w_bit {
+						return Err(UNPREDICTABLE)
+					} else {
+						base
+					}
+				}
+				if get_ith_bit_u32_certain(addr, 0) {
+					Err(UNPREDICTABLE)
+				} else {
+					Ok(
+						R({
+							cpu: c,
+							addr: addr,
+							width: W16,
+							continuation: SetRegAndFinish({
+								rd: rd,
+								rot: Identity,
+								wba: if w_bit or !(p_bit) {
+									if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+										return Err(UNPREDICTABLE)
+									} else {
+										WriteBack({ rn: rn, val: adjusted })
+									}
+								} else {
+									NoWriteBack
+								},
+							}),
+						}),
+					)
+				}
+			}
+		}
+		LDRSB => {
+			if rd == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				base = if rn == R15 {
+					pc_inc(c.regs.r15, 8)
+				} else {
+					cpu_getReg(rn, c)?
+				}
+				offset = if i_bit {
+					immedL = get_seg_of_u32_certain(op, 0, 4)
+					immedH = get_seg_of_u32_certain(op, 8, 4)
+					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
+				} else {
+					if get_gpr_0_3(op)? == R15 {
+						return Err(UNPREDICTABLE)
+					} else {
+						cpu_getReg(get_gpr_0_3(op)?, c)?
+					}
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = if p_bit {
+					adjusted
+				} else {
+					if w_bit {
+						return Err(UNPREDICTABLE)
+					} else {
+						base
+					}
+				}
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W8,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: SignedExtend8,
+							wba: if w_bit or !(p_bit) {
+								if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+									return Err(UNPREDICTABLE)
+								} else {
+									WriteBack({ rn: rn, val: adjusted })
+								}
+							} else {
+								NoWriteBack
+							},
+						}),
+					}),
+				)
+			}
+		}
+		LDRSH => {
+			if rd == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				base = if rn == R15 {
+					pc_inc(c.regs.r15, 8)
+				} else {
+					cpu_getReg(rn, c)?
+				}
+				offset = if i_bit {
+					immedL = get_seg_of_u32_certain(op, 0, 4)
+					immedH = get_seg_of_u32_certain(op, 8, 4)
+					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
+				} else {
+					if get_gpr_0_3(op)? == R15 {
+						return Err(UNPREDICTABLE)
+					} else {
+						cpu_getReg(get_gpr_0_3(op)?, c)?
+					}
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = if p_bit {
+					adjusted
+				} else {
+					if w_bit {
+						return Err(UNPREDICTABLE)
+					} else {
+						base
+					}
+				}
+				if get_ith_bit_u32_certain(addr, 0) {
+					Err(UNPREDICTABLE)
+				} else {
+					Ok(
+						R({
+							cpu: c,
+							addr: addr,
+							width: W16,
+							continuation: SetRegAndFinish({
+								rd: rd,
+								rot: SignedExtend16,
+								wba: if w_bit or !(p_bit) {
+									if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+										return Err(UNPREDICTABLE)
+									} else {
+										WriteBack({ rn: rn, val: adjusted })
+									}
+								} else {
+									NoWriteBack
+								},
+							}),
+						}),
+					)
+				}
+			}
+		}
+		STRH => {
+			if rd == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				rd_val = get_seg_of_u32_certain(cpu_getReg(rd, c)?, 0, 16)
+				base = if rn == R15 {
+					pc_inc(c.regs.r15, 8)
+				} else {
+					cpu_getReg(rn, c)?
+				}
+				offset = if i_bit {
+					immedL = get_seg_of_u32_certain(op, 0, 4)
+					immedH = get_seg_of_u32_certain(op, 8, 4)
+					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
+				} else {
+					if get_gpr_0_3(op)? == R15 {
+						return Err(UNPREDICTABLE)
+					} else {
+						cpu_getReg(get_gpr_0_3(op)?, c)?
+					}
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = if p_bit {
+					adjusted
+				} else {
+					if w_bit {
+						return Err(UNPREDICTABLE)
+					} else {
+						base
+					}
+				}
+				if get_ith_bit_u32_certain(addr, 0) {
+					Err(UNPREDICTABLE)
+				} else {
+					Ok(
+						W({
+							cpu: c,
+							addr: addr,
+							width: W16,
+							val: rd_val,
+							continuation: StoreAndFinish({
+								wba: if w_bit or !(p_bit) {
+									if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+										return Err(UNPREDICTABLE)
+									} else {
+										WriteBack({ rn: rn, val: adjusted })
+									}
+								} else {
+									NoWriteBack
+								},
+							}),
+						}),
+					)
+				}
+			}
+		}
 	}
 }
 
