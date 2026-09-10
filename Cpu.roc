@@ -74,6 +74,8 @@ SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
 
 HalfwordDataTransferOpCode : [LDRH, STRH, LDRSB, LDRSH, UndefinedInstruction]
 
+BlockDataTransferOpCode : [LDM, STM]
+
 Cpu := {
 	regs : Regs,
 	cpsr : U32,
@@ -117,6 +119,18 @@ Cpu := {
 				wba : WriteBackAction,
 			},
 		),
+		LoadMultiple(
+			{
+				mask : U32,
+				next_addr : U32,
+				wba : WriteBackAction,
+				kind : [
+					CurrentBank,
+					UserBank,
+					ModeChanges({ spsr : U32 }),
+				],
+			},
+		),
 	]
 
 	WriteContinuation : [StoreAndFinish({ wba : WriteBackAction })]
@@ -128,10 +142,14 @@ Cpu := {
 		[
 			InvalidMode,
 			UNPREDICTABLE,
+			WTFisThis,
 			..,
 		],
 	)
 	resume_read = |c, raw_val, rc| {
+		nuker = |x, i| {
+			U32.bitwise_and(x, 4294967295 - U32.pow(2, i))
+		}
 		match rc {
 			SetRegAndFinish(x) => {
 				post_memory_operation(
@@ -152,6 +170,76 @@ Cpu := {
 						PCSequential
 					},
 				)
+			}
+			LoadMultiple(x) => {
+				pop_reg = U32.count_trailing_zero_bits(x.mask)
+				new_mask = nuker(x.mask, pop_reg.to_u32())
+				gpr = gpr_from_idx(pop_reg)?
+				if gpr == R15 {
+					match x.kind {
+						CurrentBank => {
+							post_memory_operation(
+								cpu_setReg(gpr, c, raw_val.bitwise_and(0xFFFFFFFC))?,
+								x.wba,
+								PCWritten,
+							)
+						}
+						UserBank => Err(WTFisThis) # Impossible, LDM(2) cannot have PC
+						ModeChanges(saved) => {
+							if !cpsr_getT(saved.spsr) and get_ith_bit_u32_certain(raw_val, 1) {
+								Err(UNPREDICTABLE)
+							} else {
+								cpu_wb = match x.wba {
+									NoWriteBack => c
+									WriteBack(wb) => cpu_setReg(wb.rn, c, wb.val)?
+								}
+								restore_cpsr = { ..cpu_wb, cpsr: saved.spsr }
+								post_memory_operation(
+									cpu_setReg(
+										R15,
+										restore_cpsr,
+										if cpsr_getT(saved.spsr) {
+											raw_val.bitwise_and(0xFFFFFFFE)
+										} else {
+											raw_val.bitwise_and(0xFFFFFFFC)
+										},
+									)?,
+									NoWriteBack,
+									PCWritten,
+								)
+							}
+						}
+					}
+				} else {
+					new_cpu = if x.kind == UserBank {
+						{
+							..c,
+							regs: regs_set(gpr, User, c.regs, raw_val),
+						}
+					} else {
+						cpu_setReg(gpr, c, raw_val)?
+					}
+					if new_mask == 0 {
+						post_memory_operation(
+							new_cpu,
+							x.wba,
+							PCSequential,
+						)
+					} else {
+						Ok(
+							R({
+								cpu: new_cpu,
+								addr: (x.next_addr),
+								width: W32,
+								continuation: LoadMultiple({
+									..x,
+									mask: new_mask,
+									next_addr: x.next_addr.plus_wrap(4),
+								}),
+							}),
+						)
+					}
+				}
 			}
 		}
 	}
@@ -735,6 +823,7 @@ arm_instructions_execute = |op, c| {
 					pc_status: PCWritten,
 				}),
 			)
+			BlockDataTransfer => block_data_transfer_execute(op, c)
 			_ => Err(Temp_not_done)
 		}
 	} else {
@@ -1772,6 +1861,119 @@ halfword_data_transfer_execute = |op, c| {
 	}
 }
 
+block_data_transfer_decoder : U32 -> BlockDataTransferOpCode
+block_data_transfer_decoder = |op| {
+	if get_ith_bit_u32_certain(op, 20) {
+		LDM
+	} else {
+		STM
+	}
+}
+
+block_data_transfer_execute : U32,
+Cpu -> Try(
+	Execution_state,
+	[
+		Temp_not_done,
+		UNPREDICTABLE,
+		InvalidMode,
+		WTFisThis,
+		NoSPSR,
+		..,
+	],
+)
+block_data_transfer_execute = |op, c| {
+	rn_included = |x| {
+		get_ith_bit_u32_certain(x, get_seg_of_u32_certain(x, 16, 4).to_u8_wrap())
+	}
+	sharp_reg = |x| {
+		U32.count_one_bits(get_seg_of_u32_certain(x, 0, 16))
+	}
+	if bits_match(op, 0b1_11111_11111_11111, 0) {
+		Err(UNPREDICTABLE)
+	} else {
+		rn = get_gpr_16_19(op)?
+		if rn == R15 {
+			return Err(UNPREDICTABLE)
+		} else {
+			s_bit = get_ith_bit_u32_certain(op, 22)
+			p_bit = get_ith_bit_u32_certain(op, 24)
+			u_bit = get_ith_bit_u32_certain(op, 23)
+			w_bit = get_ith_bit_u32_certain(op, 21)
+			mode = cpsr_getMode(c.cpsr)?
+			base = cpu_getReg(rn, c)?
+			aligned_base = (base // 4) * 4
+			span = U8.to_u32(sharp_reg(op)) * 4
+			trio = if !p_bit and u_bit {
+				# IA
+				{
+					start_addr: aligned_base,
+					end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
+					wb_addr: base.plus_wrap(span),
+				}
+			} else if p_bit and u_bit {
+				# IB
+				{
+					start_addr: aligned_base.plus_wrap(4),
+					end_addr: aligned_base.plus_wrap(span),
+					wb_addr: base.plus_wrap(span),
+				}
+			} else if !p_bit and !u_bit {
+				# DA
+				{
+					start_addr: aligned_base.minus_wrap(span).plus_wrap(4),
+					end_addr: aligned_base,
+					wb_addr: base.minus_wrap(span),
+				}
+			} else {
+				# DB
+				{
+					start_addr: aligned_base.minus_wrap(span),
+					end_addr: aligned_base.minus_wrap(4),
+					wb_addr: base.minus_wrap(span),
+				}
+			}
+			wba = if w_bit {
+				WriteBack({ rn: rn, val: trio.wb_addr })
+			} else {
+				NoWriteBack
+			}
+			match block_data_transfer_decoder(op) {
+				LDM => {
+					if s_bit and (mode == User or mode == Sys) {
+						Err(UNPREDICTABLE)
+					} else if w_bit and rn_included(op) {
+						Err(UNPREDICTABLE)
+					} else if bits_match(op, 0b111_0000_1_000000000000000, 0b111_0000_0_000000000000000) {
+						Err(UNPREDICTABLE)
+					} else {
+						Ok(
+							R({
+								cpu: c,
+								addr: trio.start_addr,
+								width: W32,
+								continuation: LoadMultiple({
+									mask: get_seg_of_u32_certain(op, 0, 16),
+									next_addr: trio.start_addr.plus_wrap(4),
+									wba: wba,
+									kind: if !s_bit {
+										CurrentBank
+									} else if get_ith_bit_u32_certain(op, 15) {
+										ModeChanges({ spsr: cpu_getSPSR(c)? })
+									} else {
+										UserBank
+									},
+								}),
+							}),
+						)
+					}
+				}
+				STM => Err(Temp_not_done)
+			}
+		}
+	}
+}
+
 software_interrupt_execute : Cpu -> Try(Cpu, [InvalidMode, NoSPSR, ..])
 software_interrupt_execute = |c| {
 	pc_val = cpu_getReg(R15, c)?
@@ -2117,7 +2319,6 @@ opcode_parse_cond = |i| {
 	}
 }
 
-# Mode : [FIQ, Sup, Abort, IRQ, Undefined, User, Sys]
 cpu_getSPSR : Cpu -> Try(U32, [InvalidMode, NoSPSR, ..])
 cpu_getSPSR = |c| {
 	m = cpsr_getMode(c.cpsr)?
