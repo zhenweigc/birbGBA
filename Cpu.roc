@@ -888,7 +888,19 @@ data_processing_execute = |op, c| {
 		rd = get_gpr_12_15(op)?
 		match rd {
 			R15 => if arm_s_flag(op) {
-				Ok({ cpu: { ..cpu_setReg(rd, c, res.val)?, cpsr: cpu_getSPSR(c)? }, pc_status: PCWritten })
+				Ok({
+					cpu: {
+						..{
+							if cpsr_getT(cpu_getSPSR(c)?) {
+								cpu_setReg(rd, c, res.val.bitwise_and(0xFFFFFFFE))?
+							} else {
+								cpu_setReg(rd, c, res.val)?
+							}
+						},
+						cpsr: cpu_getSPSR(c)?,
+					},
+					pc_status: PCWritten,
+				})
 			} else {
 				Ok({ cpu: cpu_setReg(rd, c, res.val)?, pc_status: PCWritten })
 			}
