@@ -133,7 +133,17 @@ Cpu := {
 		),
 	]
 
-	WriteContinuation : [StoreAndFinish({ wba : WriteBackAction })]
+	WriteContinuation : [
+		StoreAndFinish({ wba : WriteBackAction }),
+		WriteMultiple(
+			{
+				mask : U32,
+				next_addr : U32,
+				wba : WriteBackAction,
+				kind : [CurrentBank, UserBank],
+			},
+		),
+	]
 
 	resume_read : Cpu,
 	U32,
@@ -249,12 +259,51 @@ Cpu := {
 		Execution_state,
 		[
 			InvalidMode,
+			WTFisThis,
 			..,
 		],
 	)
 	resume_write = |c, wc| {
+		nuker = |x, i| {
+			U32.bitwise_and(x, 4294967295 - U32.pow(2, i))
+		}
 		match wc {
 			StoreAndFinish(x) => post_memory_operation(c, x.wba, PCSequential)
+			WriteMultiple(x) => {
+				pop_reg = U32.count_trailing_zero_bits(x.mask)
+				new_mask = nuker(x.mask, pop_reg.to_u32())
+				if new_mask == 0 {
+					post_memory_operation(
+						c,
+						x.wba,
+						PCSequential,
+					)
+				} else {
+					val = {
+						next_gpr = gpr_from_idx(new_mask.count_trailing_zero_bits())?
+						if next_gpr == R15 {
+							pc_inc(c.regs.r15, 12)
+						} else if x.kind == CurrentBank {
+							cpu_getReg(next_gpr, c)?
+						} else {
+							regs_get(next_gpr, User, c.regs)
+						}
+					}
+					Ok(
+						W({
+							cpu: c,
+							addr: (x.next_addr),
+							width: W32,
+							val: val,
+							continuation: WriteMultiple({
+								..x,
+								mask: new_mask,
+								next_addr: x.next_addr.plus_wrap(4),
+							}),
+						}),
+					)
+				}
+			}
 		}
 	}
 
@@ -1980,7 +2029,39 @@ block_data_transfer_execute = |op, c| {
 						)
 					}
 				}
-				STM => Err(Temp_not_done)
+				STM => {
+					first_reg = gpr_from_idx(U32.count_trailing_zero_bits(get_seg_of_u32_certain(op, 0, 16)))?
+					if s_bit and ((mode == User or mode == Sys) or w_bit) {
+						Err(UNPREDICTABLE)
+					} else if w_bit and rn_included(op) and (get_seg_of_u32_certain(op, 16, 4).to_u8_wrap() != 0 and U32.count_one_bits(get_seg_of_u32_certain(op, 0, get_seg_of_u32_certain(op, 16, 4).to_u8_wrap())) != 0) {
+						Err(UNPREDICTABLE)
+					} else {
+						Ok(
+							W({
+								cpu: c,
+								addr: trio.start_addr,
+								width: W32,
+								val: if first_reg == R15 {
+									pc_inc(c.regs.r15, 12)
+								} else if !s_bit {
+									cpu_getReg(first_reg, c)?
+								} else {
+									regs_get(first_reg, User, c.regs)
+								},
+								continuation: WriteMultiple({
+									mask: get_seg_of_u32_certain(op, 0, 16),
+									next_addr: trio.start_addr.plus_wrap(4),
+									wba: wba,
+									kind: if !s_bit {
+										CurrentBank
+									} else {
+										UserBank
+									},
+								}),
+							}),
+						)
+					}
+				}
 			}
 		}
 	}
