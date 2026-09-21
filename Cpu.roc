@@ -72,6 +72,8 @@ MultiplyLongOpCode : [UMULL, UMLAL, SMULL, SMLAL]
 
 SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
 
+SingleDataSwapOpCode : [SWP, SWPB]
+
 HalfwordDataTransferOpCode : [LDRH, STRH, LDRSB, LDRSH, UndefinedInstruction]
 
 BlockDataTransferOpCode : [LDM, STM]
@@ -119,6 +121,15 @@ Cpu := {
 				wba : WriteBackAction,
 			},
 		),
+		GetValfromMem(
+			{
+				rd : GPR,
+				addr : U32,
+				rm_val : U32,
+				width : ReqWidth,
+				rot : Rotation,
+			},
+		),
 		LoadMultiple(
 			{
 				mask : U32,
@@ -141,6 +152,12 @@ Cpu := {
 				next_addr : U32,
 				wba : WriteBackAction,
 				kind : [CurrentBank, UserBank],
+			},
+		),
+		SetRegAndFinish(
+			{
+				rd : GPR,
+				val : U32,
 			},
 		),
 	]
@@ -251,6 +268,17 @@ Cpu := {
 					}
 				}
 			}
+			GetValfromMem(x) => {
+				Ok(
+					W({
+						cpu: c,
+						addr: x.addr,
+						width: x.width,
+						val: x.rm_val,
+						continuation: SetRegAndFinish({ rd: x.rd, val: rotate(x.rot, raw_val) }),
+					}),
+				)
+			}
 		}
 	}
 
@@ -304,7 +332,9 @@ Cpu := {
 					)
 				}
 			}
-		}
+			SetRegAndFinish(x) =>
+				post_memory_operation(cpu_setReg(x.rd, c, x.val)?, NoWriteBack, PCSequential)
+			}
 	}
 
 	is_thumb : Cpu -> Bool
@@ -873,7 +903,7 @@ arm_instructions_execute = |op, c| {
 				}),
 			)
 			BlockDataTransfer => block_data_transfer_execute(op, c)
-			_ => Err(Temp_not_done)
+			SingleDataSwap => single_data_swap_execute(op, c)
 		}
 	} else {
 		Ok(
@@ -1639,6 +1669,73 @@ single_data_transfer_decode = |op| {
 		LDRB
 	} else {
 		STRB
+	}
+}
+
+single_data_swap_execute : U32,
+Cpu -> Try(
+	Execution_state,
+	[
+		UNPREDICTABLE,
+		WTFisThis,
+		InvalidMode,
+		..,
+	],
+)
+single_data_swap_execute = |op, c| {
+	rd = get_gpr_12_15(op)?
+	rn = get_gpr_16_19(op)?
+	rm = get_gpr_0_3(op)?
+	if (rd == R15 or rn == R15 or rm == R15) or (rn == rm or rn == rd) {
+		Err(UNPREDICTABLE)
+	} else {
+		match single_data_swap_decode(op) {
+			SWP => {
+				raw_addr = cpu_getReg(rn, c)?
+				bus_addr = raw_addr.bitwise_and(0xFFFFFFFC) # murder the last 2 bits to align addr val.
+				rot_val = get_seg_of_u32_certain(raw_addr, 0, 2)
+				Ok(
+					R({
+						cpu: c,
+						addr: bus_addr,
+						width: W32,
+						continuation: GetValfromMem({
+							rd: rd,
+							addr: bus_addr,
+							rm_val: cpu_getReg(rm, c)?,
+							width: W32,
+							rot: RotRight(U32.to_u8_wrap(8 * rot_val)),
+						}),
+					}),
+				)
+			}
+			SWPB => {
+				bus_addr = cpu_getReg(rn, c)?
+				Ok(
+					R({
+						cpu: c,
+						addr: bus_addr,
+						width: W8,
+						continuation: GetValfromMem({
+							rd: rd,
+							addr: bus_addr,
+							rm_val: get_seg_of_u32_certain(cpu_getReg(rm, c)?, 0, 8),
+							width: W8,
+							rot: Identity,
+						}),
+					}),
+				)
+			}
+		}
+	}
+}
+
+single_data_swap_decode : U32 -> SingleDataSwapOpCode
+single_data_swap_decode = |op| {
+	if get_ith_bit_u32_certain(op, 22) {
+		SWPB
+	} else {
+		SWP
 	}
 }
 
