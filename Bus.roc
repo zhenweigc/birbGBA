@@ -18,7 +18,7 @@ Bus :: {
 		}
 	}
 
-	read8 : Bus, U32 -> Try(U8, [OutOfBounds, UnsupportedRegion(MemoryRegion), ..])
+	read8 : Bus, U32 -> Try(U8, [OutOfBounds, UnsupportedRegion(MemoryRegion)])
 	read8 = |bus, addr| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		match region {
@@ -37,7 +37,6 @@ Bus :: {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			WriteIntoROM(U32),
-			..,
 		],
 	)
 	write8 = |bus, addr, cxt| {
@@ -63,7 +62,6 @@ Bus :: {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
-			..,
 		],
 	)
 	read16 = |bus, addr| {
@@ -92,7 +90,6 @@ Bus :: {
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			WriteIntoROM(U32),
-			..,
 		],
 	)
 	write16 = |bus, addr, cxt| {
@@ -126,7 +123,6 @@ Bus :: {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
-			..,
 		],
 	)
 	read32 = |bus, addr| {
@@ -155,7 +151,6 @@ Bus :: {
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			WriteIntoROM(U32),
-			..,
 		],
 	)
 	write32 = |bus, addr, cxt| {
