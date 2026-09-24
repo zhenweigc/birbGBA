@@ -70,7 +70,7 @@ MultiplyOpCode : [MUL, MLA]
 
 MultiplyLongOpCode : [UMULL, UMLAL, SMULL, SMLAL]
 
-SingleDataTransferOpCode : [STR, LDR, STRB, LDRB]
+SingleDataTransferOpCode : [STR, LDR, STRB, LDRB, LDRT, STRT, LDRBT, STRBT]
 
 SingleDataSwapOpCode : [SWP, SWPB]
 
@@ -1410,16 +1410,10 @@ single_data_transfer_execute = |op, c| {
 					U32.bitwise_and(adjusted, 0xFFFFFFFC)
 				}
 			} else {
-				if w_bit {
-					# LDRT should not fall here
-					# Maybe we can reroute this to LDRT?
-					return Err(Temp_not_done)
+				if rd == R15 and get_seg_of_u32_certain(base, 0, 2) != 0 {
+					return Err(UNPREDICTABLE)
 				} else {
-					if rd == R15 and get_seg_of_u32_certain(base, 0, 2) != 0 {
-						return Err(UNPREDICTABLE)
-					} else {
-						U32.bitwise_and(base, 0xFFFFFFFC)
-					}
+					U32.bitwise_and(base, 0xFFFFFFFC)
 				}
 			}
 			Ok(
@@ -1493,13 +1487,7 @@ single_data_transfer_execute = |op, c| {
 			addr = if p_bit {
 				U32.bitwise_and(adjusted, 0xFFFFFFFC)
 			} else {
-				if w_bit {
-					# STRT should not fall here
-					# Maybe we can reroute this to STRT?
-					return Err(Temp_not_done)
-				} else {
-					U32.bitwise_and(base, 0xFFFFFFFC)
-				}
+				U32.bitwise_and(base, 0xFFFFFFFC)
 			}
 			Ok(
 				W({
@@ -1556,13 +1544,7 @@ single_data_transfer_execute = |op, c| {
 			addr = if p_bit {
 				adjusted
 			} else {
-				if w_bit {
-					# STRBT should not fall here
-					# Maybe we can reroute this to STRBT?
-					return Err(Temp_not_done)
-				} else {
-					base
-				}
+				base
 			}
 			Ok(
 				W({
@@ -1617,13 +1599,7 @@ single_data_transfer_execute = |op, c| {
 				addr = if p_bit {
 					adjusted
 				} else {
-					if w_bit {
-						# LDRBT should not fall here
-						# Maybe we can reroute this to LDRBT?
-						return Err(Temp_not_done)
-					} else {
-						base
-					}
+					base
 				}
 				Ok(
 					R({
@@ -1647,19 +1623,226 @@ single_data_transfer_execute = |op, c| {
 				)
 			}
 		}
+		LDRT => {
+			if rd == R15 or rd == rn or rn == R15 {
+				Err(UNPREDICTABLE)
+			} else {
+				base = cpu_getReg(rn, c)?
+				offset = if i_bit {
+					rm = get_gpr_0_3(op)?
+					if rm == rn {
+						return Err(UNPREDICTABLE)
+					} else {
+						pre_shift = match rm {
+							R15 => return Err(UNPREDICTABLE)
+							_ => cpu_getReg(rm, c)?
+						}
+						shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+						data_processing_shift_by_immediate(
+							data_processing_get_shift_type(op),
+							pre_shift,
+							shift_imm,
+							cpsr_getC(c.cpsr),
+						).val
+					}
+				} else {
+					get_seg_of_u32_certain(op, 0, 12)
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = base.bitwise_and(0xFFFFFFFC)
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W32,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: RotRight(
+								U8.times_wrap(
+									8,
+									get_seg_of_u32_certain(base, 0, 2).to_u8_wrap(),
+								),
+							),
+							wba: WriteBack({ rn: rn, val: adjusted }),
+						}),
+					}),
+				)
+			}
+		}
+		LDRBT => {
+			if rd == R15 or rd == rn or rn == R15 {
+				Err(UNPREDICTABLE)
+			} else {
+				base = cpu_getReg(rn, c)?
+				offset = if i_bit {
+					rm = get_gpr_0_3(op)?
+					if rm == rn {
+						return Err(UNPREDICTABLE)
+					} else {
+						pre_shift = match rm {
+							R15 => return Err(UNPREDICTABLE)
+							_ => cpu_getReg(rm, c)?
+						}
+						shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+						data_processing_shift_by_immediate(
+							data_processing_get_shift_type(op),
+							pre_shift,
+							shift_imm,
+							cpsr_getC(c.cpsr),
+						).val
+					}
+				} else {
+					get_seg_of_u32_certain(op, 0, 12)
+				}
+				adjusted = if u_bit {
+					U32.plus_wrap(base, offset)
+				} else {
+					U32.minus_wrap(base, offset)
+				}
+				addr = base
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W8,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: Identity,
+							wba: WriteBack({ rn: rn, val: adjusted }),
+						}),
+					}),
+				)
+			}
+		}
+		STRT => {
+			rd_val = if rd == R15 {
+				pc_inc(c.regs.r15, 12)
+			} else {
+				cpu_getReg(rd, c)?
+			}
+			base = if rn == R15 or rd == rn {
+				return Err(UNPREDICTABLE)
+			} else {
+				cpu_getReg(rn, c)?
+			}
+			offset = if i_bit {
+				rm = get_gpr_0_3(op)?
+				if rm == rn {
+					return Err(UNPREDICTABLE)
+				} else {
+					pre_shift = match rm {
+						R15 => return Err(UNPREDICTABLE)
+						_ => cpu_getReg(rm, c)?
+					}
+					shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+					data_processing_shift_by_immediate(
+						data_processing_get_shift_type(op),
+						pre_shift,
+						shift_imm,
+						cpsr_getC(c.cpsr),
+					).val
+				}
+			} else {
+				get_seg_of_u32_certain(op, 0, 12)
+			}
+			adjusted = if u_bit {
+				U32.plus_wrap(base, offset)
+			} else {
+				U32.minus_wrap(base, offset)
+			}
+			addr = U32.bitwise_and(base, 0xFFFFFFFC)
+			Ok(
+				W({
+					cpu: c,
+					addr: addr,
+					width: W32,
+					val: rd_val,
+					continuation: StoreAndFinish({ wba: WriteBack({ rn: rn, val: adjusted }) }),
+				}),
+			)
+		}
+		STRBT => {
+			rd_val = if rd == R15 or rd == rn {
+				return Err(UNPREDICTABLE)
+			} else {
+				cpu_getReg(rd, c)?
+			}
+			base = if rn == R15 {
+				return Err(UNPREDICTABLE)
+			} else {
+				cpu_getReg(rn, c)?
+			}
+			offset = if i_bit {
+				rm = get_gpr_0_3(op)?
+				if rm == rn {
+					return Err(UNPREDICTABLE)
+				} else {
+					pre_shift = match rm {
+						R15 => return Err(UNPREDICTABLE)
+						_ => cpu_getReg(rm, c)?
+					}
+					shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+					data_processing_shift_by_immediate(
+						data_processing_get_shift_type(op),
+						pre_shift,
+						shift_imm,
+						cpsr_getC(c.cpsr),
+					).val
+				}
+			} else {
+				get_seg_of_u32_certain(op, 0, 12)
+			}
+			adjusted = if u_bit {
+				U32.plus_wrap(base, offset)
+			} else {
+				U32.minus_wrap(base, offset)
+			}
+			addr = base
+			Ok(
+				W({
+					cpu: c,
+					addr: addr,
+					width: W8,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: WriteBack({ rn: rn, val: adjusted }),
+					}),
+				}),
+			)
+		}
 	}
 }
 
 single_data_transfer_decode : U32 -> SingleDataTransferOpCode
 single_data_transfer_decode = |op| {
 	if bits_match(op, 0b101_00000_00000_00000_00000, 0b0) {
-		STR
+		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+			STRT
+		} else {
+			STR
+		}
 	} else if bits_match(op, 0b101_00000_00000_00000_00000, 0b001_00000_00000_00000_00000) {
-		LDR
+		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+			LDRT
+		} else {
+			LDR
+		}
 	} else if bits_match(op, 0b101_00000_00000_00000_00000, 0b101_00000_00000_00000_00000) {
-		LDRB
+		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+			LDRBT
+		} else {
+			LDRB
+		}
 	} else {
-		STRB
+		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+			STRBT
+		} else {
+			STRB
+		}
 	}
 }
 
