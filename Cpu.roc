@@ -36,6 +36,11 @@ Regs : {
 	r15 : U32,
 }
 
+Thumb_ALUOpCode : {
+	code : [AND, EOR, SUB, ADD, ADC, SBC, TST, CMP, CMN, ORR, MOV, BIC, MVN, LSR, LSL, ASR, ROR, MUL, NEG, NoSuchOp],
+	format : Formats,
+}
+
 Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL]
 
 ShiftType : [LSL, LSR, ASR, ROR]
@@ -63,6 +68,8 @@ ArmDataProcessingKind : [DataProcessing, PSRTransfer]
 
 # Alias can be Data Processing
 ALUOpCode : [AND, EOR, SUB, RSB, ADD, ADC, SBC, RSC, TST, TEQ, CMP, CMN, ORR, MOV, BIC, MVN]
+
+Formats : [Format1, Format2, Format3, Format4, Format5, Format6, Format7, Format8, UndefinedFormat]
 
 ArmPSRTransferOpCode : [MSR, MRS]
 
@@ -458,6 +465,11 @@ get_ith_bit_u32 = |i, j| {
 	}
 }
 
+get_ith_bit_u16_certain : U16, U8 -> Bool
+get_ith_bit_u16_certain = |i, j| {
+	U16.shr_wrap(U16.shl_wrap(i, 16 - j - 1), 15) == 1
+}
+
 get_ith_bit_u32_certain : U32, U8 -> Bool
 get_ith_bit_u32_certain = |i, j| {
 	U32.shr_wrap(U32.shl_wrap(i, 32 - j - 1), 31) == 1
@@ -483,8 +495,13 @@ get_seg_of_u32_certain = |i, lsb, len| {
 	U32.shr_wrap(U32.shl_wrap(U32.shr_wrap(i, lsb), tmp), tmp)
 }
 
-bits_match : U32, U32, U32 -> Bool
-bits_match = |i, mask, target| {
+bits_match_16 : U16, U16, U16 -> Bool
+bits_match_16 = |i, mask, target| {
+	U16.bitwise_and(i, mask) == target
+}
+
+bits_match_32 : U32, U32, U32 -> Bool
+bits_match_32 = |i, mask, target| {
 	U32.bitwise_and(i, mask) == target
 }
 
@@ -587,35 +604,35 @@ arm_data_processing_decode : U32 -> ALUOpCode
 arm_data_processing_decode = |i| {
 	# ctrl cv template: 0b0000000_1111_000000000000000000000
 	# 0b0000000_????_000000000000000000000
-	if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0000_000000000000000000000) {
+	if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0000_000000000000000000000) {
 		AND
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0001_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0001_000000000000000000000) {
 		EOR
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0010_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0010_000000000000000000000) {
 		SUB
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0011_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0011_000000000000000000000) {
 		RSB
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0100_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0100_000000000000000000000) {
 		ADD
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0101_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0101_000000000000000000000) {
 		ADC
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0110_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0110_000000000000000000000) {
 		SBC
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_0111_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0111_000000000000000000000) {
 		RSC
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1000_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1000_000000000000000000000) {
 		TST
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1001_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1001_000000000000000000000) {
 		TEQ
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1010_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1010_000000000000000000000) {
 		CMP
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1011_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1011_000000000000000000000) {
 		CMN
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1100_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1100_000000000000000000000) {
 		ORR
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1101_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1101_000000000000000000000) {
 		MOV
-	} else if bits_match(i, 0b0000000_1111_000000000000000000000, 0b0000000_1110_000000000000000000000) {
+	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1110_000000000000000000000) {
 		BIC
 	} else {
 		MVN
@@ -780,21 +797,21 @@ arm_data_processing_get_rs = |i| {
 
 arm_instructions_decode : U32 -> Try(ArmInstructions, [WTFisThis, UNPREDICTABLE])
 arm_instructions_decode = |i| {
-	if bits_match(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
+	if bits_match_32(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
 		Ok(UndefinedInstruction)
-	} else if bits_match(i, 0b111_11111_000000000000_1111_0000, 0b011_11111_000000000000_1111_0000) {
+	} else if bits_match_32(i, 0b111_11111_000000000000_1111_0000, 0b011_11111_000000000000_1111_0000) {
 		Ok(ArchitecturallyUndefined)
-	} else if bits_match(i, 0b1111_000000000000000000000000, 0b1111_000000000000000000000000) {
+	} else if bits_match_32(i, 0b1111_000000000000000000000000, 0b1111_000000000000000000000000) {
 		Ok(SoftwareInterrupt)
-	} else if bits_match(i, 0b0000_1111_1100_0000_0000_0000_1111_0000, 144) {
+	} else if bits_match_32(i, 0b0000_1111_1100_0000_0000_0000_1111_0000, 144) {
 		Ok(Multiply)
-	} else if bits_match(i, 0b0000_1111_1000_0000_0000_0000_1111_0000, 8388752) {
+	} else if bits_match_32(i, 0b0000_1111_1000_0000_0000_0000_1111_0000, 8388752) {
 		Ok(MultiplyLong)
-	} else if bits_match(i, 0b0000_1111_1011_0000_0000_1111_1111_0000, 16777360) {
+	} else if bits_match_32(i, 0b0000_1111_1011_0000_0000_1111_1111_0000, 16777360) {
 		Ok(SingleDataSwap)
-	} else if bits_match(i, 0b0000_1111_1111_1111_1111_1111_1111_0000, 0b1001011111111111100010000) {
+	} else if bits_match_32(i, 0b0000_1111_1111_1111_1111_1111_1111_0000, 0b1001011111111111100010000) {
 		Ok(BranchAndExchange)
-	} else if bits_match(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
+	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
 		if get_seg_of_u32_certain(i, 8, 4) == 0 {
 			Ok(HalfwordDataTransferRegOffset)
 		} else {
@@ -803,25 +820,25 @@ arm_instructions_decode = |i| {
 				_ => Err(UNPREDICTABLE)
 			}
 		}
-	} else if bits_match(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
+	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
 		Ok(HalfwordDataTransferImmediateOffset)
-	} else if bits_match(i, 234881024, 134217728) {
+	} else if bits_match_32(i, 234881024, 134217728) {
 		Ok(BlockDataTransfer)
-	} else if bits_match(i, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
+	} else if bits_match_32(i, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
 		Ok(Branch)
-	} else if bits_match(i, 0b1110_000000000000000000000000, 0b1100_000000000000000000000000) {
+	} else if bits_match_32(i, 0b1110_000000000000000000000000, 0b1100_000000000000000000000000) {
 		Ok(CoprocessorDataTransfer)
-	} else if bits_match(i, 0b1111_00000000000000000001_0000, 0b1110_000000000000000000000000) {
+	} else if bits_match_32(i, 0b1111_00000000000000000001_0000, 0b1110_000000000000000000000000) {
 		Ok(CoprocessorDataOperation)
-	} else if bits_match(i, 0b1111_00000000000000000001_0000, 0b1110_00000000000000000001_0000) {
+	} else if bits_match_32(i, 0b1111_00000000000000000001_0000, 0b1110_00000000000000000001_0000) {
 		Ok(CoprocessorRegisterTransfer)
-	} else if bits_match(i, 0b111_00000000000000000000_1_0000, 0b011_00000000000000000000_1_0000) {
+	} else if bits_match_32(i, 0b111_00000000000000000000_1_0000, 0b011_00000000000000000000_1_0000) {
 		Ok(UndefinedInstruction) # 4.17 Undefined Instruction, arm-instructionset.pdf
-	} else if bits_match(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
+	} else if bits_match_32(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
 		Ok(SingleDataTransfer)
 	} else if !get_ith_bit_u32_certain(i, 25) and get_ith_bit_u32_certain(i, 4) and get_ith_bit_u32_certain(i, 7) {
 		Err(WTFisThis) # A5-3 DDI01001
-	} else if bits_match(i, 0b1100_00000000000000000000_0000, 0) {
+	} else if bits_match_32(i, 0b1100_00000000000000000000_0000, 0) {
 		Ok(DataProcessingPSRTransfer)
 	} else {
 		Err(WTFisThis)
@@ -941,7 +958,7 @@ data_processing_alu = |alu_op, op1, op2, c_flag, v_flag| {
 
 arm_data_processing_kind : U32 -> ArmDataProcessingKind
 arm_data_processing_kind = |i| {
-	if bits_match(i, 0b11001_00000_00000_00000_00000, 0b10000_00000_00000_00000_00000) {
+	if bits_match_32(i, 0b11001_00000_00000_00000_00000, 0b10000_00000_00000_00000_00000) {
 		PSRTransfer
 	} else {
 		DataProcessing
@@ -1018,11 +1035,11 @@ arm_data_processing_get_immed_8 = |i| {
 
 arm_data_processing_get_shift_type : U32 -> ShiftType
 arm_data_processing_get_shift_type = |i| {
-	if bits_match(i, 0b1100000, 0) {
+	if bits_match_32(i, 0b1100000, 0) {
 		LSL
-	} else if bits_match(i, 0b1100000, 0b0100000) {
+	} else if bits_match_32(i, 0b1100000, 0b0100000) {
 		LSR
-	} else if bits_match(i, 0b1100000, 0b1000000) {
+	} else if bits_match_32(i, 0b1100000, 0b1000000) {
 		ASR
 	} else {
 		ROR
@@ -1039,19 +1056,19 @@ arm_psr_transfer_decode : U32 -> Try(
 	],
 )
 arm_psr_transfer_decode = |op| {
-	if bits_match(op, 0b0000_1111_1011_000000000000_1111_0000, 0b0000_0001_0000_000000000000_0000_0000) {
+	if bits_match_32(op, 0b0000_1111_1011_000000000000_1111_0000, 0b0000_0001_0000_000000000000_0000_0000) {
 		if get_seg_of_u32_certain(op, 16, 4) != 0xF or get_seg_of_u32_certain(op, 0, 12) != 0 {
 			Err(PSR_malformed_MRS)
 		} else {
 			Ok(MRS)
 		}
-	} else if bits_match(op, 0b11111_0_11_00000000000000000000, 0b00110_0_10_00000000000000000000) {
+	} else if bits_match_32(op, 0b11111_0_11_00000000000000000000, 0b00110_0_10_00000000000000000000) {
 		if get_seg_of_u32_certain(op, 12, 4) != 0xF {
 			Err(PSR_malformed_MSR_immediate)
 		} else {
 			Ok(MSR) # transfer immediate
 		}
-	} else if bits_match(op, 0b11111_0_11_0000_0000_0000_1111_0000, 0b00010_0_10_0000_0000_0000_0000_0000) {
+	} else if bits_match_32(op, 0b11111_0_11_0000_0000_0000_1111_0000, 0b00010_0_10_0000_0000_0000_0000_0000) {
 		if get_seg_of_u32_certain(op, 12, 4) != 0xF or get_seg_of_u32_certain(op, 8, 4) != 0 {
 			Err(PSR_malformed_MSR_register)
 		} else {
@@ -1314,7 +1331,7 @@ arm_multiply_long_execute = |op, c| {
 
 arm_branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_UnKnown])
 arm_branch_execute = |op, c| {
-	if bits_match(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
+	if bits_match_32(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
 		old_PC = cpu_getReg(R15, c)?
 		signed_immed_24 = get_seg_of_u32_certain(op, 0, 24)
 		pc = U32.plus_wrap(
@@ -1819,26 +1836,26 @@ arm_single_data_transfer_execute = |op, c| {
 
 arm_single_data_transfer_decode : U32 -> ArmSingleDataTransferOpCode
 arm_single_data_transfer_decode = |op| {
-	if bits_match(op, 0b101_00000_00000_00000_00000, 0b0) {
-		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+	if bits_match_32(op, 0b101_00000_00000_00000_00000, 0b0) {
+		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			STRT
 		} else {
 			STR
 		}
-	} else if bits_match(op, 0b101_00000_00000_00000_00000, 0b001_00000_00000_00000_00000) {
-		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+	} else if bits_match_32(op, 0b101_00000_00000_00000_00000, 0b001_00000_00000_00000_00000) {
+		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			LDRT
 		} else {
 			LDR
 		}
-	} else if bits_match(op, 0b101_00000_00000_00000_00000, 0b101_00000_00000_00000_00000) {
-		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+	} else if bits_match_32(op, 0b101_00000_00000_00000_00000, 0b101_00000_00000_00000_00000) {
+		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			LDRBT
 		} else {
 			LDRB
 		}
 	} else {
-		if bits_match(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			STRBT
 		} else {
 			STRB
@@ -1914,13 +1931,13 @@ arm_single_data_swap_decode = |op| {
 
 arm_halfword_data_transfer_decode : U32 -> ArmHalfwordDataTransferOpCode
 arm_halfword_data_transfer_decode = |op| {
-	if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1011_0000) {
+	if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1011_0000) {
 		LDRH
-	} else if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0000_000000000000_1011_0000) {
+	} else if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0000_000000000000_1011_0000) {
 		STRH
-	} else if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1101_0000) {
+	} else if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1101_0000) {
 		LDRSB
-	} else if bits_match(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1111_0000) {
+	} else if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1111_0000) {
 		LDRSH
 	} else {
 		UndefinedInstruction
@@ -2218,7 +2235,7 @@ arm_block_data_transfer_execute = |op, c| {
 	sharp_reg = |x| {
 		U32.count_one_bits(get_seg_of_u32_certain(x, 0, 16))
 	}
-	if bits_match(op, 0b1_11111_11111_11111, 0) {
+	if bits_match_32(op, 0b1_11111_11111_11111, 0) {
 		Err(UNPREDICTABLE)
 	} else {
 		rn = get_gpr_16_19(op)?
@@ -2273,7 +2290,7 @@ arm_block_data_transfer_execute = |op, c| {
 						Err(UNPREDICTABLE)
 					} else if w_bit and rn_included(op) {
 						Err(UNPREDICTABLE)
-					} else if bits_match(op, 0b111_0000_1_000000000000000, 0b111_0000_0_000000000000000) {
+					} else if bits_match_32(op, 0b111_0000_1_000000000000000, 0b111_0000_0_000000000000000) {
 						Err(UNPREDICTABLE)
 					} else {
 						Ok(
@@ -2373,6 +2390,97 @@ condition_pass = |c, i| {
 		GT => (cpsr_getN(i) == cpsr_getV(i)) and !cpsr_getZ(i)
 		LE => (cpsr_getN(i) != cpsr_getV(i)) or cpsr_getZ(i)
 		AL => Bool.True
+	}
+}
+
+thumb_data_processing_decode : U16 -> Thumb_ALUOpCode
+thumb_data_processing_decode = |i| {
+	if bits_match_16(i, 0b111111_00000_00000, 0b000110_00000_00000) {
+		if get_ith_bit_u16_certain(i, 9) {
+			{ code: SUB, format: Format1 }
+		} else {
+			{ code: ADD, format: Format1 }
+		}
+	} else if bits_match_16(i, 0b111111_00000_00000, 0b000111_00000_00000) {
+		if get_ith_bit_u16_certain(i, 9) {
+			{ code: SUB, format: Format2 }
+		} else {
+			{ code: ADD, format: Format2 }
+		}
+	} else if bits_match_16(i, 0b111000_00000_00000, 0b001000_00000_00000) {
+		if bits_match_16(i, 0b110_00000_00000, 0b000_00000_00000) {
+			{ code: MOV, format: Format3 }
+		} else if bits_match_16(i, 0b110_00000_00000, 0b010_00000_00000) {
+			{ code: CMP, format: Format3 }
+		} else if bits_match_16(i, 0b110_00000_00000, 0b100_00000_00000) {
+			{ code: ADD, format: Format3 }
+		} else {
+			{ code: SUB, format: Format3 }
+		}
+	} else if bits_match_16(i, 0b111000_00000_00000, 0) {
+		if bits_match_16(i, 0b000110_00000_00000, 0) {
+			{ code: LSL, format: Format4 }
+		} else if bits_match_16(i, 0b000110_00000_00000, 0b010_00000_00000) {
+			{ code: LSR, format: Format4 }
+		} else if bits_match_16(i, 0b000110_00000_00000, 0b100_00000_00000) {
+			{ code: ASR, format: Format4 }
+		} else {
+			{ code: NoSuchOp, format: Format4 }
+		}
+	} else if bits_match_16(i, 0b111111_00000_00000, 0b010000_00000_00000) {
+		if bits_match_16(i, 0b1111_000000, 0b0000_000000) {
+			{ code: AND, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0001_000000) {
+			{ code: EOR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0010_000000) {
+			{ code: LSL, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0011_000000) {
+			{ code: LSR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0100_000000) {
+			{ code: ASR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0101_000000) {
+			{ code: ADC, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0110_000000) {
+			{ code: SBC, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0111_000000) {
+			{ code: ROR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1000_000000) {
+			{ code: TST, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1001_000000) {
+			{ code: NEG, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1010_000000) {
+			{ code: CMP, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1011_000000) {
+			{ code: CMN, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1100_000000) {
+			{ code: ORR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1101_000000) {
+			{ code: MUL, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1110_000000) {
+			{ code: BIC, format: Format5 }
+		} else {
+			{ code: MVN, format: Format5 }
+		}
+	} else if bits_match_16(i, 0b111100_00000_00000, 0b101000_00000_00000) {
+		{ code: ADD, format: Format6 }
+	} else if bits_match_16(i, 0b11111111_000_00000, 0b10110000_000_00000) {
+		if bits_match_16(i, 0b1_0000000, 0b1_0000000) {
+			{ code: SUB, format: Format7 }
+		} else {
+			{ code: ADD, format: Format7 }
+		}
+	} else if bits_match_16(i, 0b111111_00000_00000, 0b010001_00000_00000) {
+		if bits_match_16(i, 0b11_00000000, 0b10_00000000) {
+			{ code: MOV, format: Format8 }
+		} else if bits_match_16(i, 0b11_00000000, 0b00_00000000) {
+			{ code: ADD, format: Format8 }
+		} else if bits_match_16(i, 0b11_00000000, 0b01_00000000) {
+			{ code: CMP, format: Format8 }
+		} else {
+			{ code: NoSuchOp, format: Format8 }
+		}
+	} else {
+		{ code: ADD, format: UndefinedFormat }
 	}
 }
 
