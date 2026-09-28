@@ -489,6 +489,12 @@ get_seg_of_u32 = |i, lsb, len| {
 	}
 }
 
+get_seg_of_u16_certain : U16, U8, U8 -> U16
+get_seg_of_u16_certain = |i, lsb, len| {
+	tmp = 16 - len
+	U16.shr_wrap(U16.shl_wrap(U16.shr_wrap(i, lsb), tmp), tmp)
+}
+
 get_seg_of_u32_certain : U32, U8, U8 -> U32
 get_seg_of_u32_certain = |i, lsb, len| {
 	tmp = 32 - len
@@ -2390,6 +2396,139 @@ condition_pass = |c, i| {
 		GT => (cpsr_getN(i) == cpsr_getV(i)) and !cpsr_getZ(i)
 		LE => (cpsr_getN(i) != cpsr_getV(i)) or cpsr_getZ(i)
 		AL => Bool.True
+	}
+}
+
+thumb_instructions_finalize : Execution_outcome -> Cpu
+thumb_instructions_finalize = |content| {
+	match content.pc_status {
+		PCSequential => {
+			..content.cpu,
+			regs: {
+				..content.cpu.regs,
+				r15: pc_inc(content.cpu.regs.r15, 2),
+			},
+		}
+		_ => content.cpu
+	}
+}
+
+thumb_data_processing_exectue : U16, Cpu -> Try(Execution_outcome, [WTFisThis, InvalidMode, ImpossibleFormatOpCombination])
+thumb_data_processing_exectue = |i, c| {
+	op = thumb_data_processing_decode(i)
+	match op.format {
+		Format1 => {
+			rd = get_seg_of_u16_certain(i, 0, 3).to_u32()
+			rn = get_seg_of_u16_certain(i, 3, 3).to_u32()
+			rm = get_seg_of_u16_certain(i, 6, 3).to_u32()
+			match op.code {
+				ADD => {
+					base = 0b1110_00001001_0000_0000_00000000_0000
+					equiv_op = base + rm + rn.shl_wrap(16) + rd.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis) # Thumb Format1 cannot touch R15, should not show up
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				SUB => {
+					base = 0b1110_00000101_0000_0000_00000000_0000
+					equiv_op = base + rm + rn.shl_wrap(16) + rd.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				_ => Err(ImpossibleFormatOpCombination)
+			}
+		}
+		Format2 => {
+			rd = get_seg_of_u16_certain(i, 0, 3).to_u32()
+			rn = get_seg_of_u16_certain(i, 3, 3).to_u32()
+			tri_bit_immediate = get_seg_of_u16_certain(i, 6, 3).to_u32()
+			match op.code {
+				ADD => {
+					base = 0b1110_00101001_0000_0000_00000000_0000
+					equiv_op = base + tri_bit_immediate + rn.shl_wrap(16) + rd.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				SUB => {
+					base = 0b1110_00100101_0000_0000_00000000_0000
+					equiv_op = base + tri_bit_immediate + rn.shl_wrap(16) + rd.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				_ => Err(ImpossibleFormatOpCombination)
+			}
+		}
+		Format3 => {
+			octa_bit_immediate = get_seg_of_u16_certain(i, 0, 8).to_u32()
+			rdrn = get_seg_of_u16_certain(i, 8, 3).to_u32()
+			match op.code {
+				ADD => {
+					base = 0b1110_00101001_0000_0000_00000000_0000
+					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(16) + rdrn.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				SUB => {
+					base = 0b1110_00100101_0000_0000_0000_00000000
+					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(16) + rdrn.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				MOV => {
+					base = 0b1110_00111011_0000_0000_0000_00000000
+					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(12)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				CMP => {
+					base = 0b1110_00110101_0000_0000_0000_00000000
+					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(16)
+					chk = arm_data_processing_execute(equiv_op, c)
+					match chk {
+						Ok(x) => Ok(x)
+						Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis)
+						Err(WTFisThis) => Err(WTFisThis)
+						Err(InvalidMode) => Err(InvalidMode)
+					}
+				}
+				_ => Err(ImpossibleFormatOpCombination)
+			}
+		}
+		_ => Ok({ cpu: c, pc_status: PCSequential })
 	}
 }
 
