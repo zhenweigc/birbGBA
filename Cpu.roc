@@ -1335,7 +1335,7 @@ arm_multiply_long_execute = |op, c| {
 	}
 }
 
-arm_branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_UnKnown])
+arm_branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_Unknown])
 arm_branch_execute = |op, c| {
 	if bits_match_32(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
 		old_PC = cpu_getReg(R15, c)?
@@ -1357,7 +1357,7 @@ arm_branch_execute = |op, c| {
 			cpu_setReg(R15, c, pc)
 		}
 	} else {
-		Err(Branch_Type_UnKnown)
+		Err(Branch_Type_Unknown)
 	}
 }
 
@@ -2410,6 +2410,87 @@ thumb_instructions_finalize = |content| {
 			},
 		}
 		_ => content.cpu
+	}
+}
+
+thumb_branch_execute : U16,
+Cpu -> Try(
+	Execution_outcome,
+	[
+		InvalidMode,
+		Branch_Type_Unknown,
+		Huh,
+		ReservedinArm7,
+		WTFisThis,
+		UNPREDICTABLE,
+	],
+)
+thumb_branch_execute = |op, c| {
+	if bits_match_16(op, 0b11111_00000000000, 0b11100_00000000000) {
+		old_PC = cpu_getReg(R15, c)?
+		signed_immed_11 = get_seg_of_u16_certain(op, 0, 11)
+		extended_immed = signed_extend_u32(signed_immed_11.to_u32(), 11)
+		pc = U32.plus_wrap(old_PC.plus_wrap(4), extended_immed.shl_wrap(1))
+		Ok({ cpu: cpu_setReg(R15, c, pc)?, pc_status: PCWritten })
+	} else if bits_match_16(op, 0b1111_000000000000, 0b1101_000000000000) {
+		old_PC = cpu_getReg(R15, c)?
+		signed_immed_8 = get_seg_of_u16_certain(op, 0, 8)
+		extended_immed = signed_extend_u32(signed_immed_8.to_u32(), 8)
+		cond_val = get_seg_of_u16_certain(op, 8, 4)
+		if cond_val >= 14 {
+			return Err(Branch_Type_Unknown) # SWI and undefined, should be intercepted earlier.
+		} else {
+			cond = arm_opcode_parse_cond(cond_val.to_u32().shl_wrap(28))?
+			if condition_pass(cond, c.cpsr) {
+				Ok({
+					cpu: cpu_setReg(R15, c, U32.plus_wrap(old_PC.plus_wrap(4), extended_immed.shl_wrap(1)))?,
+					pc_status: PCWritten,
+				})
+			} else {
+				Ok({ cpu: c, pc_status: PCSequential })
+			}
+		}
+	} else if bits_match_16(op, 0b111111111_0_000_111, 0b010001110_0_000_000) {
+		rm = gpr_from_idx(get_seg_of_u16_certain(op, 3, 4).to_u8_wrap())?
+		rm_val = cpu_getReg(rm, c)?.plus_wrap(
+			if rm == R15 {
+				4
+			} else {
+				0
+			},
+		)
+		if get_seg_of_u32_certain(rm_val, 0, 2) == 0b10 {
+			Err(UNPREDICTABLE)
+		} else {
+			new_cpsr = cpsr_setT(c.cpsr, get_ith_bit_u32_certain(rm_val, 0))
+			pc_update = cpu_setReg(R15, c, get_seg_of_u32_certain(rm_val, 1, 31).shl_wrap(1))?
+			Ok({
+				cpu: { ..pc_update, cpsr: new_cpsr },
+				pc_status: PCWritten,
+			})
+		}
+	} else if bits_match_16(op, 0b111_0000000000000, 0b111_0000000000000) {
+		h = get_seg_of_u16_certain(op, 11, 2)
+		offset_11 = get_seg_of_u16_certain(op, 0, 11).to_u32()
+		old_PC = cpu_getReg(R15, c)?
+		if h == 0b10 {
+			extended_immed = signed_extend_u32(offset_11, 11)
+			Ok({
+				cpu: cpu_setReg(R14, c, old_PC.plus_wrap(extended_immed.shl_wrap(12)).plus_wrap(4))?,
+				pc_status: PCSequential,
+			})
+		} else if h == 0b11 {
+			pc = cpu_getReg(R14, c)?.plus_wrap(offset_11.shl_wrap(1))
+			r14_val = old_PC.plus_wrap(2).bitwise_or(0b1)
+			Ok({
+				cpu: cpu_setReg(R15, cpu_setReg(R14, c, r14_val)?, pc)?,
+				pc_status: PCWritten,
+			})
+		} else {
+			Err(Branch_Type_Unknown)
+		}
+	} else {
+		Err(Branch_Type_Unknown)
 	}
 }
 
