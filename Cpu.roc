@@ -817,7 +817,8 @@ arm_instructions_decode = |i| {
 		Ok(SingleDataSwap)
 	} else if bits_match_32(i, 0b0000_1111_1111_1111_1111_1111_1111_0000, 0b1001011111111111100010000) {
 		Ok(BranchAndExchange)
-	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
+	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000)
+		and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
 		if get_seg_of_u32_certain(i, 8, 4) == 0 {
 			Ok(HalfwordDataTransferRegOffset)
 		} else {
@@ -826,7 +827,8 @@ arm_instructions_decode = |i| {
 				_ => Err(UNPREDICTABLE)
 			}
 		}
-	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000) and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
+	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000)
+		and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
 		Ok(HalfwordDataTransferImmediateOffset)
 	} else if bits_match_32(i, 234881024, 134217728) {
 		Ok(BlockDataTransfer)
@@ -842,7 +844,9 @@ arm_instructions_decode = |i| {
 		Ok(UndefinedInstruction) # 4.17 Undefined Instruction, arm-instructionset.pdf
 	} else if bits_match_32(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
 		Ok(SingleDataTransfer)
-	} else if !get_ith_bit_u32_certain(i, 25) and get_ith_bit_u32_certain(i, 4) and get_ith_bit_u32_certain(i, 7) {
+	} else if !get_ith_bit_u32_certain(i, 25)
+		and get_ith_bit_u32_certain(i, 4)
+			and get_ith_bit_u32_certain(i, 7) {
 		Err(WTFisThis) # A5-3 DDI01001
 	} else if bits_match_32(i, 0b1100_00000000000000000000_0000, 0) {
 		Ok(DataProcessingPSRTransfer)
@@ -1328,7 +1332,10 @@ arm_multiply_long_execute = |op, c| {
 		hi = U64.to_u32_wrap(U64.shr_wrap(res, 32))
 		lo = U64.to_u32_wrap(res)
 		if arm_s_flag(op) {
-			Ok({ ..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)) })
+			Ok({
+				..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?,
+				cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)),
+			})
 		} else {
 			cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)
 		}
@@ -2324,7 +2331,9 @@ arm_block_data_transfer_execute = |op, c| {
 					first_reg = gpr_from_idx(U32.count_trailing_zero_bits(get_seg_of_u32_certain(op, 0, 16)))?
 					if s_bit and ((mode == User or mode == Sys) or w_bit) {
 						Err(UNPREDICTABLE)
-					} else if w_bit and rn_included(op) and (get_seg_of_u32_certain(op, 16, 4).to_u8_wrap() != 0 and U32.count_one_bits(get_seg_of_u32_certain(op, 0, get_seg_of_u32_certain(op, 16, 4).to_u8_wrap())) != 0) {
+					} else if w_bit and rn_included(op)
+						and (get_seg_of_u32_certain(op, 16, 4).to_u8_wrap() != 0
+							and U32.count_one_bits(get_seg_of_u32_certain(op, 0, get_seg_of_u32_certain(op, 16, 4).to_u8_wrap())) != 0) {
 						Err(UNPREDICTABLE)
 					} else {
 						Ok(
@@ -2494,7 +2503,7 @@ thumb_branch_execute = |op, c| {
 	}
 }
 
-thumb_data_processing_exectue : U16,
+thumb_data_processing_execute : U16,
 Cpu -> Try(
 	Execution_outcome,
 	[
@@ -2506,7 +2515,7 @@ Cpu -> Try(
 		UNPREDICTABLE,
 	],
 )
-thumb_data_processing_exectue = |i, c| {
+thumb_data_processing_execute = |i, c| {
 	op = thumb_data_processing_decode(i)
 	chk = match op.format {
 		Format1 => {
