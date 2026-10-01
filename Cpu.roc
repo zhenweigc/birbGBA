@@ -45,6 +45,20 @@ Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL]
 
 ShiftType : [LSL, LSR, ASR, ROR]
 
+ThumbInstructions : [
+	DataProcessing,
+	Branch,
+	SoftwareInterrupt,
+	UndefinedInstruction,
+	LoadLiteral,
+	LoadStoreRegisterOffset,
+	LoadStoreImmediateOffset,
+	LoadStoreHalfwordImmediateOffset,
+	LoadStoreSPRelative,
+	PushPop,
+	LoadStoreMultiple,
+]
+
 ArmInstructions : [
 	DataProcessingPSRTransfer,
 	Multiply,
@@ -2420,6 +2434,55 @@ thumb_instructions_finalize = |content| {
 		}
 		_ => content.cpu
 	}
+}
+
+thumb_instructions_decode : U16 -> Try(ThumbInstructions, [WTFisThis, UNPREDICTABLE, TEMP_NOT_DONE])
+thumb_instructions_decode = |i| {
+	is_dp = |op| {
+		tmp = thumb_data_processing_decode(op)
+		return tmp.format != UndefinedFormat and tmp.code != NoSuchOp
+	}
+	if bits_match_16(i, 0b1111_1111_00000000, 0b1101_1110_00000000) or bits_match_16(i, 0b11111_00000000000, 0b11101_00000000000) {
+		Ok(UndefinedInstruction)
+	} else if bits_match_16(i, 0b1111_1111_00000000, 0b1101_1111_00000000) {
+		Ok(SoftwareInterrupt)
+	} else if bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_0_0000_000) # Reg BLX is not supported by old ARM
+		or bits_match_16(i, 0b1111_000000000000, 0b1101_000000000000)
+			or bits_match_16(i, 0b11111_00000000000, 0b11100_00000000000)
+				or bits_match_16(i, 0b11111_00000000000, 0b11110_00000000000)
+					or bits_match_16(i, 0b11111_00000000000, 0b11111_00000000000) {
+		Ok(Branch)
+	} else if is_dp(i) {
+		Ok(DataProcessing)
+	} else {
+		Err(TEMP_NOT_DONE)
+	}
+}
+
+thumb_undefined_instruction_execute : Cpu -> Try(Cpu.Execution_outcome, [InvalidMode, NoSPSR])
+thumb_undefined_instruction_execute = |c| {
+	pc_val = cpu_getReg(R15, c)?
+	r14_und_new_val = pc_inc(pc_val, 2)
+	old_cpsr = c.cpsr
+	new_cpsr = cpsr_setI(cpsr_setT(cpsr_setMode(Undefined, old_cpsr), Bool.False), Bool.True)
+	c_und = { ..c, cpsr: new_cpsr }
+	Ok({
+		cpu: cpu_setSPSR(cpu_setReg(R15, cpu_setReg(R14, c_und, r14_und_new_val)?, 0x4)?, old_cpsr)?,
+		pc_status: PCWritten,
+	})
+}
+
+thumb_software_interrupt_execute : Cpu -> Try(Execution_outcome, [InvalidMode, NoSPSR])
+thumb_software_interrupt_execute = |c| {
+	pc_val = cpu_getReg(R15, c)?
+	r14_svc_new_val = pc_inc(pc_val, 2)
+	old_cpsr = c.cpsr
+	new_cpsr = cpsr_setI(cpsr_setT(cpsr_setMode(Sup, old_cpsr), Bool.False), Bool.True)
+	c_sup = { ..c, cpsr: new_cpsr }
+	Ok({
+		cpu: cpu_setSPSR(cpu_setReg(R15, cpu_setReg(R14, c_sup, r14_svc_new_val)?, 0x8)?, old_cpsr)?,
+		pc_status: PCWritten,
+	})
 }
 
 thumb_branch_execute : U16,
