@@ -140,6 +140,7 @@ Cpu := {
 				rd : GPR,
 				rot : Rotation,
 				wba : WriteBackAction,
+				isThumb : Bool,
 			},
 		),
 		GetValfromMem(
@@ -149,6 +150,7 @@ Cpu := {
 				rm_val : U32,
 				width : ReqWidth,
 				rot : Rotation,
+				isThumb : Bool,
 			},
 		),
 		LoadMultiple(
@@ -161,27 +163,48 @@ Cpu := {
 					UserBank,
 					ModeChanges({ spsr : U32 }),
 				],
+				isThumb : Bool,
 			},
 		),
 	]
 
 	WriteContinuation : [
-		StoreAndFinish({ wba : WriteBackAction }),
+		StoreAndFinish({ wba : WriteBackAction, isThumb : Bool }),
 		WriteMultiple(
 			{
 				mask : U32,
 				next_addr : U32,
 				wba : WriteBackAction,
 				kind : [CurrentBank, UserBank],
+				isThumb : Bool,
 			},
 		),
 		SetRegAndFinish(
 			{
 				rd : GPR,
 				val : U32,
+				isThumb : Bool,
 			},
 		),
 	]
+
+	post_memory_op_arm_thumb_dispatcher : Cpu, WriteBackAction, PC_status, Bool -> Try(Execution_state, [InvalidMode])
+	post_memory_op_arm_thumb_dispatcher = |c, wba, pcs, isThumb| {
+		outcome = match wba {
+			NoWriteBack => { cpu: c, pc_status: pcs }
+			WriteBack(x) => {
+				cpu: cpu_setReg(x.rn, c, x.val)?,
+				pc_status: pcs,
+			}
+		}
+		Ok(
+			if isThumb {
+				thumb_instructions_settle(outcome)
+			} else {
+				arm_instructions_settle(outcome)
+			},
+		)
+	}
 
 	resume_read : Cpu,
 	U32,
@@ -199,7 +222,7 @@ Cpu := {
 		}
 		match rc {
 			SetRegAndFinish(x) => {
-				arm_post_memory_operation(
+				post_memory_op_arm_thumb_dispatcher(
 					if x.rd == R15 {
 						if get_seg_of_u32_certain(raw_val, 0, 2) == 2 {
 							return Err(UNPREDICTABLE)
@@ -216,6 +239,7 @@ Cpu := {
 					} else {
 						PCSequential
 					},
+					x.isThumb,
 				)
 			}
 			LoadMultiple(x) => {
@@ -225,10 +249,11 @@ Cpu := {
 				if gpr == R15 {
 					match x.kind {
 						CurrentBank => {
-							arm_post_memory_operation(
+							post_memory_op_arm_thumb_dispatcher(
 								cpu_setReg(gpr, c, raw_val.bitwise_and(0xFFFFFFFC))?,
 								x.wba,
 								PCWritten,
+								x.isThumb,
 							)
 						}
 						UserBank => Err(WTFisThis) # Impossible, LDM(2) cannot have PC
@@ -241,7 +266,7 @@ Cpu := {
 									WriteBack(wb) => cpu_setReg(wb.rn, c, wb.val)?
 								}
 								restore_cpsr = { ..cpu_wb, cpsr: saved.spsr }
-								arm_post_memory_operation(
+								post_memory_op_arm_thumb_dispatcher(
 									cpu_setReg(
 										R15,
 										restore_cpsr,
@@ -253,6 +278,7 @@ Cpu := {
 									)?,
 									NoWriteBack,
 									PCWritten,
+									x.isThumb,
 								)
 							}
 						}
@@ -267,10 +293,11 @@ Cpu := {
 						cpu_setReg(gpr, c, raw_val)?
 					}
 					if new_mask == 0 {
-						arm_post_memory_operation(
+						post_memory_op_arm_thumb_dispatcher(
 							new_cpu,
 							x.wba,
 							PCSequential,
+							x.isThumb,
 						)
 					} else {
 						Ok(
@@ -295,7 +322,7 @@ Cpu := {
 						addr: x.addr,
 						width: x.width,
 						val: x.rm_val,
-						continuation: SetRegAndFinish({ rd: x.rd, val: rotate(x.rot, raw_val) }),
+						continuation: SetRegAndFinish({ rd: x.rd, val: rotate(x.rot, raw_val), isThumb: x.isThumb }),
 					}),
 				)
 			}
@@ -315,15 +342,16 @@ Cpu := {
 			U32.bitwise_and(x, 4294967295 - U32.pow(2, i))
 		}
 		match wc {
-			StoreAndFinish(x) => arm_post_memory_operation(c, x.wba, PCSequential)
+			StoreAndFinish(x) => post_memory_op_arm_thumb_dispatcher(c, x.wba, PCSequential, x.isThumb)
 			WriteMultiple(x) => {
 				pop_reg = U32.count_trailing_zero_bits(x.mask)
 				new_mask = nuker(x.mask, pop_reg.to_u32())
 				if new_mask == 0 {
-					arm_post_memory_operation(
+					post_memory_op_arm_thumb_dispatcher(
 						c,
 						x.wba,
 						PCSequential,
+						x.isThumb,
 					)
 				} else {
 					val = {
@@ -352,7 +380,7 @@ Cpu := {
 				}
 			}
 			SetRegAndFinish(x) =>
-				arm_post_memory_operation(cpu_setReg(x.rd, c, x.val)?, NoWriteBack, PCSequential)
+				post_memory_op_arm_thumb_dispatcher(cpu_setReg(x.rd, c, x.val)?, NoWriteBack, PCSequential, x.isThumb)
 		}
 	}
 
@@ -370,18 +398,6 @@ Cpu := {
 	execute_arm_opcode = |c, op| {
 		arm_instructions_execute(op, c)
 	}
-}
-
-arm_post_memory_operation : Cpu, WriteBackAction, PC_status -> Try(Execution_state, [InvalidMode])
-arm_post_memory_operation = |c, wba, pcs| {
-	Ok(
-		arm_instructions_settle(
-			match wba {
-				NoWriteBack => { cpu: c, pc_status: pcs }
-				WriteBack(x) => { cpu: cpu_setReg(x.rn, c, x.val)?, pc_status: pcs }
-			},
-		),
-	)
 }
 
 PC_status : [PCSequential, PCWritten]
@@ -1492,6 +1508,7 @@ arm_single_data_transfer_execute = |op, c| {
 						} else {
 							NoWriteBack
 						},
+						isThumb: False,
 					}),
 				}),
 			)
@@ -1549,6 +1566,7 @@ arm_single_data_transfer_execute = |op, c| {
 						} else {
 							NoWriteBack
 						},
+						isThumb: False,
 					}),
 				}),
 			)
@@ -1606,6 +1624,7 @@ arm_single_data_transfer_execute = |op, c| {
 						} else {
 							NoWriteBack
 						},
+						isThumb: False,
 					}),
 				}),
 			)
@@ -1662,6 +1681,7 @@ arm_single_data_transfer_execute = |op, c| {
 							} else {
 								NoWriteBack
 							},
+							isThumb: False,
 						}),
 					}),
 				)
@@ -1712,6 +1732,7 @@ arm_single_data_transfer_execute = |op, c| {
 								),
 							),
 							wba: WriteBack({ rn: rn, val: adjusted }),
+							isThumb: False,
 						}),
 					}),
 				)
@@ -1757,6 +1778,7 @@ arm_single_data_transfer_execute = |op, c| {
 							rd: rd,
 							rot: Identity,
 							wba: WriteBack({ rn: rn, val: adjusted }),
+							isThumb: False,
 						}),
 					}),
 				)
@@ -1805,7 +1827,7 @@ arm_single_data_transfer_execute = |op, c| {
 					addr: addr,
 					width: W32,
 					val: rd_val,
-					continuation: StoreAndFinish({ wba: WriteBack({ rn: rn, val: adjusted }) }),
+					continuation: StoreAndFinish({ wba: WriteBack({ rn: rn, val: adjusted }), isThumb: False }),
 				}),
 			)
 		}
@@ -1854,6 +1876,7 @@ arm_single_data_transfer_execute = |op, c| {
 					val: rd_val,
 					continuation: StoreAndFinish({
 						wba: WriteBack({ rn: rn, val: adjusted }),
+						isThumb: False,
 					}),
 				}),
 			)
@@ -1922,6 +1945,7 @@ arm_single_data_swap_execute = |op, c| {
 							rm_val: cpu_getReg(rm, c)?,
 							width: W32,
 							rot: RotRight(U32.to_u8_wrap(8 * rot_val)),
+							isThumb: False,
 						}),
 					}),
 				)
@@ -1939,6 +1963,7 @@ arm_single_data_swap_execute = |op, c| {
 							rm_val: get_seg_of_u32_certain(cpu_getReg(rm, c)?, 0, 8),
 							width: W8,
 							rot: Identity,
+							isThumb: False,
 						}),
 					}),
 				)
@@ -2050,6 +2075,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 								} else {
 									NoWriteBack
 								},
+								isThumb: False,
 							}),
 						}),
 					)
@@ -2107,6 +2133,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 							} else {
 								NoWriteBack
 							},
+							isThumb: False,
 						}),
 					}),
 				)
@@ -2166,6 +2193,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 								} else {
 									NoWriteBack
 								},
+								isThumb: False,
 							}),
 						}),
 					)
@@ -2226,6 +2254,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 								} else {
 									NoWriteBack
 								},
+								isThumb: False,
 							}),
 						}),
 					)
@@ -2336,6 +2365,7 @@ arm_block_data_transfer_execute = |op, c| {
 									} else {
 										UserBank
 									},
+									isThumb: False,
 								}),
 							}),
 						)
@@ -2371,6 +2401,7 @@ arm_block_data_transfer_execute = |op, c| {
 									} else {
 										UserBank
 									},
+									isThumb: False,
 								}),
 							}),
 						)
@@ -2454,6 +2485,8 @@ thumb_instructions_decode = |i| {
 		Ok(Branch)
 	} else if is_dp(i) {
 		Ok(DataProcessing)
+	} else if bits_match_16(i, 0b11111_00000000000, 0b01001_00000000000) {
+		Ok(LoadLiteral)
 	} else {
 		Err(TEMP_NOT_DONE)
 	}
@@ -2972,6 +3005,32 @@ thumb_data_processing_decode = |i| {
 	} else {
 		{ code: ADD, format: UndefinedFormat }
 	}
+}
+
+thumb_instructions_settle : Execution_outcome -> Execution_state
+thumb_instructions_settle = |outcome| {
+	Complete(thumb_instructions_finalize(outcome))
+}
+
+thumb_load_literal_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis])
+thumb_load_literal_execute = |op, c| {
+	pc_val = pc_inc(cpu_getReg(R15, c)?, 4).bitwise_and(0xFFFFFFFC)
+	immed_8 = get_seg_of_u16_certain(op, 0, 8).to_u32()
+	rd = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
+	addr = pc_val.plus_wrap(immed_8.times_wrap(4))
+	Ok(
+		R({
+			cpu: c,
+			addr: addr,
+			width: W32,
+			continuation: SetRegAndFinish({
+				rd: rd,
+				rot: Identity,
+				wba: NoWriteBack,
+				isThumb: True,
+			}),
+		}),
+	)
 }
 
 # WIP!
