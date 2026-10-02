@@ -55,7 +55,6 @@ ThumbInstructions : [
 	Branch,
 	SoftwareInterrupt,
 	UndefinedInstruction,
-	LoadLiteral,
 	LoadStore,
 	PushPop,
 	LoadStoreMultiple,
@@ -2455,20 +2454,6 @@ condition_pass = |c, i| {
 	}
 }
 
-thumb_instructions_finalize : Execution_outcome -> Cpu
-thumb_instructions_finalize = |content| {
-	match content.pc_status {
-		PCSequential => {
-			..content.cpu,
-			regs: {
-				..content.cpu.regs,
-				r15: pc_inc(content.cpu.regs.r15, 2),
-			},
-		}
-		_ => content.cpu
-	}
-}
-
 thumb_instructions_decode : U16 -> Try(ThumbInstructions, [WTFisThis, UNPREDICTABLE, TEMP_NOT_DONE])
 thumb_instructions_decode = |i| {
 	is_dp = |op| {
@@ -2496,6 +2481,25 @@ thumb_instructions_decode = |i| {
 	} else {
 		Err(TEMP_NOT_DONE)
 	}
+}
+
+thumb_instructions_finalize : Execution_outcome -> Cpu
+thumb_instructions_finalize = |content| {
+	match content.pc_status {
+		PCSequential => {
+			..content.cpu,
+			regs: {
+				..content.cpu.regs,
+				r15: pc_inc(content.cpu.regs.r15, 2),
+			},
+		}
+		_ => content.cpu
+	}
+}
+
+thumb_instructions_settle : Execution_outcome -> Execution_state
+thumb_instructions_settle = |outcome| {
+	Complete(thumb_instructions_finalize(outcome))
 }
 
 thumb_undefined_instruction_execute : Cpu -> Try(Cpu.Execution_outcome, [InvalidMode, NoSPSR])
@@ -2602,6 +2606,97 @@ thumb_branch_execute = |op, c| {
 		}
 	} else {
 		Err(Branch_Type_Unknown)
+	}
+}
+
+thumb_data_processing_decode : U16 -> Thumb_ALUOpCode
+thumb_data_processing_decode = |i| {
+	if bits_match_16(i, 0b111111_00000_00000, 0b000110_00000_00000) {
+		if get_ith_bit_u16_certain(i, 9) {
+			{ code: SUB, format: Format1 }
+		} else {
+			{ code: ADD, format: Format1 }
+		}
+	} else if bits_match_16(i, 0b111111_00000_00000, 0b000111_00000_00000) {
+		if get_ith_bit_u16_certain(i, 9) {
+			{ code: SUB, format: Format2 }
+		} else {
+			{ code: ADD, format: Format2 }
+		}
+	} else if bits_match_16(i, 0b111000_00000_00000, 0b001000_00000_00000) {
+		if bits_match_16(i, 0b110_00000_00000, 0b000_00000_00000) {
+			{ code: MOV, format: Format3 }
+		} else if bits_match_16(i, 0b110_00000_00000, 0b010_00000_00000) {
+			{ code: CMP, format: Format3 }
+		} else if bits_match_16(i, 0b110_00000_00000, 0b100_00000_00000) {
+			{ code: ADD, format: Format3 }
+		} else {
+			{ code: SUB, format: Format3 }
+		}
+	} else if bits_match_16(i, 0b111000_00000_00000, 0) {
+		if bits_match_16(i, 0b000110_00000_00000, 0) {
+			{ code: LSL, format: Format4 }
+		} else if bits_match_16(i, 0b000110_00000_00000, 0b010_00000_00000) {
+			{ code: LSR, format: Format4 }
+		} else if bits_match_16(i, 0b000110_00000_00000, 0b100_00000_00000) {
+			{ code: ASR, format: Format4 }
+		} else {
+			{ code: NoSuchOp, format: Format4 }
+		}
+	} else if bits_match_16(i, 0b111111_00000_00000, 0b010000_00000_00000) {
+		if bits_match_16(i, 0b1111_000000, 0b0000_000000) {
+			{ code: AND, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0001_000000) {
+			{ code: EOR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0010_000000) {
+			{ code: LSL, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0011_000000) {
+			{ code: LSR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0100_000000) {
+			{ code: ASR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0101_000000) {
+			{ code: ADC, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0110_000000) {
+			{ code: SBC, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b0111_000000) {
+			{ code: ROR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1000_000000) {
+			{ code: TST, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1001_000000) {
+			{ code: NEG, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1010_000000) {
+			{ code: CMP, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1011_000000) {
+			{ code: CMN, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1100_000000) {
+			{ code: ORR, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1101_000000) {
+			{ code: MUL, format: Format5 }
+		} else if bits_match_16(i, 0b1111_000000, 0b1110_000000) {
+			{ code: BIC, format: Format5 }
+		} else {
+			{ code: MVN, format: Format5 }
+		}
+	} else if bits_match_16(i, 0b111100_00000_00000, 0b101000_00000_00000) {
+		{ code: ADD, format: Format6 }
+	} else if bits_match_16(i, 0b11111111_000_00000, 0b10110000_000_00000) {
+		if bits_match_16(i, 0b1_0000000, 0b1_0000000) {
+			{ code: SUB, format: Format7 }
+		} else {
+			{ code: ADD, format: Format7 }
+		}
+	} else if bits_match_16(i, 0b111111_00000_00000, 0b010001_00000_00000) {
+		if bits_match_16(i, 0b11_00000000, 0b10_00000000) {
+			{ code: MOV, format: Format8 }
+		} else if bits_match_16(i, 0b11_00000000, 0b00_00000000) {
+			{ code: ADD, format: Format8 }
+		} else if bits_match_16(i, 0b11_00000000, 0b01_00000000) {
+			{ code: CMP, format: Format8 }
+		} else {
+			{ code: NoSuchOp, format: Format8 }
+		}
+	} else {
+		{ code: ADD, format: UndefinedFormat }
 	}
 }
 
@@ -2922,134 +3017,6 @@ thumb_data_processing_execute = |i, c| {
 	}
 }
 
-thumb_data_processing_decode : U16 -> Thumb_ALUOpCode
-thumb_data_processing_decode = |i| {
-	if bits_match_16(i, 0b111111_00000_00000, 0b000110_00000_00000) {
-		if get_ith_bit_u16_certain(i, 9) {
-			{ code: SUB, format: Format1 }
-		} else {
-			{ code: ADD, format: Format1 }
-		}
-	} else if bits_match_16(i, 0b111111_00000_00000, 0b000111_00000_00000) {
-		if get_ith_bit_u16_certain(i, 9) {
-			{ code: SUB, format: Format2 }
-		} else {
-			{ code: ADD, format: Format2 }
-		}
-	} else if bits_match_16(i, 0b111000_00000_00000, 0b001000_00000_00000) {
-		if bits_match_16(i, 0b110_00000_00000, 0b000_00000_00000) {
-			{ code: MOV, format: Format3 }
-		} else if bits_match_16(i, 0b110_00000_00000, 0b010_00000_00000) {
-			{ code: CMP, format: Format3 }
-		} else if bits_match_16(i, 0b110_00000_00000, 0b100_00000_00000) {
-			{ code: ADD, format: Format3 }
-		} else {
-			{ code: SUB, format: Format3 }
-		}
-	} else if bits_match_16(i, 0b111000_00000_00000, 0) {
-		if bits_match_16(i, 0b000110_00000_00000, 0) {
-			{ code: LSL, format: Format4 }
-		} else if bits_match_16(i, 0b000110_00000_00000, 0b010_00000_00000) {
-			{ code: LSR, format: Format4 }
-		} else if bits_match_16(i, 0b000110_00000_00000, 0b100_00000_00000) {
-			{ code: ASR, format: Format4 }
-		} else {
-			{ code: NoSuchOp, format: Format4 }
-		}
-	} else if bits_match_16(i, 0b111111_00000_00000, 0b010000_00000_00000) {
-		if bits_match_16(i, 0b1111_000000, 0b0000_000000) {
-			{ code: AND, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0001_000000) {
-			{ code: EOR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0010_000000) {
-			{ code: LSL, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0011_000000) {
-			{ code: LSR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0100_000000) {
-			{ code: ASR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0101_000000) {
-			{ code: ADC, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0110_000000) {
-			{ code: SBC, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0111_000000) {
-			{ code: ROR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1000_000000) {
-			{ code: TST, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1001_000000) {
-			{ code: NEG, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1010_000000) {
-			{ code: CMP, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1011_000000) {
-			{ code: CMN, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1100_000000) {
-			{ code: ORR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1101_000000) {
-			{ code: MUL, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1110_000000) {
-			{ code: BIC, format: Format5 }
-		} else {
-			{ code: MVN, format: Format5 }
-		}
-	} else if bits_match_16(i, 0b111100_00000_00000, 0b101000_00000_00000) {
-		{ code: ADD, format: Format6 }
-	} else if bits_match_16(i, 0b11111111_000_00000, 0b10110000_000_00000) {
-		if bits_match_16(i, 0b1_0000000, 0b1_0000000) {
-			{ code: SUB, format: Format7 }
-		} else {
-			{ code: ADD, format: Format7 }
-		}
-	} else if bits_match_16(i, 0b111111_00000_00000, 0b010001_00000_00000) {
-		if bits_match_16(i, 0b11_00000000, 0b10_00000000) {
-			{ code: MOV, format: Format8 }
-		} else if bits_match_16(i, 0b11_00000000, 0b00_00000000) {
-			{ code: ADD, format: Format8 }
-		} else if bits_match_16(i, 0b11_00000000, 0b01_00000000) {
-			{ code: CMP, format: Format8 }
-		} else {
-			{ code: NoSuchOp, format: Format8 }
-		}
-	} else {
-		{ code: ADD, format: UndefinedFormat }
-	}
-}
-
-thumb_load_store_execute : U16,
-Cpu -> Try(
-	Execution_state,
-	[
-		WTFisThis,
-		InvalidMode,
-		ImpossibleFormatOpCombination(Thumb_LoadStoreOpCode),
-		UNPREDICTABLE,
-	],
-)
-thumb_load_store_execute = |i, c| {
-	op = thumb_load_store_decode(i)
-	chk = match op.format {
-		Format3 => {
-			thumb_load_literal_execute(i, c)
-		}
-		Format4 => {
-			thumb_load_store_sp_relative_execute(i, c)
-		}
-		Format1 => {
-			thumb_load_store_immediate_execute(i, c, op)
-		}
-		Format2 => {
-			thumb_load_store_register_offset_execute(i, c, op)
-		}
-		_ => Err(UNPREDICTABLE)
-	}
-	match chk {
-		Ok(x) => Ok(x)
-		Err(WTFisThis) => Err(WTFisThis)
-		Err(InvalidMode) => Err(InvalidMode)
-		Err(UNPREDICTABLE) => Err(UNPREDICTABLE)
-	}
-}
-
-# Ok the opCode part is a bit useless in our case
-# But I am just gonna keep it, maybe it can be useful in the future.
 thumb_load_store_decode : U16 -> Thumb_LoadStoreOpCode
 thumb_load_store_decode = |i| {
 	if bits_match_16(i, 0b11111_00000000000, 0b01001_00000000000) {
@@ -3103,168 +3070,32 @@ thumb_load_store_decode = |i| {
 	}
 }
 
-thumb_instructions_settle : Execution_outcome -> Execution_state
-thumb_instructions_settle = |outcome| {
-	Complete(thumb_instructions_finalize(outcome))
-}
-
-thumb_load_store_register_offset_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
-thumb_load_store_register_offset_execute = |op, c, t| {
-	rd = gpr_from_idx(get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
-	rn = gpr_from_idx(get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
-	rm = gpr_from_idx(get_seg_of_u16_certain(op, 6, 3).to_u8_wrap())?
-	rn_val = cpu_getReg(rn, c)?
-	rm_val = cpu_getReg(rm, c)?
-	match t.code {
-		LDR => {
-			addr = rn_val.plus_wrap(rm_val)
-			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W32,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: Identity,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
-					}),
-				)
-			}
+thumb_load_store_execute : U16,
+Cpu -> Try(
+	Execution_state,
+	[
+		WTFisThis,
+		InvalidMode,
+		ImpossibleFormatOpCombination(Thumb_LoadStoreOpCode),
+		UNPREDICTABLE,
+	],
+)
+thumb_load_store_execute = |i, c| {
+	op = thumb_load_store_decode(i)
+	match op.format {
+		Format3 => {
+			thumb_load_literal_execute(i, c)
 		}
-		LDRH => {
-			addr = rn_val.plus_wrap(rm_val)
-			if get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: Identity,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
-					}),
-				)
-			}
+		Format4 => {
+			thumb_load_store_sp_relative_execute(i, c)
 		}
-		LDRB => {
-			addr = rn_val.plus_wrap(rm_val)
-			Ok(
-				R({
-					cpu: c,
-					addr: addr,
-					width: W8,
-					continuation: SetRegAndFinish({
-						rd: rd,
-						rot: Identity,
-						wba: NoWriteBack,
-						isThumb: True,
-					}),
-				}),
-			)
+		Format1 => {
+			thumb_load_store_immediate_execute(i, c, op)
 		}
-		LDRSB => {
-			addr = rn_val.plus_wrap(rm_val)
-			Ok(
-				R({
-					cpu: c,
-					addr: addr,
-					width: W8,
-					continuation: SetRegAndFinish({
-						rd: rd,
-						rot: SignedExtend8,
-						wba: NoWriteBack,
-						isThumb: True,
-					}),
-				}),
-			)
+		Format2 => {
+			thumb_load_store_register_offset_execute(i, c, op)
 		}
-		LDRSH => {
-			addr = rn_val.plus_wrap(rm_val)
-			if get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: SignedExtend16,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
-					}),
-				)
-			}
-		}
-		STR => {
-			rd_val = cpu_getReg(rd, c)?
-			addr = rn_val.plus_wrap(rm_val)
-			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					W({
-						cpu: c,
-						addr: addr,
-						width: W32,
-						val: rd_val,
-						continuation: StoreAndFinish({
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
-					}),
-				)
-			}
-		}
-		STRB => {
-			rd_val = cpu_getReg(rd, c)?
-			addr = rn_val.plus_wrap(rm_val)
-			Ok(
-				W({
-					cpu: c,
-					addr: addr,
-					width: W8,
-					val: rd_val,
-					continuation: StoreAndFinish({
-						wba: NoWriteBack,
-						isThumb: True,
-					}),
-				}),
-			)
-		}
-		STRH => {
-			rd_val = cpu_getReg(rd, c)?
-			addr = rn_val.plus_wrap(rm_val)
-			if get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					W({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						val: rd_val,
-						continuation: StoreAndFinish({
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
-					}),
-				)
-			}
-		}
-		_ => Err(WTFisThis)
+		_ => Err(UNPREDICTABLE)
 	}
 }
 
@@ -3391,22 +3222,59 @@ thumb_load_store_immediate_execute = |op, c, t| {
 	}
 }
 
-thumb_load_store_sp_relative_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
-thumb_load_store_sp_relative_execute = |op, c| {
-	immed_8 = get_seg_of_u16_certain(op, 0, 8).to_u32()
-	rd = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
-	if get_ith_bit_u16_certain(op, 11) {
-		# Loading a word here
-		sp_val = cpu_getReg(R13, c)?
-		addr = sp_val.plus_wrap(immed_8.times_wrap(4))
-		if get_seg_of_u32_certain(addr, 0, 2) != 0 {
-			return Err(UNPREDICTABLE)
-		} else {
+thumb_load_store_register_offset_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
+thumb_load_store_register_offset_execute = |op, c, t| {
+	rd = gpr_from_idx(get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
+	rn = gpr_from_idx(get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
+	rm = gpr_from_idx(get_seg_of_u16_certain(op, 6, 3).to_u8_wrap())?
+	rn_val = cpu_getReg(rn, c)?
+	rm_val = cpu_getReg(rm, c)?
+	addr = rn_val.plus_wrap(rm_val)
+	match t.code {
+		LDR => {
+			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+				Err(UNPREDICTABLE)
+			} else {
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W32,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: Identity,
+							wba: NoWriteBack,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+		}
+		LDRH => {
+			if get_ith_bit_u32_certain(addr, 0) {
+				return Err(UNPREDICTABLE)
+			} else {
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W16,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: Identity,
+							wba: NoWriteBack,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+		}
+		LDRB => {
 			Ok(
 				R({
 					cpu: c,
 					addr: addr,
-					width: W32,
+					width: W8,
 					continuation: SetRegAndFinish({
 						rd: rd,
 						rot: Identity,
@@ -3416,18 +3284,66 @@ thumb_load_store_sp_relative_execute = |op, c| {
 				}),
 			)
 		}
-	} else {
-		rd_val = cpu_getReg(rd, c)?
-		sp_val = cpu_getReg(R13, c)?
-		addr = sp_val.plus_wrap(immed_8.times_wrap(4))
-		if get_seg_of_u32_certain(addr, 0, 2) != 0 {
-			return Err(UNPREDICTABLE)
-		} else {
+		LDRSB => {
+			Ok(
+				R({
+					cpu: c,
+					addr: addr,
+					width: W8,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: SignedExtend8,
+						wba: NoWriteBack,
+						isThumb: True,
+					}),
+				}),
+			)
+		}
+		LDRSH => {
+			if get_ith_bit_u32_certain(addr, 0) {
+				return Err(UNPREDICTABLE)
+			} else {
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: W16,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: SignedExtend16,
+							wba: NoWriteBack,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+		}
+		STR => {
+			rd_val = cpu_getReg(rd, c)?
+			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+				Err(UNPREDICTABLE)
+			} else {
+				Ok(
+					W({
+						cpu: c,
+						addr: addr,
+						width: W32,
+						val: rd_val,
+						continuation: StoreAndFinish({
+							wba: NoWriteBack,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+		}
+		STRB => {
+			rd_val = cpu_getReg(rd, c)?
 			Ok(
 				W({
 					cpu: c,
 					addr: addr,
-					width: W32,
+					width: W8,
 					val: rd_val,
 					continuation: StoreAndFinish({
 						wba: NoWriteBack,
@@ -3436,6 +3352,26 @@ thumb_load_store_sp_relative_execute = |op, c| {
 				}),
 			)
 		}
+		STRH => {
+			rd_val = cpu_getReg(rd, c)?
+			if get_ith_bit_u32_certain(addr, 0) {
+				return Err(UNPREDICTABLE)
+			} else {
+				Ok(
+					W({
+						cpu: c,
+						addr: addr,
+						width: W16,
+						val: rd_val,
+						continuation: StoreAndFinish({
+							wba: NoWriteBack,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+		}
+		_ => Err(WTFisThis)
 	}
 }
 
@@ -3458,6 +3394,52 @@ thumb_load_literal_execute = |op, c| {
 			}),
 		}),
 	)
+}
+
+thumb_load_store_sp_relative_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
+thumb_load_store_sp_relative_execute = |op, c| {
+	immed_8 = get_seg_of_u16_certain(op, 0, 8).to_u32()
+	rd = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
+	sp_val = cpu_getReg(R13, c)?
+	addr = sp_val.plus_wrap(immed_8.times_wrap(4))
+	if get_ith_bit_u16_certain(op, 11) {
+		# Loading a word here
+		if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+			return Err(UNPREDICTABLE)
+		} else {
+			Ok(
+				R({
+					cpu: c,
+					addr: addr,
+					width: W32,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: Identity,
+						wba: NoWriteBack,
+						isThumb: True,
+					}),
+				}),
+			)
+		}
+	} else {
+		rd_val = cpu_getReg(rd, c)?
+		if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+			return Err(UNPREDICTABLE)
+		} else {
+			Ok(
+				W({
+					cpu: c,
+					addr: addr,
+					width: W32,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: NoWriteBack,
+						isThumb: True,
+					}),
+				}),
+			)
+		}
+	}
 }
 
 # WIP!
