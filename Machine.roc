@@ -9,7 +9,10 @@ Machine :: {
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
 		if (m.cpu).is_thumb() {
-			Err(Temp_Thumb_not_implemented)
+			cur_pc = (m.cpu).getPC()
+			instruction = Bus.read16(m.bus, cur_pc)?
+			state = Cpu.execute_thumb_opcode(m.cpu, instruction)?
+			walk_execution_state(m, state)
 		} else {
 			cur_pc = (m.cpu).getPC()
 			instruction = Bus.read32(m.bus, cur_pc)?

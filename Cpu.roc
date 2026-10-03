@@ -251,7 +251,11 @@ Cpu := {
 					match x.kind {
 						CurrentBank => {
 							post_memory_op_arm_thumb_dispatcher(
-								cpu_setReg(gpr, c, raw_val.bitwise_and(0xFFFFFFFC))?,
+								if x.isThumb {
+									cpu_setReg(gpr, c, raw_val.bitwise_and(0xFFFFFFFE))?
+								} else {
+									cpu_setReg(gpr, c, raw_val.bitwise_and(0xFFFFFFFC))?
+								},
 								x.wba,
 								PCWritten,
 								x.isThumb,
@@ -398,6 +402,11 @@ Cpu := {
 	execute_arm_opcode : Cpu, U32 -> Try(Execution_state, _)
 	execute_arm_opcode = |c, op| {
 		arm_instructions_execute(op, c)
+	}
+
+	execute_thumb_opcode : Cpu, U16 -> Try(Execution_state, _)
+	execute_thumb_opcode = |c, op| {
+		thumb_instructions_execute(op, c)
 	}
 }
 
@@ -1423,7 +1432,6 @@ arm_single_data_transfer_execute : U32,
 Cpu -> Try(
 	Execution_state,
 	[
-		Temp_not_done,
 		WTFisThis,
 		InvalidMode,
 		UNPREDICTABLE,
@@ -2001,7 +2009,6 @@ arm_halfword_data_transfer_execute : U32,
 Cpu -> Try(
 	Execution_state,
 	[
-		Temp_not_done,
 		WTFisThis,
 		InvalidMode,
 		UNPREDICTABLE,
@@ -2278,7 +2285,6 @@ arm_block_data_transfer_execute : U32,
 Cpu -> Try(
 	Execution_state,
 	[
-		Temp_not_done,
 		UNPREDICTABLE,
 		InvalidMode,
 		WTFisThis,
@@ -2454,7 +2460,7 @@ condition_pass = |c, i| {
 	}
 }
 
-thumb_instructions_decode : U16 -> Try(ThumbInstructions, [WTFisThis, UNPREDICTABLE, TEMP_NOT_DONE])
+thumb_instructions_decode : U16 -> Try(ThumbInstructions, [WTFisThis, UNPREDICTABLE])
 thumb_instructions_decode = |i| {
 	is_dp = |op| {
 		tmp = thumb_data_processing_decode(op)
@@ -2468,6 +2474,11 @@ thumb_instructions_decode = |i| {
 		Ok(UndefinedInstruction)
 	} else if bits_match_16(i, 0b1111_1111_00000000, 0b1101_1111_00000000) {
 		Ok(SoftwareInterrupt)
+	} else if bits_match_16(i, 0b11111111_00000000, 0b01000111_00000000)
+		and !bits_match_16(i, 0b111, 0) {
+		Err(UNPREDICTABLE)
+	} else if bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_1_0000_000) {
+		Err(UNPREDICTABLE)
 	} else if bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_0_0000_000) # Reg BLX is not supported by old ARM
 		or bits_match_16(i, 0b1111_000000000000, 0b1101_000000000000)
 			or bits_match_16(i, 0b11111_00000000000, 0b11100_00000000000)
@@ -2478,8 +2489,12 @@ thumb_instructions_decode = |i| {
 		Ok(DataProcessing)
 	} else if is_ls(i) {
 		Ok(LoadStore)
+	} else if bits_match_16(i, 0b1111_000000000000, 0b1100_000000000000) {
+		Ok(LoadStoreMultiple) # Format 1, LDMIA and STMIA
+	} else if bits_match_16(i, 0b1111_0_11_000000000, 0b1011_0_10_000000000) {
+		Ok(PushPop)
 	} else {
-		Err(TEMP_NOT_DONE)
+		Err(WTFisThis)
 	}
 }
 
@@ -2500,6 +2515,189 @@ thumb_instructions_finalize = |content| {
 thumb_instructions_settle : Execution_outcome -> Execution_state
 thumb_instructions_settle = |outcome| {
 	Complete(thumb_instructions_finalize(outcome))
+}
+
+thumb_instructions_execute : U16, Cpu -> Try(Execution_state, _)
+thumb_instructions_execute = |op, c| {
+	cond = thumb_instructions_decode(op)?
+	match cond {
+		DataProcessing => Ok(thumb_instructions_settle(thumb_data_processing_execute(op, c)?))
+		Branch => Ok(thumb_instructions_settle(thumb_branch_execute(op, c)?))
+		SoftwareInterrupt => Ok(thumb_instructions_settle(thumb_software_interrupt_execute(c)?))
+		UndefinedInstruction => Ok(thumb_instructions_settle(thumb_undefined_instruction_execute(c)?))
+		LoadStore => thumb_load_store_execute(op, c)
+		LoadStoreMultiple => thumb_block_data_transfer_execute(op, c)
+		PushPop => thumb_push_pop_execute(op, c)
+	}
+}
+
+thumb_push_pop_execute : U16,
+Cpu -> Try(
+	Execution_state,
+	[
+		UNPREDICTABLE,
+		InvalidMode,
+		WTFisThis,
+	],
+)
+thumb_push_pop_execute = |op, c| {
+	sharp_reg = |x| {
+		U16.count_one_bits(get_seg_of_u16_certain(x, 0, 9))
+	}
+	if bits_match_16(op, 0b1_1111_1111, 0) {
+		Err(UNPREDICTABLE)
+	} else {
+		sp = cpu_getReg(R13, c)?
+		base = sp
+		aligned_base = (base // 4) * 4
+		span = U8.to_u32(sharp_reg(op)) * 4
+		match get_ith_bit_u16_certain(op, 11) {
+			True => {
+				trio = {
+					start_addr: aligned_base,
+					end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
+					wb_addr: base.plus_wrap(span),
+				}
+				Ok(
+					R({
+						cpu: c,
+						addr: trio.start_addr,
+						width: W32,
+						continuation: LoadMultiple({
+							mask: get_seg_of_u16_certain(op, 0, 8).to_u32() + if get_ith_bit_u16_certain(op, 8) {
+								U32.shl_wrap(1, 15)
+							} else {
+								0
+							},
+							next_addr: trio.start_addr.plus_wrap(4),
+							wba: WriteBack({
+								rn: R13,
+								val: base.plus_wrap(span),
+							}),
+							kind: CurrentBank,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+			False => {
+				# PUSH
+				tmp = U16.count_trailing_zero_bits(get_seg_of_u16_certain(op, 0, 9))
+				first_reg = if tmp == 8 {
+					R14
+				} else {
+					gpr_from_idx(tmp)?
+				}
+				trio = {
+					start_addr: aligned_base.minus_wrap(span),
+					end_addr: aligned_base.minus_wrap(4),
+					wb_addr: base.minus_wrap(span),
+				}
+				Ok(
+					W({
+						cpu: c,
+						addr: trio.start_addr,
+						width: W32,
+						val: cpu_getReg(first_reg, c)?,
+						continuation: WriteMultiple({
+							mask: get_seg_of_u16_certain(op, 0, 8).to_u32() + if get_ith_bit_u16_certain(op, 8) {
+								U32.shl_wrap(1, 14)
+							} else {
+								0
+							},
+							next_addr: trio.start_addr.plus_wrap(4),
+							wba: WriteBack({
+								rn: R13,
+								val: base.minus_wrap(span),
+							}),
+							kind: CurrentBank,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+		}
+	}
+}
+
+thumb_block_data_transfer_execute : U16,
+Cpu -> Try(
+	Execution_state,
+	[
+		UNPREDICTABLE,
+		InvalidMode,
+		WTFisThis,
+	],
+)
+thumb_block_data_transfer_execute = |op, c| {
+	rn = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
+	rn_included = |x| {
+		get_ith_bit_u16_certain(x, get_seg_of_u16_certain(x, 8, 3).to_u8_wrap())
+	}
+	sharp_reg = |x| {
+		U16.count_one_bits(get_seg_of_u16_certain(x, 0, 8))
+	}
+	if bits_match_16(op, 0b1111_1111, 0) {
+		Err(UNPREDICTABLE)
+	} else {
+		base = cpu_getReg(rn, c)?
+		aligned_base = (base // 4) * 4
+		span = U8.to_u32(sharp_reg(op)) * 4
+		trio = {
+			start_addr: aligned_base,
+			end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
+			wb_addr: base.plus_wrap(span),
+		}
+		potential_wba = WriteBack({
+			rn: rn,
+			val: base.plus_wrap(span),
+		})
+		match get_ith_bit_u16_certain(op, 11) {
+			True => {
+				Ok(
+					R({
+						cpu: c,
+						addr: trio.start_addr,
+						width: W32,
+						continuation: LoadMultiple({
+							mask: get_seg_of_u16_certain(op, 0, 8).to_u32(),
+							next_addr: trio.start_addr.plus_wrap(4),
+							wba: if rn_included(op) {
+								NoWriteBack
+							} else {
+								potential_wba
+							},
+							kind: CurrentBank,
+							isThumb: True,
+						}),
+					}),
+				)
+			}
+			False => {
+				# STMIA
+				first_reg = gpr_from_idx(U16.count_trailing_zero_bits(get_seg_of_u16_certain(op, 0, 8)))?
+				if rn_included(op) and first_reg != rn {
+					Err(UNPREDICTABLE)
+				} else {
+					Ok(
+						W({
+							cpu: c,
+							addr: trio.start_addr,
+							width: W32,
+							val: cpu_getReg(first_reg, c)?,
+							continuation: WriteMultiple({
+								mask: get_seg_of_u16_certain(op, 0, 8).to_u32(),
+								next_addr: trio.start_addr.plus_wrap(4),
+								wba: potential_wba,
+								kind: CurrentBank,
+								isThumb: True,
+							}),
+						}),
+					)
+				}
+			}
+		}
+	}
 }
 
 thumb_undefined_instruction_execute : Cpu -> Try(Cpu.Execution_outcome, [InvalidMode, NoSPSR])
