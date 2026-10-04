@@ -6,6 +6,14 @@ Machine :: {
 	bus : Bus,
 	cpu : Cpu,
 }.{
+	init : List(U8), List(U8) -> Try(Machine, _)
+	init = |bios, rom| {
+		Ok({
+			bus: Bus.init(bios, rom)?,
+			cpu: Cpu.init(),
+		})
+	}
+
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
 		if (m.cpu).is_thumb() {
@@ -19,6 +27,11 @@ Machine :: {
 			state = Cpu.execute_arm_opcode(m.cpu, instruction)?
 			walk_execution_state(m, state)
 		}
+	}
+
+	get_cpu : Machine -> Cpu
+	get_cpu = |m| {
+		m.cpu
 	}
 }
 

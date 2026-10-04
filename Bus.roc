@@ -1,19 +1,18 @@
 import MemoryRegion
 
-Bus :: {
-	ewram : List(U8),
-	iwram : List(U8),
-	gamepak_rom : List(U8),
-}.{
-	init : List(U8) -> Try(Bus, [ROMSizeTooLarge])
-	init = |rom| {
+Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List(U8) }.{
+	init : List(U8), List(U8) -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
+	init = |bios, rom| {
 		if rom.len() > 0x02000000 {
 			Err(ROMSizeTooLarge)
+		} else if bios.len() != 0x4000 {
+			Err(InvalidBIOSSize)
 		} else {
 			Ok({
 				ewram: List.repeat(0, 0x40000),
 				iwram: List.repeat(0, 0x8000),
 				gamepak_rom: rom,
+				bios: bios,
 			})
 		}
 	}
@@ -25,6 +24,7 @@ Bus :: {
 			CPUExternalRAM => (bus.ewram).get(U32.to_u64(relative_addr))
 			CPUInternalRAM => (bus.iwram).get(U32.to_u64(relative_addr))
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => (bus.gamepak_rom).get(U32.to_u64(relative_addr))
+			SystemROM => (bus.bios).get(U32.to_u64(relative_addr))
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -51,6 +51,7 @@ Bus :: {
 				iwram: (bus.iwram).set(relative_addr.to_u64(), cxt)?,
 			})
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
+			SystemROM => Ok(bus)
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -76,6 +77,7 @@ Bus :: {
 				CPUExternalRAM => Ok(combiner((bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.ewram).get(U32.to_u64(relative_addr))?))
 				CPUInternalRAM => Ok(combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?))
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok(combiner((bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr))?))
+				SystemROM => Ok(combiner((bus.bios).get(U32.to_u64(relative_addr.plus(1)))?, (bus.bios).get(U32.to_u64(relative_addr))?))
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -111,6 +113,7 @@ Bus :: {
 					iwram: (bus.iwram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
+				SystemROM => Ok(bus)
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -137,6 +140,7 @@ Bus :: {
 				CPUExternalRAM => Ok(combiner((bus.ewram).get(U32.to_u64(relative_addr.plus(3)))?, (bus.ewram).get(U32.to_u64(relative_addr.plus(2)))?, (bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.ewram).get(U32.to_u64(relative_addr))?))
 				CPUInternalRAM => Ok(combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(3)))?, (bus.iwram).get(U32.to_u64(relative_addr.plus(2)))?, (bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?))
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok(combiner((bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(3)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(2)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr))?))
+				SystemROM => Ok(combiner((bus.bios).get(U32.to_u64(relative_addr.plus(3)))?, (bus.bios).get(U32.to_u64(relative_addr.plus(2)))?, (bus.bios).get(U32.to_u64(relative_addr.plus(1)))?, (bus.bios).get(U32.to_u64(relative_addr))?))
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -177,6 +181,7 @@ Bus :: {
 					iwram: (bus.iwram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
+				SystemROM => Ok(bus)
 				_ => Err(UnsupportedRegion(region))
 			}
 		}

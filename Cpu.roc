@@ -114,6 +114,52 @@ Cpu := {
 	Rotation : [Identity, RotRight(U8), SignedExtend8, SignedExtend16]
 	WriteBackAction : [NoWriteBack, WriteBack({ rn : GPR, val : U32 })]
 
+	init : () -> Cpu
+	init = || {
+		rgs = {
+			r0: 0,
+			r1: 0,
+			r2: 0,
+			r3: 0,
+			r4: 0,
+			r5: 0,
+			r6: 0,
+			r7: 0,
+			r8: 0,
+			r8_fiq: 0,
+			r9: 0,
+			r9_fiq: 0,
+			r10: 0,
+			r10_fiq: 0,
+			r11: 0,
+			r11_fiq: 0,
+			r12: 0,
+			r12_fiq: 0,
+			r13: 0,
+			r13_fiq: 0,
+			r13_svc: 0,
+			r13_abt: 0,
+			r13_irq: 0,
+			r13_und: 0,
+			r14: 0,
+			r14_fiq: 0,
+			r14_svc: 0,
+			r14_abt: 0,
+			r14_irq: 0,
+			r14_und: 0,
+			r15: 0,
+		}
+		{
+			regs: rgs,
+			cpsr: 0b11010011,
+			spsr_fiq: 0,
+			spsr_svc: 0,
+			spsr_irq: 0,
+			spsr_und: 0,
+			spsr_abt: 0,
+		}
+	}
+
 	Execution_state : [
 		Complete(Cpu),
 		R(
