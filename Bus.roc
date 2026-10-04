@@ -1,6 +1,13 @@
 import MemoryRegion
+import IoRegs
 
-Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List(U8) }.{
+Bus :: {
+	ewram : List(U8),
+	iwram : List(U8),
+	gamepak_rom : List(U8),
+	bios : List(U8),
+	io_regs : IoRegs,
+}.{
 	init : List(U8), List(U8) -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
 	init = |bios, rom| {
 		if rom.len() > 0x02000000 {
@@ -13,11 +20,20 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 				iwram: List.repeat(0, 0x8000),
 				gamepak_rom: rom,
 				bios: bios,
+				io_regs: IoRegs.init(),
 			})
 		}
 	}
 
-	read8 : Bus, U32 -> Try(U8, [OutOfBounds, UnsupportedRegion(MemoryRegion)])
+	read8 : Bus,
+	U32 -> Try(
+		U8,
+		[
+			OutOfBounds,
+			UnsupportedRegion(MemoryRegion),
+			UnsupportedIORegOffset(U32),
+		],
+	)
 	read8 = |bus, addr| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		match region {
@@ -25,6 +41,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 			CPUInternalRAM => (bus.iwram).get(U32.to_u64(relative_addr))
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => (bus.gamepak_rom).get(U32.to_u64(relative_addr))
 			SystemROM => (bus.bios).get(U32.to_u64(relative_addr))
+			IORegs => IoRegs.read8(bus.io_regs, relative_addr)
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -36,6 +53,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 		[
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
+			UnsupportedIORegOffset(U32),
 			WriteIntoROM(U32),
 		],
 	)
@@ -52,6 +70,10 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 			})
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
 			SystemROM => Ok(bus)
+			IORegs => Ok({
+				..bus,
+				io_regs: IoRegs.write8(bus.io_regs, relative_addr, cxt)?,
+			})
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -63,6 +85,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
+			UnsupportedIORegOffset(U32),
 		],
 	)
 	read16 = |bus, addr| {
@@ -78,6 +101,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 				CPUInternalRAM => Ok(combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?))
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok(combiner((bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr))?))
 				SystemROM => Ok(combiner((bus.bios).get(U32.to_u64(relative_addr.plus(1)))?, (bus.bios).get(U32.to_u64(relative_addr))?))
+				IORegs => IoRegs.read16(bus.io_regs, relative_addr)
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -92,6 +116,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			WriteIntoROM(U32),
+			UnsupportedIORegOffset(U32),
 		],
 	)
 	write16 = |bus, addr, cxt| {
@@ -114,6 +139,10 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
 				SystemROM => Ok(bus)
+				IORegs => Ok({
+					..bus,
+					io_regs: IoRegs.write16(bus.io_regs, relative_addr, cxt)?,
+				})
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -126,6 +155,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
+			UnsupportedIORegOffset(U32),
 		],
 	)
 	read32 = |bus, addr| {
@@ -141,6 +171,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 				CPUInternalRAM => Ok(combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(3)))?, (bus.iwram).get(U32.to_u64(relative_addr.plus(2)))?, (bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?))
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok(combiner((bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(3)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(2)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr))?))
 				SystemROM => Ok(combiner((bus.bios).get(U32.to_u64(relative_addr.plus(3)))?, (bus.bios).get(U32.to_u64(relative_addr.plus(2)))?, (bus.bios).get(U32.to_u64(relative_addr.plus(1)))?, (bus.bios).get(U32.to_u64(relative_addr))?))
+				IORegs => IoRegs.read32(bus.io_regs, relative_addr)
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -155,6 +186,7 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			WriteIntoROM(U32),
+			UnsupportedIORegOffset(U32),
 		],
 	)
 	write32 = |bus, addr, cxt| {
@@ -182,6 +214,10 @@ Bus :: { ewram : List(U8), iwram : List(U8), gamepak_rom : List(U8), bios : List
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
 				SystemROM => Ok(bus)
+				IORegs => Ok({
+					..bus,
+					io_regs: IoRegs.write32(bus.io_regs, relative_addr, cxt)?,
+				})
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
