@@ -1,3 +1,18 @@
+DMAReg : {
+	sad_l : U16,
+	sad_h : U16,
+	dad_l : U16,
+	dad_h : U16,
+	cnt_l : U16,
+	cnt_h : U16,
+}
+
+TimerReg : {
+	reload : U16,
+	counter : U16,
+	control : U16,
+}
+
 IoRegs :: {
 	dispcnt : U16,
 	green_swap : U16,
@@ -41,30 +56,14 @@ IoRegs :: {
 	bldcnt : U16,
 	bldalpha : U16,
 	bldy : U16,
-	dma0sad_l : U16,
-	dma0sad_h : U16,
-	dma0dad_l : U16,
-	dma0dad_h : U16,
-	dma0cnt_l : U16,
-	dma0cnt_h : U16,
-	dma1sad_l : U16,
-	dma1sad_h : U16,
-	dma1dad_l : U16,
-	dma1dad_h : U16,
-	dma1cnt_l : U16,
-	dma1cnt_h : U16,
-	dma2sad_l : U16,
-	dma2sad_h : U16,
-	dma2dad_l : U16,
-	dma2dad_h : U16,
-	dma2cnt_l : U16,
-	dma2cnt_h : U16,
-	dma3sad_l : U16,
-	dma3sad_h : U16,
-	dma3dad_l : U16,
-	dma3dad_h : U16,
-	dma3cnt_l : U16,
-	dma3cnt_h : U16,
+	dma0 : DMAReg,
+	dma1 : DMAReg,
+	dma2 : DMAReg,
+	dma3 : DMAReg,
+	timer0 : TimerReg,
+	timer1 : TimerReg,
+	timer2 : TimerReg,
+	timer3 : TimerReg,
 }.{
 	init : () -> IoRegs
 	init = || {
@@ -111,30 +110,14 @@ IoRegs :: {
 			bldcnt: 0,
 			bldalpha: 0,
 			bldy: 0,
-			dma0sad_l: 0,
-			dma0sad_h: 0,
-			dma0dad_l: 0,
-			dma0dad_h: 0,
-			dma0cnt_l: 0,
-			dma0cnt_h: 0,
-			dma1sad_l: 0,
-			dma1sad_h: 0,
-			dma1dad_l: 0,
-			dma1dad_h: 0,
-			dma1cnt_l: 0,
-			dma1cnt_h: 0,
-			dma2sad_l: 0,
-			dma2sad_h: 0,
-			dma2dad_l: 0,
-			dma2dad_h: 0,
-			dma2cnt_l: 0,
-			dma2cnt_h: 0,
-			dma3sad_l: 0,
-			dma3sad_h: 0,
-			dma3dad_l: 0,
-			dma3dad_h: 0,
-			dma3cnt_l: 0,
-			dma3cnt_h: 0,
+			dma0: dma_init(),
+			dma1: dma_init(),
+			dma2: dma_init(),
+			dma3: dma_init(),
+			timer0: timer_init(),
+			timer1: timer_init(),
+			timer2: timer_init(),
+			timer3: timer_init(),
 		}
 	}
 
@@ -166,14 +149,30 @@ IoRegs :: {
 			0x52 => Ok(rgs.bldalpha.to_u8_wrap())
 			0x53 => Ok(rgs.bldalpha.shr_wrap(8).to_u8_wrap())
 			0x0B8 | 0x0B9 | 0x0C4 | 0x0C5 | 0x0D0 | 0x0D1 | 0x0DC | 0x0DD => Ok(0)
-			0x0BA => Ok(rgs.dma0cnt_h.to_u8_wrap())
-			0x0BB => Ok(rgs.dma0cnt_h.shr_wrap(8).to_u8_wrap())
-			0x0C6 => Ok(rgs.dma1cnt_h.to_u8_wrap())
-			0x0C7 => Ok(rgs.dma1cnt_h.shr_wrap(8).to_u8_wrap())
-			0x0D2 => Ok(rgs.dma2cnt_h.to_u8_wrap())
-			0x0D3 => Ok(rgs.dma2cnt_h.shr_wrap(8).to_u8_wrap())
-			0x0DE => Ok(rgs.dma3cnt_h.to_u8_wrap())
-			0x0DF => Ok(rgs.dma3cnt_h.shr_wrap(8).to_u8_wrap())
+			0x0BA => Ok(rgs.dma0.cnt_h.to_u8_wrap())
+			0x0BB => Ok(rgs.dma0.cnt_h.shr_wrap(8).to_u8_wrap())
+			0x0C6 => Ok(rgs.dma1.cnt_h.to_u8_wrap())
+			0x0C7 => Ok(rgs.dma1.cnt_h.shr_wrap(8).to_u8_wrap())
+			0x0D2 => Ok(rgs.dma2.cnt_h.to_u8_wrap())
+			0x0D3 => Ok(rgs.dma2.cnt_h.shr_wrap(8).to_u8_wrap())
+			0x0DE => Ok(rgs.dma3.cnt_h.to_u8_wrap())
+			0x0DF => Ok(rgs.dma3.cnt_h.shr_wrap(8).to_u8_wrap())
+			0x100 => Ok(rgs.timer0.counter.to_u8_wrap())
+			0x101 => Ok(rgs.timer0.counter.shr_wrap(8).to_u8_wrap())
+			0x102 => Ok(rgs.timer0.control.to_u8_wrap())
+			0x103 => Ok(rgs.timer0.control.shr_wrap(8).to_u8_wrap())
+			0x104 => Ok(rgs.timer1.counter.to_u8_wrap())
+			0x105 => Ok(rgs.timer1.counter.shr_wrap(8).to_u8_wrap())
+			0x106 => Ok(rgs.timer1.control.to_u8_wrap())
+			0x107 => Ok(rgs.timer1.control.shr_wrap(8).to_u8_wrap())
+			0x108 => Ok(rgs.timer2.counter.to_u8_wrap())
+			0x109 => Ok(rgs.timer2.counter.shr_wrap(8).to_u8_wrap())
+			0x10A => Ok(rgs.timer2.control.to_u8_wrap())
+			0x10B => Ok(rgs.timer2.control.shr_wrap(8).to_u8_wrap())
+			0x10C => Ok(rgs.timer3.counter.to_u8_wrap())
+			0x10D => Ok(rgs.timer3.counter.shr_wrap(8).to_u8_wrap())
+			0x10E => Ok(rgs.timer3.control.to_u8_wrap())
+			0x10F => Ok(rgs.timer3.control.shr_wrap(8).to_u8_wrap())
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -194,10 +193,18 @@ IoRegs :: {
 			0x50 => Ok(rgs.bldcnt)
 			0x52 => Ok(rgs.bldalpha)
 			0x0B8 | 0x0C4 | 0x0D0 | 0x0DC => Ok(0)
-			0x0BA => Ok(rgs.dma0cnt_h)
-			0x0C6 => Ok(rgs.dma1cnt_h)
-			0x0D2 => Ok(rgs.dma2cnt_h)
-			0x0DE => Ok(rgs.dma3cnt_h)
+			0x0BA => Ok(rgs.dma0.cnt_h)
+			0x0C6 => Ok(rgs.dma1.cnt_h)
+			0x0D2 => Ok(rgs.dma2.cnt_h)
+			0x0DE => Ok(rgs.dma3.cnt_h)
+			0x100 => Ok(rgs.timer0.counter)
+			0x102 => Ok(rgs.timer0.control)
+			0x104 => Ok(rgs.timer1.counter)
+			0x106 => Ok(rgs.timer1.control)
+			0x108 => Ok(rgs.timer2.counter)
+			0x10A => Ok(rgs.timer2.control)
+			0x10C => Ok(rgs.timer3.counter)
+			0x10E => Ok(rgs.timer3.control)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -235,10 +242,30 @@ IoRegs :: {
 				hi = read16(rgs, 0x052)?.to_u32().shl_wrap(16)
 				Ok(low + hi)
 			}
-			0x0B8 => Ok(rgs.dma0cnt_h.to_u32().shl_wrap(16))
-			0x0C4 => Ok(rgs.dma1cnt_h.to_u32().shl_wrap(16))
-			0x0D0 => Ok(rgs.dma2cnt_h.to_u32().shl_wrap(16))
-			0x0DC => Ok(rgs.dma3cnt_h.to_u32().shl_wrap(16))
+			0x0B8 => Ok(rgs.dma0.cnt_h.to_u32().shl_wrap(16))
+			0x0C4 => Ok(rgs.dma1.cnt_h.to_u32().shl_wrap(16))
+			0x0D0 => Ok(rgs.dma2.cnt_h.to_u32().shl_wrap(16))
+			0x0DC => Ok(rgs.dma3.cnt_h.to_u32().shl_wrap(16))
+			0x100 => {
+				low = rgs.timer0.counter.to_u32()
+				hi = read16(rgs, 0x102)?.to_u32().shl_wrap(16)
+				Ok(low + hi)
+			}
+			0x104 => {
+				low = rgs.timer1.counter.to_u32()
+				hi = read16(rgs, 0x106)?.to_u32().shl_wrap(16)
+				Ok(low + hi)
+			}
+			0x108 => {
+				low = rgs.timer2.counter.to_u32()
+				hi = read16(rgs, 0x10A)?.to_u32().shl_wrap(16)
+				Ok(low + hi)
+			}
+			0x10C => {
+				low = rgs.timer3.counter.to_u32()
+				hi = read16(rgs, 0x10E)?.to_u32().shl_wrap(16)
+				Ok(low + hi)
+			}
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -470,126 +497,166 @@ IoRegs :: {
 			}
 			offset if offset >= 0x56 and offset <= 0x5F => Ok(rgs)
 			0x0B0 | 0x0B1 => {
-				old_val = rgs.dma0sad_l
+				old_val = rgs.dma0.sad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xB0, adjusted_val)
 			}
 			0x0B2 | 0x0B3 => {
-				old_val = rgs.dma0sad_h
+				old_val = rgs.dma0.sad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xB2, adjusted_val)
 			}
 			0x0B4 | 0x0B5 => {
-				old_val = rgs.dma0dad_l
+				old_val = rgs.dma0.dad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xB4, adjusted_val)
 			}
 			0x0B6 | 0x0B7 => {
-				old_val = rgs.dma0dad_h
+				old_val = rgs.dma0.dad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xB6, adjusted_val)
 			}
 			0x0B8 | 0x0B9 => {
-				old_val = rgs.dma0cnt_l
+				old_val = rgs.dma0.cnt_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xB8, adjusted_val)
 			}
 			0x0BA | 0x0BB => {
-				old_val = rgs.dma0cnt_h
+				old_val = rgs.dma0.cnt_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xBA, adjusted_val)
 			}
 			0x0BC | 0x0BD => {
-				old_val = rgs.dma1sad_l
+				old_val = rgs.dma1.sad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xBC, adjusted_val)
 			}
 			0x0BE | 0x0BF => {
-				old_val = rgs.dma1sad_h
+				old_val = rgs.dma1.sad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xBE, adjusted_val)
 			}
 			0x0C0 | 0x0C1 => {
-				old_val = rgs.dma1dad_l
+				old_val = rgs.dma1.dad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xC0, adjusted_val)
 			}
 			0x0C2 | 0x0C3 => {
-				old_val = rgs.dma1dad_h
+				old_val = rgs.dma1.dad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xC2, adjusted_val)
 			}
 			0x0C4 | 0x0C5 => {
-				old_val = rgs.dma1cnt_l
+				old_val = rgs.dma1.cnt_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xC4, adjusted_val)
 			}
 			0x0C6 | 0x0C7 => {
-				old_val = rgs.dma1cnt_h
+				old_val = rgs.dma1.cnt_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xC6, adjusted_val)
 			}
 			0x0C8 | 0x0C9 => {
-				old_val = rgs.dma2sad_l
+				old_val = rgs.dma2.sad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xC8, adjusted_val)
 			}
 			0x0CA | 0x0CB => {
-				old_val = rgs.dma2sad_h
+				old_val = rgs.dma2.sad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xCA, adjusted_val)
 			}
 			0x0CC | 0x0CD => {
-				old_val = rgs.dma2dad_l
+				old_val = rgs.dma2.dad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xCC, adjusted_val)
 			}
 			0x0CE | 0x0CF => {
-				old_val = rgs.dma2dad_h
+				old_val = rgs.dma2.dad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xCE, adjusted_val)
 			}
 			0x0D0 | 0x0D1 => {
-				old_val = rgs.dma2cnt_l
+				old_val = rgs.dma2.cnt_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xD0, adjusted_val)
 			}
 			0x0D2 | 0x0D3 => {
-				old_val = rgs.dma2cnt_h
+				old_val = rgs.dma2.cnt_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xD2, adjusted_val)
 			}
 			0x0D4 | 0x0D5 => {
-				old_val = rgs.dma3sad_l
+				old_val = rgs.dma3.sad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xD4, adjusted_val)
 			}
 			0x0D6 | 0x0D7 => {
-				old_val = rgs.dma3sad_h
+				old_val = rgs.dma3.sad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xD6, adjusted_val)
 			}
 			0x0D8 | 0x0D9 => {
-				old_val = rgs.dma3dad_l
+				old_val = rgs.dma3.dad_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xD8, adjusted_val)
 			}
 			0x0DA | 0x0DB => {
-				old_val = rgs.dma3dad_h
+				old_val = rgs.dma3.dad_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xDA, adjusted_val)
 			}
 			0x0DC | 0x0DD => {
-				old_val = rgs.dma3cnt_l
+				old_val = rgs.dma3.cnt_l
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xDC, adjusted_val)
 			}
 			0x0DE | 0x0DF => {
-				old_val = rgs.dma3cnt_h
+				old_val = rgs.dma3.cnt_h
 				adjusted_val = replace_byte(old_val, isHi, val)
 				write16(rgs, 0xDE, adjusted_val)
 			}
 			offset if offset >= 0x0E0 and offset <= 0x0FF => Ok(rgs)
+			0x100 | 0x101 => {
+				old_val = rgs.timer0.reload
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x100, adjusted_val)
+			}
+			0x102 | 0x103 => {
+				old_val = rgs.timer0.control
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x102, adjusted_val)
+			}
+			0x104 | 0x105 => {
+				old_val = rgs.timer1.reload
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x104, adjusted_val)
+			}
+			0x106 | 0x107 => {
+				old_val = rgs.timer1.control
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x106, adjusted_val)
+			}
+			0x108 | 0x109 => {
+				old_val = rgs.timer2.reload
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x108, adjusted_val)
+			}
+			0x10A | 0x10B => {
+				old_val = rgs.timer2.control
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x10A, adjusted_val)
+			}
+			0x10C | 0x10D => {
+				old_val = rgs.timer3.reload
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x10C, adjusted_val)
+			}
+			0x10E | 0x10F => {
+				old_val = rgs.timer3.control
+				adjusted_val = replace_byte(old_val, isHi, val)
+				write16(rgs, 0x10E, adjusted_val)
+			}
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -650,31 +717,39 @@ IoRegs :: {
 			0x52 => Ok({ ..rgs, bldalpha: val.bitwise_and(0b0001_1111_0001_1111) }) # turns out this is writable according to mGBA
 			0x54 => Ok({ ..rgs, bldy: val.bitwise_and(0b0000_0000_0001_1111) })
 			offset if offset >= 0x056 and offset <= 0x05E and offset.mod_by(2) == 0 => Ok(rgs)
-			0x0B0 => Ok({ ..rgs, dma0sad_l: val.bitwise_and(0xFFFE) })
-			0x0B2 => Ok({ ..rgs, dma0sad_h: val.bitwise_and(0x07FF) })
-			0x0B4 => Ok({ ..rgs, dma0dad_l: val.bitwise_and(0xFFFE) })
-			0x0B6 => Ok({ ..rgs, dma0dad_h: val.bitwise_and(0x07FF) })
-			0x0B8 => Ok({ ..rgs, dma0cnt_l: val.bitwise_and(0x3FFF) })
-			0x0BA => Ok({ ..rgs, dma0cnt_h: val.bitwise_and(0xF7E0) })
-			0x0BC => Ok({ ..rgs, dma1sad_l: val.bitwise_and(0xFFFE) })
-			0x0BE => Ok({ ..rgs, dma1sad_h: val.bitwise_and(0x0FFF) })
-			0x0C0 => Ok({ ..rgs, dma1dad_l: val.bitwise_and(0xFFFE) })
-			0x0C2 => Ok({ ..rgs, dma1dad_h: val.bitwise_and(0x07FF) })
-			0x0C4 => Ok({ ..rgs, dma1cnt_l: val.bitwise_and(0x3FFF) })
-			0x0C6 => Ok({ ..rgs, dma1cnt_h: val.bitwise_and(0xF7E0) })
-			0x0C8 => Ok({ ..rgs, dma2sad_l: val.bitwise_and(0xFFFE) })
-			0x0CA => Ok({ ..rgs, dma2sad_h: val.bitwise_and(0x0FFF) })
-			0x0CC => Ok({ ..rgs, dma2dad_l: val.bitwise_and(0xFFFE) })
-			0x0CE => Ok({ ..rgs, dma2dad_h: val.bitwise_and(0x07FF) })
-			0x0D0 => Ok({ ..rgs, dma2cnt_l: val.bitwise_and(0x3FFF) })
-			0x0D2 => Ok({ ..rgs, dma2cnt_h: val.bitwise_and(0xF7E0) })
-			0x0D4 => Ok({ ..rgs, dma3sad_l: val.bitwise_and(0xFFFE) })
-			0x0D6 => Ok({ ..rgs, dma3sad_h: val.bitwise_and(0x0FFF) })
-			0x0D8 => Ok({ ..rgs, dma3dad_l: val.bitwise_and(0xFFFE) })
-			0x0DA => Ok({ ..rgs, dma3dad_h: val.bitwise_and(0x0FFF) })
-			0x0DC => Ok({ ..rgs, dma3cnt_l: val })
-			0x0DE => Ok({ ..rgs, dma3cnt_h: val.bitwise_and(0xFFE0) })
+			0x0B0 => Ok({ ..rgs, dma0: { ..rgs.dma0, sad_l: val.bitwise_and(0xFFFE) } })
+			0x0B2 => Ok({ ..rgs, dma0: { ..rgs.dma0, sad_h: val.bitwise_and(0x07FF) } })
+			0x0B4 => Ok({ ..rgs, dma0: { ..rgs.dma0, dad_l: val.bitwise_and(0xFFFE) } })
+			0x0B6 => Ok({ ..rgs, dma0: { ..rgs.dma0, dad_h: val.bitwise_and(0x07FF) } })
+			0x0B8 => Ok({ ..rgs, dma0: { ..rgs.dma0, cnt_l: val.bitwise_and(0x3FFF) } })
+			0x0BA => Ok({ ..rgs, dma0: { ..rgs.dma0, cnt_h: val.bitwise_and(0xF7E0) } })
+			0x0BC => Ok({ ..rgs, dma1: { ..rgs.dma1, sad_l: val.bitwise_and(0xFFFE) } })
+			0x0BE => Ok({ ..rgs, dma1: { ..rgs.dma1, sad_h: val.bitwise_and(0x0FFF) } })
+			0x0C0 => Ok({ ..rgs, dma1: { ..rgs.dma1, dad_l: val.bitwise_and(0xFFFE) } })
+			0x0C2 => Ok({ ..rgs, dma1: { ..rgs.dma1, dad_h: val.bitwise_and(0x07FF) } })
+			0x0C4 => Ok({ ..rgs, dma1: { ..rgs.dma1, cnt_l: val.bitwise_and(0x3FFF) } })
+			0x0C6 => Ok({ ..rgs, dma1: { ..rgs.dma1, cnt_h: val.bitwise_and(0xF7E0) } })
+			0x0C8 => Ok({ ..rgs, dma2: { ..rgs.dma2, sad_l: val.bitwise_and(0xFFFE) } })
+			0x0CA => Ok({ ..rgs, dma2: { ..rgs.dma2, sad_h: val.bitwise_and(0x0FFF) } })
+			0x0CC => Ok({ ..rgs, dma2: { ..rgs.dma2, dad_l: val.bitwise_and(0xFFFE) } })
+			0x0CE => Ok({ ..rgs, dma2: { ..rgs.dma2, dad_h: val.bitwise_and(0x07FF) } })
+			0x0D0 => Ok({ ..rgs, dma2: { ..rgs.dma2, cnt_l: val.bitwise_and(0x3FFF) } })
+			0x0D2 => Ok({ ..rgs, dma2: { ..rgs.dma2, cnt_h: val.bitwise_and(0xF7E0) } })
+			0x0D4 => Ok({ ..rgs, dma3: { ..rgs.dma3, sad_l: val.bitwise_and(0xFFFE) } })
+			0x0D6 => Ok({ ..rgs, dma3: { ..rgs.dma3, sad_h: val.bitwise_and(0x0FFF) } })
+			0x0D8 => Ok({ ..rgs, dma3: { ..rgs.dma3, dad_l: val.bitwise_and(0xFFFE) } })
+			0x0DA => Ok({ ..rgs, dma3: { ..rgs.dma3, dad_h: val.bitwise_and(0x0FFF) } })
+			0x0DC => Ok({ ..rgs, dma3: { ..rgs.dma3, cnt_l: val } })
+			0x0DE => Ok({ ..rgs, dma3: { ..rgs.dma3, cnt_h: val.bitwise_and(0xFFE0) } })
 			offset if offset >= 0x0E0 and offset <= 0x0FE and offset.mod_by(2) == 0 => Ok(rgs)
+			0x100 => Ok({ ..rgs, timer0: { ..rgs.timer0, reload: val } })
+			0x102 => Ok({ ..rgs, timer0: timer_write_control(rgs.timer0, val) })
+			0x104 => Ok({ ..rgs, timer1: { ..rgs.timer1, reload: val } })
+			0x106 => Ok({ ..rgs, timer1: timer_write_control(rgs.timer1, val) })
+			0x108 => Ok({ ..rgs, timer2: { ..rgs.timer2, reload: val } })
+			0x10A => Ok({ ..rgs, timer2: timer_write_control(rgs.timer2, val) })
+			0x10C => Ok({ ..rgs, timer3: { ..rgs.timer3, reload: val } })
+			0x10E => Ok({ ..rgs, timer3: timer_write_control(rgs.timer3, val) })
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -720,9 +795,18 @@ IoRegs :: {
 			0x0D8 => write16(write16(rgs, 0x0D8, lo)?, 0x0DA, hi)
 			0x0DC => write16(write16(rgs, 0x0DC, lo)?, 0x0DE, hi)
 			offset if offset >= 0x0E0 and offset <= 0x0FC and offset.mod_by(4) == 0 => Ok(rgs)
+			0x100 => write16(write16(rgs, 0x100, lo)?, 0x102, hi)
+			0x104 => write16(write16(rgs, 0x104, lo)?, 0x106, hi)
+			0x108 => write16(write16(rgs, 0x108, lo)?, 0x10A, hi)
+			0x10C => write16(write16(rgs, 0x10C, lo)?, 0x10E, hi)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
+}
+
+get_ith_bit_u16_certain : U16, U8 -> Bool
+get_ith_bit_u16_certain = |i, j| {
+	U16.shr_wrap(U16.shl_wrap(i, 16 - j - 1), 15) == 1
 }
 
 get_seg_of_u16_certain : U16, U8, U8 -> U16
@@ -737,5 +821,40 @@ replace_byte = |old_val, isHi, incoming_val| {
 		incoming_val.to_u16().shl_wrap(8) + old_val.bitwise_and(0b0000_0000_1111_1111)
 	} else {
 		incoming_val.to_u16() + old_val.bitwise_and(0b1111_1111_0000_0000)
+	}
+}
+
+timer_init : () -> TimerReg
+timer_init = || {
+	{
+		reload: 0,
+		counter: 0,
+		control: 0,
+	}
+}
+
+timer_write_control : TimerReg, U16 -> TimerReg
+timer_write_control = |reg, val| {
+	adjusted_val = val.bitwise_and(0b1100_0111)
+	{
+		..reg,
+		control: adjusted_val,
+		counter: if !get_ith_bit_u16_certain(reg.control, 7) and get_ith_bit_u16_certain(adjusted_val, 7) {
+			reg.reload
+		} else {
+			reg.counter
+		},
+	}
+}
+
+dma_init : () -> DMAReg
+dma_init = || {
+	{
+		sad_l: 0,
+		sad_h: 0,
+		dad_l: 0,
+		dad_h: 0,
+		cnt_l: 0,
+		cnt_h: 0,
 	}
 }
