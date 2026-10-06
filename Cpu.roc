@@ -1,3 +1,5 @@
+import Bits
+
 GPR : [R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13, R14, R15]
 
 Mode : [FIQ, Sup, Abort, IRQ, Undefined, User, Sys]
@@ -271,7 +273,7 @@ Cpu := {
 			SetRegAndFinish(x) => {
 				post_memory_op_arm_thumb_dispatcher(
 					if x.rd == R15 {
-						if get_seg_of_u32_certain(raw_val, 0, 2) == 2 {
+						if Bits.get_seg_of_u32_certain(raw_val, 0, 2) == 2 {
 							return Err(UNPREDICTABLE)
 						} else {
 							c_raw = cpu_setReg(x.rd, c, rotate(x.rot, raw_val))?
@@ -309,7 +311,7 @@ Cpu := {
 						}
 						UserBank => Err(WTFisThis) # Impossible, LDM(2) cannot have PC
 						ModeChanges(saved) => {
-							if !cpsr_getT(saved.spsr) and get_ith_bit_u32_certain(raw_val, 1) {
+							if !cpsr_getT(saved.spsr) and Bits.get_ith_bit_u32_certain(raw_val, 1) {
 								Err(UNPREDICTABLE)
 							} else {
 								cpu_wb = match x.wba {
@@ -482,7 +484,7 @@ signed_extend_u32 = |val, e| {
 	if e == 0 or e >= 32 {
 		val
 	} else {
-		if get_ith_bit_u32_certain(val, e - 1) {
+		if Bits.get_ith_bit_u32_certain(val, e - 1) {
 			U32.bitwise_or(4294967295 - U32.pow(2, e.to_u32()) + 1, val)
 		} else {
 			val
@@ -509,7 +511,7 @@ arithmetic_shift_right = |i, j| {
 	if j == 0 or i == 0 or i == 4294967295 {
 		i
 	} else {
-		tmp = get_ith_bit_u32_certain(i, 31)
+		tmp = Bits.get_ith_bit_u32_certain(i, 31)
 		if tmp {
 			arithmetic_shift_right(2147483648 + i // 2, j - 1)
 		} else {
@@ -547,23 +549,13 @@ get_ith_bit_u32 = |i, j| {
 	if j >= 32 {
 		Err(WTFisThis)
 	} else {
-		Ok(get_ith_bit_u32_certain(i, j))
+		Ok(Bits.get_ith_bit_u32_certain(i, j))
 	}
-}
-
-get_ith_bit_u16_certain : U16, U8 -> Bool
-get_ith_bit_u16_certain = |i, j| {
-	U16.shr_wrap(U16.shl_wrap(i, 16 - j - 1), 15) == 1
-}
-
-get_ith_bit_u32_certain : U32, U8 -> Bool
-get_ith_bit_u32_certain = |i, j| {
-	U32.shr_wrap(U32.shl_wrap(i, 32 - j - 1), 31) == 1
 }
 
 arm_s_flag : U32 -> Bool
 arm_s_flag = |i| {
-	get_ith_bit_u32_certain(i, 20)
+	Bits.get_ith_bit_u32_certain(i, 20)
 }
 
 get_seg_of_u32 : U32, U8, U8 -> Try(U32, [WTFisThis])
@@ -571,30 +563,8 @@ get_seg_of_u32 = |i, lsb, len| {
 	if lsb > 31 or len < 1 or len > 32 - lsb {
 		Err(WTFisThis)
 	} else {
-		Ok(get_seg_of_u32_certain(i, lsb, len))
+		Ok(Bits.get_seg_of_u32_certain(i, lsb, len))
 	}
-}
-
-get_seg_of_u16_certain : U16, U8, U8 -> U16
-get_seg_of_u16_certain = |i, lsb, len| {
-	tmp = 16 - len
-	U16.shr_wrap(U16.shl_wrap(U16.shr_wrap(i, lsb), tmp), tmp)
-}
-
-get_seg_of_u32_certain : U32, U8, U8 -> U32
-get_seg_of_u32_certain = |i, lsb, len| {
-	tmp = 32 - len
-	U32.shr_wrap(U32.shl_wrap(U32.shr_wrap(i, lsb), tmp), tmp)
-}
-
-bits_match_16 : U16, U16, U16 -> Bool
-bits_match_16 = |i, mask, target| {
-	U16.bitwise_and(i, mask) == target
-}
-
-bits_match_32 : U32, U32, U32 -> Bool
-bits_match_32 = |i, mask, target| {
-	U32.bitwise_and(i, mask) == target
 }
 
 gpr_from_idx : U8 -> Try(GPR, [WTFisThis])
@@ -622,7 +592,7 @@ gpr_from_idx = |i| {
 
 get_gpr_16_19 : U32 -> Try(GPR, [WTFisThis])
 get_gpr_16_19 = |i| {
-	tmp = get_seg_of_u32_certain(i, 16, 4)
+	tmp = Bits.get_seg_of_u32_certain(i, 16, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
 
@@ -634,7 +604,7 @@ arm_data_processing_get_rn_value = |i, c| {
 
 get_gpr_12_15 : U32 -> Try(GPR, [WTFisThis])
 get_gpr_12_15 = |i| {
-	tmp = get_seg_of_u32_certain(i, 12, 4)
+	tmp = Bits.get_seg_of_u32_certain(i, 12, 4)
 	gpr_from_idx(U32.to_u8_wrap(tmp))
 }
 
@@ -642,9 +612,9 @@ get_gpr_12_15 = |i| {
 arm_data_processing_operand_reg_value : U32, GPR, Cpu -> Try(U32, [InvalidMode])
 arm_data_processing_operand_reg_value = |i, gpr, c| {
 	match gpr {
-		R15 => if get_ith_bit_u32_certain(i, 25) {
+		R15 => if Bits.get_ith_bit_u32_certain(i, 25) {
 			Ok(pc_inc(c.regs.r15, 8))
-		} else if get_ith_bit_u32_certain(i, 4) {
+		} else if Bits.get_ith_bit_u32_certain(i, 4) {
 			Ok(pc_inc(c.regs.r15, 12))
 		} else {
 			Ok(pc_inc(c.regs.r15, 8))
@@ -659,7 +629,7 @@ arm_data_processing_operands_register = |i, c| {
 	rm_val = arm_data_processing_operand_reg_value(i, rm, c)?
 	shift_type = arm_data_processing_get_shift_type(i)
 	c_flag = cpsr_getC(c.cpsr)
-	if get_ith_bit_u32_certain(i, 4) {
+	if Bits.get_ith_bit_u32_certain(i, 4) {
 		x = arm_data_processing_get_rs(i)?
 		match x {
 			R15 => Err(UB_ShiftbyPC)
@@ -678,7 +648,7 @@ arm_data_processing_operands_immediate = |i, c_flag| {
 	if rotate_imm == 0 {
 		{ val: tmp, carry: c_flag }
 	} else {
-		{ val: tmp, carry: get_ith_bit_u32_certain(tmp, 31) }
+		{ val: tmp, carry: Bits.get_ith_bit_u32_certain(tmp, 31) }
 	}
 }
 
@@ -696,35 +666,35 @@ arm_data_processing_decode : U32 -> ALUOpCode
 arm_data_processing_decode = |i| {
 	# ctrl cv template: 0b0000000_1111_000000000000000000000
 	# 0b0000000_????_000000000000000000000
-	if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0000_000000000000000000000) {
+	if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0000_000000000000000000000) {
 		AND
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0001_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0001_000000000000000000000) {
 		EOR
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0010_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0010_000000000000000000000) {
 		SUB
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0011_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0011_000000000000000000000) {
 		RSB
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0100_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0100_000000000000000000000) {
 		ADD
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0101_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0101_000000000000000000000) {
 		ADC
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0110_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0110_000000000000000000000) {
 		SBC
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0111_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_0111_000000000000000000000) {
 		RSC
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1000_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1000_000000000000000000000) {
 		TST
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1001_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1001_000000000000000000000) {
 		TEQ
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1010_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1010_000000000000000000000) {
 		CMP
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1011_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1011_000000000000000000000) {
 		CMN
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1100_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1100_000000000000000000000) {
 		ORR
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1101_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1101_000000000000000000000) {
 		MOV
-	} else if bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1110_000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b0000000_1111_000000000000000000000, 0b0000000_1110_000000000000000000000) {
 		BIC
 	} else {
 		MVN
@@ -733,7 +703,7 @@ arm_data_processing_decode = |i| {
 
 arm_data_processing_shift_amount_uses_reg : U32 -> Bool
 arm_data_processing_shift_amount_uses_reg = |i| {
-	get_ith_bit_u32_certain(i, 4)
+	Bits.get_ith_bit_u32_certain(i, 4)
 }
 
 data_processing_lsl_by_immediate : U32, U8, Bool -> U32_carry
@@ -743,20 +713,20 @@ data_processing_lsl_by_immediate = |rm_val, shift_imm, c_flag| {
 	} else {
 		{
 			val: U32.shl_wrap(rm_val, shift_imm),
-			carry: get_ith_bit_u32_certain(rm_val, 32 - shift_imm),
+			carry: Bits.get_ith_bit_u32_certain(rm_val, 32 - shift_imm),
 		}
 	}
 }
 
 data_processing_lsl_by_register : U32, U32, Bool -> U32_carry
 data_processing_lsl_by_register = |rm_val, rs_val, c_flag| {
-	tmp = U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 8))
+	tmp = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(rs_val, 0, 8))
 	if tmp == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else if tmp < 32 {
-		{ val: U32.shl_wrap(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, 32 - tmp) }
+		{ val: U32.shl_wrap(rm_val, tmp), carry: Bits.get_ith_bit_u32_certain(rm_val, 32 - tmp) }
 	} else if tmp == 32 {
-		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 0) }
+		{ val: 0, carry: Bits.get_ith_bit_u32_certain(rm_val, 0) }
 	} else {
 		{ val: 0, carry: Bool.False }
 	}
@@ -785,21 +755,21 @@ data_processing_shift_by_register = |s, rm_val, rs_val, c_flag| {
 data_processing_lsr_by_immediate : U32, U8 -> U32_carry
 data_processing_lsr_by_immediate = |rm_val, shift_imm| {
 	if shift_imm == 0 {
-		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 31) }
+		{ val: 0, carry: Bits.get_ith_bit_u32_certain(rm_val, 31) }
 	} else {
-		{ val: U32.shr_wrap(rm_val, shift_imm), carry: get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
+		{ val: U32.shr_wrap(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
 	}
 }
 
 data_processing_lsr_by_register : U32, U32, Bool -> U32_carry
 data_processing_lsr_by_register = |rm_val, rs_val, c_flag| {
-	tmp = U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 8))
+	tmp = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(rs_val, 0, 8))
 	if tmp == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else if tmp < 32 {
-		{ val: U32.shr_wrap(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, tmp - 1) }
+		{ val: U32.shr_wrap(rm_val, tmp), carry: Bits.get_ith_bit_u32_certain(rm_val, tmp - 1) }
 	} else if tmp == 32 {
-		{ val: 0, carry: get_ith_bit_u32_certain(rm_val, 31) }
+		{ val: 0, carry: Bits.get_ith_bit_u32_certain(rm_val, 31) }
 	} else {
 		{ val: 0, carry: Bool.False }
 	}
@@ -808,26 +778,26 @@ data_processing_lsr_by_register = |rm_val, rs_val, c_flag| {
 data_processing_asr_by_immediate : U32, U8 -> U32_carry
 data_processing_asr_by_immediate = |rm_val, shift_imm| {
 	if shift_imm == 0 {
-		tmp = get_ith_bit_u32_certain(rm_val, 31)
+		tmp = Bits.get_ith_bit_u32_certain(rm_val, 31)
 		if !tmp {
 			{ val: 0, carry: Bool.False }
 		} else {
 			{ val: 0xFFFFFFFF, carry: Bool.True }
 		}
 	} else {
-		{ val: arithmetic_shift_right(rm_val, shift_imm), carry: get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
+		{ val: arithmetic_shift_right(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
 	}
 }
 
 data_processing_asr_by_register : U32, U32, Bool -> U32_carry
 data_processing_asr_by_register = |rm_val, rs_val, c_flag| {
-	tmp = U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 8))
+	tmp = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(rs_val, 0, 8))
 	if tmp == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else if tmp < 32 {
-		{ val: arithmetic_shift_right(rm_val, tmp), carry: get_ith_bit_u32_certain(rm_val, tmp - 1) }
+		{ val: arithmetic_shift_right(rm_val, tmp), carry: Bits.get_ith_bit_u32_certain(rm_val, tmp - 1) }
 	} else {
-		if !get_ith_bit_u32_certain(rm_val, 31) {
+		if !Bits.get_ith_bit_u32_certain(rm_val, 31) {
 			{ val: 0, carry: Bool.False }
 		} else {
 			{ val: 4294967295, carry: Bool.True }
@@ -842,7 +812,7 @@ data_processing_rrx = |rm_val, c_flag| {
 			Bool.True => U32.bitwise_or(2147483648, U32.shr_wrap(rm_val, 1))
 			_ => U32.shr_wrap(rm_val, 1)
 		},
-		carry: get_ith_bit_u32_certain(rm_val, 0),
+		carry: Bits.get_ith_bit_u32_certain(rm_val, 0),
 	}
 }
 
@@ -851,22 +821,22 @@ data_processing_ror_by_immediate = |rm_val, shift_imm, c_flag| {
 	if shift_imm == 0 {
 		data_processing_rrx(rm_val, c_flag)
 	} else {
-		{ val: rotate_right_u32(rm_val, shift_imm), carry: get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
+		{ val: rotate_right_u32(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
 	}
 }
 
 data_processing_ror_by_register : U32, U32, Bool -> U32_carry
 data_processing_ror_by_register = |rm_val, rs_val, c_flag| {
-	if U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 8)) == 0 {
+	if U32.to_u8_wrap(Bits.get_seg_of_u32_certain(rs_val, 0, 8)) == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else {
-		tmp = U32.to_u8_wrap(get_seg_of_u32_certain(rs_val, 0, 5))
+		tmp = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(rs_val, 0, 5))
 		if tmp == 0 {
-			{ val: rm_val, carry: get_ith_bit_u32_certain(rm_val, 31) }
+			{ val: rm_val, carry: Bits.get_ith_bit_u32_certain(rm_val, 31) }
 		} else {
 			{
 				val: rotate_right_u32(rm_val, tmp),
-				carry: get_ith_bit_u32_certain(rm_val, tmp - 1),
+				carry: Bits.get_ith_bit_u32_certain(rm_val, tmp - 1),
 			}
 		}
 	}
@@ -874,38 +844,38 @@ data_processing_ror_by_register = |rm_val, rs_val, c_flag| {
 
 arm_data_processing_get_shift_imm : U32 -> U8
 arm_data_processing_get_shift_imm = |i| {
-	U32.to_u8_wrap(get_seg_of_u32_certain(i, 7, 5))
+	U32.to_u8_wrap(Bits.get_seg_of_u32_certain(i, 7, 5))
 }
 
 get_gpr_0_3 : U32 -> Try(GPR, [WTFisThis])
 get_gpr_0_3 = |i| {
-	gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(i, 0, 4)))
+	gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(i, 0, 4)))
 }
 
 arm_data_processing_get_rs : U32 -> Try(GPR, [WTFisThis])
 arm_data_processing_get_rs = |i| {
-	gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(i, 8, 4)))
+	gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(i, 8, 4)))
 }
 
 arm_instructions_decode : U32 -> Try(ArmInstructions, [WTFisThis, UNPREDICTABLE])
 arm_instructions_decode = |i| {
-	if bits_match_32(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
+	if Bits.bits_match_32(i, 0b111_11011_00000000000000000000, 0b001_10000_00000000000000000000) {
 		Ok(UndefinedInstruction)
-	} else if bits_match_32(i, 0b111_11111_000000000000_1111_0000, 0b011_11111_000000000000_1111_0000) {
+	} else if Bits.bits_match_32(i, 0b111_11111_000000000000_1111_0000, 0b011_11111_000000000000_1111_0000) {
 		Ok(ArchitecturallyUndefined)
-	} else if bits_match_32(i, 0b1111_000000000000000000000000, 0b1111_000000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b1111_000000000000000000000000, 0b1111_000000000000000000000000) {
 		Ok(SoftwareInterrupt)
-	} else if bits_match_32(i, 0b0000_1111_1100_0000_0000_0000_1111_0000, 144) {
+	} else if Bits.bits_match_32(i, 0b0000_1111_1100_0000_0000_0000_1111_0000, 144) {
 		Ok(Multiply)
-	} else if bits_match_32(i, 0b0000_1111_1000_0000_0000_0000_1111_0000, 8388752) {
+	} else if Bits.bits_match_32(i, 0b0000_1111_1000_0000_0000_0000_1111_0000, 8388752) {
 		Ok(MultiplyLong)
-	} else if bits_match_32(i, 0b0000_1111_1011_0000_0000_1111_1111_0000, 16777360) {
+	} else if Bits.bits_match_32(i, 0b0000_1111_1011_0000_0000_1111_1111_0000, 16777360) {
 		Ok(SingleDataSwap)
-	} else if bits_match_32(i, 0b0000_1111_1111_1111_1111_1111_1111_0000, 0b1001011111111111100010000) {
+	} else if Bits.bits_match_32(i, 0b0000_1111_1111_1111_1111_1111_1111_0000, 0b1001011111111111100010000) {
 		Ok(BranchAndExchange)
-	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000)
-		and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
-		if get_seg_of_u32_certain(i, 8, 4) == 0 {
+	} else if Bits.bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b1001_0000)
+		and (Bits.get_ith_bit_u32_certain(i, 6) or Bits.get_ith_bit_u32_certain(i, 5)) {
+		if Bits.get_seg_of_u32_certain(i, 8, 4) == 0 {
 			Ok(HalfwordDataTransferRegOffset)
 		} else {
 			match arm_halfword_data_transfer_decode(i) {
@@ -913,28 +883,28 @@ arm_instructions_decode = |i| {
 				_ => Err(UNPREDICTABLE)
 			}
 		}
-	} else if bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000)
-		and (get_ith_bit_u32_certain(i, 6) or get_ith_bit_u32_certain(i, 5)) {
+	} else if Bits.bits_match_32(i, 0b0000_1110_0100_0000_0000_0000_1001_0000, 0b0100_0000_0000_0000_1001_0000)
+		and (Bits.get_ith_bit_u32_certain(i, 6) or Bits.get_ith_bit_u32_certain(i, 5)) {
 		Ok(HalfwordDataTransferImmediateOffset)
-	} else if bits_match_32(i, 234881024, 134217728) {
+	} else if Bits.bits_match_32(i, 234881024, 134217728) {
 		Ok(BlockDataTransfer)
-	} else if bits_match_32(i, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
 		Ok(Branch)
-	} else if bits_match_32(i, 0b1110_000000000000000000000000, 0b1100_000000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b1110_000000000000000000000000, 0b1100_000000000000000000000000) {
 		Ok(CoprocessorDataTransfer)
-	} else if bits_match_32(i, 0b1111_00000000000000000001_0000, 0b1110_000000000000000000000000) {
+	} else if Bits.bits_match_32(i, 0b1111_00000000000000000001_0000, 0b1110_000000000000000000000000) {
 		Ok(CoprocessorDataOperation)
-	} else if bits_match_32(i, 0b1111_00000000000000000001_0000, 0b1110_00000000000000000001_0000) {
+	} else if Bits.bits_match_32(i, 0b1111_00000000000000000001_0000, 0b1110_00000000000000000001_0000) {
 		Ok(CoprocessorRegisterTransfer)
-	} else if bits_match_32(i, 0b111_00000000000000000000_1_0000, 0b011_00000000000000000000_1_0000) {
+	} else if Bits.bits_match_32(i, 0b111_00000000000000000000_1_0000, 0b011_00000000000000000000_1_0000) {
 		Ok(UndefinedInstruction) # 4.17 Undefined Instruction, arm-instructionset.pdf
-	} else if bits_match_32(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
+	} else if Bits.bits_match_32(i, 0b1100_00000000000000000000_0000, 0b0100_00000000000000000000_0000) {
 		Ok(SingleDataTransfer)
-	} else if !get_ith_bit_u32_certain(i, 25)
-		and get_ith_bit_u32_certain(i, 4)
-			and get_ith_bit_u32_certain(i, 7) {
+	} else if !Bits.get_ith_bit_u32_certain(i, 25)
+		and Bits.get_ith_bit_u32_certain(i, 4)
+			and Bits.get_ith_bit_u32_certain(i, 7) {
 		Err(WTFisThis) # A5-3 DDI01001
-	} else if bits_match_32(i, 0b1100_00000000000000000000_0000, 0) {
+	} else if Bits.bits_match_32(i, 0b1100_00000000000000000000_0000, 0) {
 		Ok(DataProcessingPSRTransfer)
 	} else {
 		Err(WTFisThis)
@@ -1054,7 +1024,7 @@ data_processing_alu = |alu_op, op1, op2, c_flag, v_flag| {
 
 arm_data_processing_kind : U32 -> ArmDataProcessingKind
 arm_data_processing_kind = |i| {
-	if bits_match_32(i, 0b11001_00000_00000_00000_00000, 0b10000_00000_00000_00000_00000) {
+	if Bits.bits_match_32(i, 0b11001_00000_00000_00000_00000, 0b10000_00000_00000_00000_00000) {
 		PSRTransfer
 	} else {
 		DataProcessing
@@ -1116,26 +1086,26 @@ arm_data_processing_execute = |op, c| {
 
 arm_data_processing_uses_immediate : U32 -> Bool
 arm_data_processing_uses_immediate = |i| {
-	get_ith_bit_u32_certain(i, 25)
+	Bits.get_ith_bit_u32_certain(i, 25)
 }
 
 arm_data_processing_rotate_imm : U32 -> U8
 arm_data_processing_rotate_imm = |i| {
-	U32.to_u8_wrap(get_seg_of_u32_certain(i, 8, 4))
+	U32.to_u8_wrap(Bits.get_seg_of_u32_certain(i, 8, 4))
 }
 
 arm_data_processing_get_immed_8 : U32 -> U8
 arm_data_processing_get_immed_8 = |i| {
-	U32.to_u8_wrap(get_seg_of_u32_certain(i, 0, 8))
+	U32.to_u8_wrap(Bits.get_seg_of_u32_certain(i, 0, 8))
 }
 
 arm_data_processing_get_shift_type : U32 -> ShiftType
 arm_data_processing_get_shift_type = |i| {
-	if bits_match_32(i, 0b1100000, 0) {
+	if Bits.bits_match_32(i, 0b1100000, 0) {
 		LSL
-	} else if bits_match_32(i, 0b1100000, 0b0100000) {
+	} else if Bits.bits_match_32(i, 0b1100000, 0b0100000) {
 		LSR
-	} else if bits_match_32(i, 0b1100000, 0b1000000) {
+	} else if Bits.bits_match_32(i, 0b1100000, 0b1000000) {
 		ASR
 	} else {
 		ROR
@@ -1152,20 +1122,20 @@ arm_psr_transfer_decode : U32 -> Try(
 	],
 )
 arm_psr_transfer_decode = |op| {
-	if bits_match_32(op, 0b0000_1111_1011_000000000000_1111_0000, 0b0000_0001_0000_000000000000_0000_0000) {
-		if get_seg_of_u32_certain(op, 16, 4) != 0xF or get_seg_of_u32_certain(op, 0, 12) != 0 {
+	if Bits.bits_match_32(op, 0b0000_1111_1011_000000000000_1111_0000, 0b0000_0001_0000_000000000000_0000_0000) {
+		if Bits.get_seg_of_u32_certain(op, 16, 4) != 0xF or Bits.get_seg_of_u32_certain(op, 0, 12) != 0 {
 			Err(PSR_malformed_MRS)
 		} else {
 			Ok(MRS)
 		}
-	} else if bits_match_32(op, 0b11111_0_11_00000000000000000000, 0b00110_0_10_00000000000000000000) {
-		if get_seg_of_u32_certain(op, 12, 4) != 0xF {
+	} else if Bits.bits_match_32(op, 0b11111_0_11_00000000000000000000, 0b00110_0_10_00000000000000000000) {
+		if Bits.get_seg_of_u32_certain(op, 12, 4) != 0xF {
 			Err(PSR_malformed_MSR_immediate)
 		} else {
 			Ok(MSR) # transfer immediate
 		}
-	} else if bits_match_32(op, 0b11111_0_11_0000_0000_0000_1111_0000, 0b00010_0_10_0000_0000_0000_0000_0000) {
-		if get_seg_of_u32_certain(op, 12, 4) != 0xF or get_seg_of_u32_certain(op, 8, 4) != 0 {
+	} else if Bits.bits_match_32(op, 0b11111_0_11_0000_0000_0000_1111_0000, 0b00010_0_10_0000_0000_0000_0000_0000) {
+		if Bits.get_seg_of_u32_certain(op, 12, 4) != 0xF or Bits.get_seg_of_u32_certain(op, 8, 4) != 0 {
 			Err(PSR_malformed_MSR_register)
 		} else {
 			Ok(MSR) # transfer register contents to PSR
@@ -1177,12 +1147,12 @@ arm_psr_transfer_decode = |op| {
 
 arm_psr_transfer_uses_spsr : U32 -> Bool
 arm_psr_transfer_uses_spsr = |op| {
-	get_ith_bit_u32_certain(op, 22)
+	Bits.get_ith_bit_u32_certain(op, 22)
 }
 
 arm_psr_transfer_uses_immediate : U32 -> Bool
 arm_psr_transfer_uses_immediate = |op| {
-	get_ith_bit_u32_certain(op, 25)
+	Bits.get_ith_bit_u32_certain(op, 25)
 }
 
 arm_psr_transfer_mrs_get_rd : U32 -> Try(GPR, [WTFisThis, UB_PSR_PC_as_dest])
@@ -1233,7 +1203,7 @@ arm_psr_transfer_msr_operand = |op, c| {
 
 arm_psr_transfer_field_mask : U32 -> U8
 arm_psr_transfer_field_mask = |op| {
-	U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4))
+	U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4))
 }
 
 arm_psr_transfer_msr_byte_mask : U8 -> U32
@@ -1317,7 +1287,7 @@ arm_psr_transfer_execute = |op, c| {
 
 arm_multiply_decode : U32 -> ArmMultiplyOpCode
 arm_multiply_decode = |op| {
-	if get_ith_bit_u32_certain(op, 21) {
+	if Bits.get_ith_bit_u32_certain(op, 21) {
 		MLA
 	} else {
 		MUL
@@ -1340,23 +1310,23 @@ arm_multiply_execute = |op, c| {
 		R15 => Err(UB_multiply_use_of_R15)
 		x => Ok(x)
 	}
-	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 0, 4)))?)?
-	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 8, 4)))?)?
-	rd = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4)))?)?
+	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?)?
+	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 8, 4)))?)?
+	rd = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?)?
 	rm_val = cpu_getReg(rm, c)?
 	rs_val = cpu_getReg(rs, c)?
 	if rd == rm {
 		Err(UB_multiply_rd_rm_same)
 	} else {
 		res = if arm_multiply_decode(op) == MLA {
-			rn = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 12, 4)))?)?
+			rn = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?)?
 			rn_val = cpu_getReg(rn, c)?
 			U32.plus_wrap(U32.times_wrap(rm_val, rs_val), rn_val)
 		} else {
 			U32.times_wrap(rm_val, rs_val)
 		}
 		if arm_s_flag(op) {
-			Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(res, 31)), res == 0) })
+			Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(res, 31)), res == 0) })
 		} else {
 			cpu_setReg(rd, c, res)
 		}
@@ -1365,7 +1335,7 @@ arm_multiply_execute = |op, c| {
 
 arm_multiplyLong_decode : U32 -> ArmMultiplyLongOpCode
 arm_multiplyLong_decode = |op| {
-	match get_seg_of_u32_certain(op, 21, 2) {
+	match Bits.get_seg_of_u32_certain(op, 21, 2) {
 		0b00 => UMULL
 		0b01 => UMLAL
 		0b10 => SMULL
@@ -1390,10 +1360,10 @@ arm_multiply_long_execute = |op, c| {
 		R15 => Err(UB_multiplyLong_use_of_R15)
 		x => Ok(x)
 	}
-	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 0, 4)))?)?
-	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 8, 4)))?)?
-	rdhi = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 16, 4)))?)?
-	rdlo = catch_R15(gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 12, 4)))?)?
+	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?)?
+	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 8, 4)))?)?
+	rdhi = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?)?
+	rdlo = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?)?
 	rm_val = cpu_getReg(rm, c)?
 	rs_val = cpu_getReg(rs, c)?
 	if rdhi == rdlo {
@@ -1420,7 +1390,7 @@ arm_multiply_long_execute = |op, c| {
 		if arm_s_flag(op) {
 			Ok({
 				..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?,
-				cpsr: cpsr_setZ(cpsr_setN(c.cpsr, get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)),
+				cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)),
 			})
 		} else {
 			cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)
@@ -1430,21 +1400,21 @@ arm_multiply_long_execute = |op, c| {
 
 arm_branch_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Type_Unknown])
 arm_branch_execute = |op, c| {
-	if bits_match_32(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
+	if Bits.bits_match_32(op, 0b1110_000000000000000000000000, 0b1010_000000000000000000000000) {
 		old_PC = cpu_getReg(R15, c)?
-		signed_immed_24 = get_seg_of_u32_certain(op, 0, 24)
+		signed_immed_24 = Bits.get_seg_of_u32_certain(op, 0, 24)
 		pc = U32.plus_wrap(
 			old_PC,
 			U32.plus_wrap(
 				8,
-				if get_ith_bit_u32_certain(signed_immed_24, 23) {
+				if Bits.get_ith_bit_u32_certain(signed_immed_24, 23) {
 					U32.times_wrap(U32.bitwise_or(signed_immed_24, 0b111111_000000000000000000000000), 4)
 				} else {
 					U32.times_wrap(signed_immed_24, 4)
 				},
 			),
 		)
-		if get_ith_bit_u32_certain(op, 24) {
+		if Bits.get_ith_bit_u32_certain(op, 24) {
 			cpu_setReg(R15, cpu_setReg(R14, c, pc_inc(old_PC, 4))?, pc)
 		} else {
 			cpu_setReg(R15, c, pc)
@@ -1456,20 +1426,20 @@ arm_branch_execute = |op, c| {
 
 arm_branch_exchange_execute : U32, Cpu -> Try(Cpu, [InvalidMode, Branch_Exchange_malformed, WTFisThis])
 arm_branch_exchange_execute = |op, c| {
-	if get_seg_of_u32_certain(op, 8, 12) != 0b1111_1111_1111 {
+	if Bits.get_seg_of_u32_certain(op, 8, 12) != 0b1111_1111_1111 {
 		Err(Branch_Exchange_malformed)
 	} else {
-		rm = gpr_from_idx(U32.to_u8_wrap(get_seg_of_u32_certain(op, 0, 4)))?
+		rm = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?
 		rm_val = if (rm != R15) {
 			cpu_getReg(rm, c)?
 		} else {
 			# Here we go again
 			pc_inc(cpu_getReg(rm, c)?, 8)
 		}
-		if get_seg_of_u32_certain(rm_val, 0, 2) == 2 {
+		if Bits.get_seg_of_u32_certain(rm_val, 0, 2) == 2 {
 			Err(Branch_Exchange_malformed)
 		} else {
-			Ok({ ..cpu_setReg(R15, c, U32.bitwise_and(rm_val, 0xFFFFFFFE))?, cpsr: cpsr_setT(c.cpsr, get_ith_bit_u32_certain(rm_val, 0)) })
+			Ok({ ..cpu_setReg(R15, c, U32.bitwise_and(rm_val, 0xFFFFFFFE))?, cpsr: cpsr_setT(c.cpsr, Bits.get_ith_bit_u32_certain(rm_val, 0)) })
 		}
 	}
 }
@@ -1484,10 +1454,10 @@ Cpu -> Try(
 	],
 )
 arm_single_data_transfer_execute = |op, c| {
-	i_bit = get_ith_bit_u32_certain(op, 25)
-	p_bit = get_ith_bit_u32_certain(op, 24)
-	u_bit = get_ith_bit_u32_certain(op, 23)
-	w_bit = get_ith_bit_u32_certain(op, 21)
+	i_bit = Bits.get_ith_bit_u32_certain(op, 25)
+	p_bit = Bits.get_ith_bit_u32_certain(op, 24)
+	u_bit = Bits.get_ith_bit_u32_certain(op, 23)
+	w_bit = Bits.get_ith_bit_u32_certain(op, 21)
 	rd = get_gpr_12_15(op)?
 	rn = get_gpr_16_19(op)?
 	match arm_single_data_transfer_decode(op) {
@@ -1503,7 +1473,7 @@ arm_single_data_transfer_execute = |op, c| {
 					R15 => return Err(UNPREDICTABLE)
 					_ => cpu_getReg(rm, c)?
 				}
-				shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+				shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 				data_processing_shift_by_immediate(
 					arm_data_processing_get_shift_type(op),
 					pre_shift,
@@ -1511,7 +1481,7 @@ arm_single_data_transfer_execute = |op, c| {
 					cpsr_getC(c.cpsr),
 				).val
 			} else {
-				get_seg_of_u32_certain(op, 0, 12)
+				Bits.get_seg_of_u32_certain(op, 0, 12)
 			}
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
@@ -1519,13 +1489,13 @@ arm_single_data_transfer_execute = |op, c| {
 				U32.minus_wrap(base, offset)
 			}
 			addr = if p_bit {
-				if rd == R15 and get_seg_of_u32_certain(adjusted, 0, 2) != 0 {
+				if rd == R15 and Bits.get_seg_of_u32_certain(adjusted, 0, 2) != 0 {
 					return Err(UNPREDICTABLE)
 				} else {
 					U32.bitwise_and(adjusted, 0xFFFFFFFC)
 				}
 			} else {
-				if rd == R15 and get_seg_of_u32_certain(base, 0, 2) != 0 {
+				if rd == R15 and Bits.get_seg_of_u32_certain(base, 0, 2) != 0 {
 					return Err(UNPREDICTABLE)
 				} else {
 					U32.bitwise_and(base, 0xFFFFFFFC)
@@ -1542,7 +1512,7 @@ arm_single_data_transfer_execute = |op, c| {
 							U8.times_wrap(
 								8,
 								U32.to_u8_wrap(
-									get_seg_of_u32_certain(
+									Bits.get_seg_of_u32_certain(
 										if p_bit {
 											adjusted
 										} else {
@@ -1585,7 +1555,7 @@ arm_single_data_transfer_execute = |op, c| {
 					R15 => return Err(UNPREDICTABLE)
 					_ => cpu_getReg(rm, c)?
 				}
-				shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+				shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 				data_processing_shift_by_immediate(
 					arm_data_processing_get_shift_type(op),
 					pre_shift,
@@ -1593,7 +1563,7 @@ arm_single_data_transfer_execute = |op, c| {
 					cpsr_getC(c.cpsr),
 				).val
 			} else {
-				get_seg_of_u32_certain(op, 0, 12)
+				Bits.get_seg_of_u32_certain(op, 0, 12)
 			}
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
@@ -1643,7 +1613,7 @@ arm_single_data_transfer_execute = |op, c| {
 					R15 => return Err(UNPREDICTABLE)
 					_ => cpu_getReg(rm, c)?
 				}
-				shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+				shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 				data_processing_shift_by_immediate(
 					arm_data_processing_get_shift_type(op),
 					pre_shift,
@@ -1651,7 +1621,7 @@ arm_single_data_transfer_execute = |op, c| {
 					cpsr_getC(c.cpsr),
 				).val
 			} else {
-				get_seg_of_u32_certain(op, 0, 12)
+				Bits.get_seg_of_u32_certain(op, 0, 12)
 			}
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
@@ -1699,7 +1669,7 @@ arm_single_data_transfer_execute = |op, c| {
 						R15 => return Err(UNPREDICTABLE)
 						_ => cpu_getReg(rm, c)?
 					}
-					shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+					shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 					data_processing_shift_by_immediate(
 						arm_data_processing_get_shift_type(op),
 						pre_shift,
@@ -1707,7 +1677,7 @@ arm_single_data_transfer_execute = |op, c| {
 						cpsr_getC(c.cpsr),
 					).val
 				} else {
-					get_seg_of_u32_certain(op, 0, 12)
+					Bits.get_seg_of_u32_certain(op, 0, 12)
 				}
 				adjusted = if u_bit {
 					U32.plus_wrap(base, offset)
@@ -1756,7 +1726,7 @@ arm_single_data_transfer_execute = |op, c| {
 							R15 => return Err(UNPREDICTABLE)
 							_ => cpu_getReg(rm, c)?
 						}
-						shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+						shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 						data_processing_shift_by_immediate(
 							arm_data_processing_get_shift_type(op),
 							pre_shift,
@@ -1765,7 +1735,7 @@ arm_single_data_transfer_execute = |op, c| {
 						).val
 					}
 				} else {
-					get_seg_of_u32_certain(op, 0, 12)
+					Bits.get_seg_of_u32_certain(op, 0, 12)
 				}
 				adjusted = if u_bit {
 					U32.plus_wrap(base, offset)
@@ -1783,7 +1753,7 @@ arm_single_data_transfer_execute = |op, c| {
 							rot: RotRight(
 								U8.times_wrap(
 									8,
-									get_seg_of_u32_certain(base, 0, 2).to_u8_wrap(),
+									Bits.get_seg_of_u32_certain(base, 0, 2).to_u8_wrap(),
 								),
 							),
 							wba: WriteBack({ rn: rn, val: adjusted }),
@@ -1807,7 +1777,7 @@ arm_single_data_transfer_execute = |op, c| {
 							R15 => return Err(UNPREDICTABLE)
 							_ => cpu_getReg(rm, c)?
 						}
-						shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+						shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 						data_processing_shift_by_immediate(
 							arm_data_processing_get_shift_type(op),
 							pre_shift,
@@ -1816,7 +1786,7 @@ arm_single_data_transfer_execute = |op, c| {
 						).val
 					}
 				} else {
-					get_seg_of_u32_certain(op, 0, 12)
+					Bits.get_seg_of_u32_certain(op, 0, 12)
 				}
 				adjusted = if u_bit {
 					U32.plus_wrap(base, offset)
@@ -1859,7 +1829,7 @@ arm_single_data_transfer_execute = |op, c| {
 						R15 => return Err(UNPREDICTABLE)
 						_ => cpu_getReg(rm, c)?
 					}
-					shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+					shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 					data_processing_shift_by_immediate(
 						arm_data_processing_get_shift_type(op),
 						pre_shift,
@@ -1868,7 +1838,7 @@ arm_single_data_transfer_execute = |op, c| {
 					).val
 				}
 			} else {
-				get_seg_of_u32_certain(op, 0, 12)
+				Bits.get_seg_of_u32_certain(op, 0, 12)
 			}
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
@@ -1906,7 +1876,7 @@ arm_single_data_transfer_execute = |op, c| {
 						R15 => return Err(UNPREDICTABLE)
 						_ => cpu_getReg(rm, c)?
 					}
-					shift_imm = U32.to_u8_wrap(get_seg_of_u32_certain(op, 7, 5))
+					shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
 					data_processing_shift_by_immediate(
 						arm_data_processing_get_shift_type(op),
 						pre_shift,
@@ -1915,7 +1885,7 @@ arm_single_data_transfer_execute = |op, c| {
 					).val
 				}
 			} else {
-				get_seg_of_u32_certain(op, 0, 12)
+				Bits.get_seg_of_u32_certain(op, 0, 12)
 			}
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
@@ -1941,26 +1911,26 @@ arm_single_data_transfer_execute = |op, c| {
 
 arm_single_data_transfer_decode : U32 -> ArmSingleDataTransferOpCode
 arm_single_data_transfer_decode = |op| {
-	if bits_match_32(op, 0b101_00000_00000_00000_00000, 0b0) {
-		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+	if Bits.bits_match_32(op, 0b101_00000_00000_00000_00000, 0b0) {
+		if Bits.bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			STRT
 		} else {
 			STR
 		}
-	} else if bits_match_32(op, 0b101_00000_00000_00000_00000, 0b001_00000_00000_00000_00000) {
-		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+	} else if Bits.bits_match_32(op, 0b101_00000_00000_00000_00000, 0b001_00000_00000_00000_00000) {
+		if Bits.bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			LDRT
 		} else {
 			LDR
 		}
-	} else if bits_match_32(op, 0b101_00000_00000_00000_00000, 0b101_00000_00000_00000_00000) {
-		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+	} else if Bits.bits_match_32(op, 0b101_00000_00000_00000_00000, 0b101_00000_00000_00000_00000) {
+		if Bits.bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			LDRBT
 		} else {
 			LDRB
 		}
 	} else {
-		if bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
+		if Bits.bits_match_32(op, 0b10010_00000_00000_00000_00000, 0b10_00000_00000_00000_00000) {
 			STRBT
 		} else {
 			STRB
@@ -1988,7 +1958,7 @@ arm_single_data_swap_execute = |op, c| {
 			SWP => {
 				raw_addr = cpu_getReg(rn, c)?
 				bus_addr = raw_addr.bitwise_and(0xFFFFFFFC) # murder the last 2 bits to align addr val.
-				rot_val = get_seg_of_u32_certain(raw_addr, 0, 2)
+				rot_val = Bits.get_seg_of_u32_certain(raw_addr, 0, 2)
 				Ok(
 					R({
 						cpu: c,
@@ -2015,7 +1985,7 @@ arm_single_data_swap_execute = |op, c| {
 						continuation: GetValfromMem({
 							rd: rd,
 							addr: bus_addr,
-							rm_val: get_seg_of_u32_certain(cpu_getReg(rm, c)?, 0, 8),
+							rm_val: Bits.get_seg_of_u32_certain(cpu_getReg(rm, c)?, 0, 8),
 							width: W8,
 							rot: Identity,
 							isThumb: False,
@@ -2029,7 +1999,7 @@ arm_single_data_swap_execute = |op, c| {
 
 arm_single_data_swap_decode : U32 -> ArmSingleDataSwapOpCode
 arm_single_data_swap_decode = |op| {
-	if get_ith_bit_u32_certain(op, 22) {
+	if Bits.get_ith_bit_u32_certain(op, 22) {
 		SWPB
 	} else {
 		SWP
@@ -2038,13 +2008,13 @@ arm_single_data_swap_decode = |op| {
 
 arm_halfword_data_transfer_decode : U32 -> ArmHalfwordDataTransferOpCode
 arm_halfword_data_transfer_decode = |op| {
-	if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1011_0000) {
+	if Bits.bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1011_0000) {
 		LDRH
-	} else if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0000_000000000000_1011_0000) {
+	} else if Bits.bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0000_000000000000_1011_0000) {
 		STRH
-	} else if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1101_0000) {
+	} else if Bits.bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1101_0000) {
 		LDRSB
-	} else if bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1111_0000) {
+	} else if Bits.bits_match_32(op, 0b1110_0001_000000000000_1111_0000, 0b0000_0001_000000000000_1111_0000) {
 		LDRSH
 	} else {
 		UndefinedInstruction
@@ -2062,10 +2032,10 @@ Cpu -> Try(
 	],
 )
 arm_halfword_data_transfer_execute = |op, c| {
-	i_bit = get_ith_bit_u32_certain(op, 22)
-	p_bit = get_ith_bit_u32_certain(op, 24)
-	u_bit = get_ith_bit_u32_certain(op, 23)
-	w_bit = get_ith_bit_u32_certain(op, 21)
+	i_bit = Bits.get_ith_bit_u32_certain(op, 22)
+	p_bit = Bits.get_ith_bit_u32_certain(op, 24)
+	u_bit = Bits.get_ith_bit_u32_certain(op, 23)
+	w_bit = Bits.get_ith_bit_u32_certain(op, 21)
 	rd = get_gpr_12_15(op)?
 	rn = get_gpr_16_19(op)?
 	match arm_halfword_data_transfer_decode(op) {
@@ -2085,8 +2055,8 @@ arm_halfword_data_transfer_execute = |op, c| {
 					cpu_getReg(rn, c)?
 				}
 				offset = if i_bit {
-					immedL = get_seg_of_u32_certain(op, 0, 4)
-					immedH = get_seg_of_u32_certain(op, 8, 4)
+					immedL = Bits.get_seg_of_u32_certain(op, 0, 4)
+					immedH = Bits.get_seg_of_u32_certain(op, 8, 4)
 					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
 				} else {
 					if get_gpr_0_3(op)? == R15 {
@@ -2109,7 +2079,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 						base
 					}
 				}
-				if get_ith_bit_u32_certain(addr, 0) {
+				if Bits.get_ith_bit_u32_certain(addr, 0) {
 					Err(UNPREDICTABLE)
 				} else {
 					Ok(
@@ -2146,8 +2116,8 @@ arm_halfword_data_transfer_execute = |op, c| {
 					cpu_getReg(rn, c)?
 				}
 				offset = if i_bit {
-					immedL = get_seg_of_u32_certain(op, 0, 4)
-					immedH = get_seg_of_u32_certain(op, 8, 4)
+					immedL = Bits.get_seg_of_u32_certain(op, 0, 4)
+					immedH = Bits.get_seg_of_u32_certain(op, 8, 4)
 					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
 				} else {
 					if get_gpr_0_3(op)? == R15 {
@@ -2203,8 +2173,8 @@ arm_halfword_data_transfer_execute = |op, c| {
 					cpu_getReg(rn, c)?
 				}
 				offset = if i_bit {
-					immedL = get_seg_of_u32_certain(op, 0, 4)
-					immedH = get_seg_of_u32_certain(op, 8, 4)
+					immedL = Bits.get_seg_of_u32_certain(op, 0, 4)
+					immedH = Bits.get_seg_of_u32_certain(op, 8, 4)
 					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
 				} else {
 					if get_gpr_0_3(op)? == R15 {
@@ -2227,7 +2197,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 						base
 					}
 				}
-				if get_ith_bit_u32_certain(addr, 0) {
+				if Bits.get_ith_bit_u32_certain(addr, 0) {
 					Err(UNPREDICTABLE)
 				} else {
 					Ok(
@@ -2258,15 +2228,15 @@ arm_halfword_data_transfer_execute = |op, c| {
 			if rd == R15 {
 				return Err(UNPREDICTABLE)
 			} else {
-				rd_val = get_seg_of_u32_certain(cpu_getReg(rd, c)?, 0, 16)
+				rd_val = Bits.get_seg_of_u32_certain(cpu_getReg(rd, c)?, 0, 16)
 				base = if rn == R15 {
 					pc_inc(c.regs.r15, 8)
 				} else {
 					cpu_getReg(rn, c)?
 				}
 				offset = if i_bit {
-					immedL = get_seg_of_u32_certain(op, 0, 4)
-					immedH = get_seg_of_u32_certain(op, 8, 4)
+					immedL = Bits.get_seg_of_u32_certain(op, 0, 4)
+					immedH = Bits.get_seg_of_u32_certain(op, 8, 4)
 					U32.bitwise_or(U32.shl_wrap(immedH, 4), immedL)
 				} else {
 					if get_gpr_0_3(op)? == R15 {
@@ -2289,7 +2259,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 						base
 					}
 				}
-				if get_ith_bit_u32_certain(addr, 0) {
+				if Bits.get_ith_bit_u32_certain(addr, 0) {
 					Err(UNPREDICTABLE)
 				} else {
 					Ok(
@@ -2320,7 +2290,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 
 arm_block_data_transfer_decode : U32 -> ArmBlockDataTransferOpCode
 arm_block_data_transfer_decode = |op| {
-	if get_ith_bit_u32_certain(op, 20) {
+	if Bits.get_ith_bit_u32_certain(op, 20) {
 		LDM
 	} else {
 		STM
@@ -2339,22 +2309,22 @@ Cpu -> Try(
 )
 arm_block_data_transfer_execute = |op, c| {
 	rn_included = |x| {
-		get_ith_bit_u32_certain(x, get_seg_of_u32_certain(x, 16, 4).to_u8_wrap())
+		Bits.get_ith_bit_u32_certain(x, Bits.get_seg_of_u32_certain(x, 16, 4).to_u8_wrap())
 	}
 	sharp_reg = |x| {
-		U32.count_one_bits(get_seg_of_u32_certain(x, 0, 16))
+		U32.count_one_bits(Bits.get_seg_of_u32_certain(x, 0, 16))
 	}
-	if bits_match_32(op, 0b1_11111_11111_11111, 0) {
+	if Bits.bits_match_32(op, 0b1_11111_11111_11111, 0) {
 		Err(UNPREDICTABLE)
 	} else {
 		rn = get_gpr_16_19(op)?
 		if rn == R15 {
 			return Err(UNPREDICTABLE)
 		} else {
-			s_bit = get_ith_bit_u32_certain(op, 22)
-			p_bit = get_ith_bit_u32_certain(op, 24)
-			u_bit = get_ith_bit_u32_certain(op, 23)
-			w_bit = get_ith_bit_u32_certain(op, 21)
+			s_bit = Bits.get_ith_bit_u32_certain(op, 22)
+			p_bit = Bits.get_ith_bit_u32_certain(op, 24)
+			u_bit = Bits.get_ith_bit_u32_certain(op, 23)
+			w_bit = Bits.get_ith_bit_u32_certain(op, 21)
 			mode = cpsr_getMode(c.cpsr)?
 			base = cpu_getReg(rn, c)?
 			aligned_base = (base // 4) * 4
@@ -2399,7 +2369,7 @@ arm_block_data_transfer_execute = |op, c| {
 						Err(UNPREDICTABLE)
 					} else if w_bit and rn_included(op) {
 						Err(UNPREDICTABLE)
-					} else if bits_match_32(op, 0b111_0000_1_000000000000000, 0b111_0000_0_000000000000000) {
+					} else if Bits.bits_match_32(op, 0b111_0000_1_000000000000000, 0b111_0000_0_000000000000000) {
 						Err(UNPREDICTABLE)
 					} else {
 						Ok(
@@ -2408,12 +2378,12 @@ arm_block_data_transfer_execute = |op, c| {
 								addr: trio.start_addr,
 								width: W32,
 								continuation: LoadMultiple({
-									mask: get_seg_of_u32_certain(op, 0, 16),
+									mask: Bits.get_seg_of_u32_certain(op, 0, 16),
 									next_addr: trio.start_addr.plus_wrap(4),
 									wba: wba,
 									kind: if !s_bit {
 										CurrentBank
-									} else if get_ith_bit_u32_certain(op, 15) {
+									} else if Bits.get_ith_bit_u32_certain(op, 15) {
 										ModeChanges({ spsr: cpu_getSPSR(c)? })
 									} else {
 										UserBank
@@ -2425,12 +2395,12 @@ arm_block_data_transfer_execute = |op, c| {
 					}
 				}
 				STM => {
-					first_reg = gpr_from_idx(U32.count_trailing_zero_bits(get_seg_of_u32_certain(op, 0, 16)))?
+					first_reg = gpr_from_idx(U32.count_trailing_zero_bits(Bits.get_seg_of_u32_certain(op, 0, 16)))?
 					if s_bit and ((mode == User or mode == Sys) or w_bit) {
 						Err(UNPREDICTABLE)
 					} else if w_bit and rn_included(op)
-						and (get_seg_of_u32_certain(op, 16, 4).to_u8_wrap() != 0
-							and U32.count_one_bits(get_seg_of_u32_certain(op, 0, get_seg_of_u32_certain(op, 16, 4).to_u8_wrap())) != 0) {
+						and (Bits.get_seg_of_u32_certain(op, 16, 4).to_u8_wrap() != 0
+							and U32.count_one_bits(Bits.get_seg_of_u32_certain(op, 0, Bits.get_seg_of_u32_certain(op, 16, 4).to_u8_wrap())) != 0) {
 						Err(UNPREDICTABLE)
 					} else {
 						Ok(
@@ -2446,7 +2416,7 @@ arm_block_data_transfer_execute = |op, c| {
 									regs_get(first_reg, User, c.regs)
 								},
 								continuation: WriteMultiple({
-									mask: get_seg_of_u32_certain(op, 0, 16),
+									mask: Bits.get_seg_of_u32_certain(op, 0, 16),
 									next_addr: trio.start_addr.plus_wrap(4),
 									wba: wba,
 									kind: if !s_bit {
@@ -2516,28 +2486,28 @@ thumb_instructions_decode = |i| {
 		tmp = thumb_load_store_decode(op)
 		return tmp.format != UndefinedFormat and tmp.code != NoSuchOp
 	}
-	if bits_match_16(i, 0b1111_1111_00000000, 0b1101_1110_00000000) or bits_match_16(i, 0b11111_00000000000, 0b11101_00000000000) {
+	if Bits.bits_match_16(i, 0b1111_1111_00000000, 0b1101_1110_00000000) or Bits.bits_match_16(i, 0b11111_00000000000, 0b11101_00000000000) {
 		Ok(UndefinedInstruction)
-	} else if bits_match_16(i, 0b1111_1111_00000000, 0b1101_1111_00000000) {
+	} else if Bits.bits_match_16(i, 0b1111_1111_00000000, 0b1101_1111_00000000) {
 		Ok(SoftwareInterrupt)
-	} else if bits_match_16(i, 0b11111111_00000000, 0b01000111_00000000)
-		and !bits_match_16(i, 0b111, 0) {
+	} else if Bits.bits_match_16(i, 0b11111111_00000000, 0b01000111_00000000)
+		and !Bits.bits_match_16(i, 0b111, 0) {
 		Err(UNPREDICTABLE)
-	} else if bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_1_0000_000) {
+	} else if Bits.bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_1_0000_000) {
 		Err(UNPREDICTABLE)
-	} else if bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_0_0000_000) # Reg BLX is not supported by old ARM
-		or bits_match_16(i, 0b1111_000000000000, 0b1101_000000000000)
-			or bits_match_16(i, 0b11111_00000000000, 0b11100_00000000000)
-				or bits_match_16(i, 0b11111_00000000000, 0b11110_00000000000)
-					or bits_match_16(i, 0b11111_00000000000, 0b11111_00000000000) {
+	} else if Bits.bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_0_0000_000) # Reg BLX is not supported by old ARM
+		or Bits.bits_match_16(i, 0b1111_000000000000, 0b1101_000000000000)
+			or Bits.bits_match_16(i, 0b11111_00000000000, 0b11100_00000000000)
+				or Bits.bits_match_16(i, 0b11111_00000000000, 0b11110_00000000000)
+					or Bits.bits_match_16(i, 0b11111_00000000000, 0b11111_00000000000) {
 		Ok(Branch)
 	} else if is_dp(i) {
 		Ok(DataProcessing)
 	} else if is_ls(i) {
 		Ok(LoadStore)
-	} else if bits_match_16(i, 0b1111_000000000000, 0b1100_000000000000) {
+	} else if Bits.bits_match_16(i, 0b1111_000000000000, 0b1100_000000000000) {
 		Ok(LoadStoreMultiple) # Format 1, LDMIA and STMIA
-	} else if bits_match_16(i, 0b1111_0_11_000000000, 0b1011_0_10_000000000) {
+	} else if Bits.bits_match_16(i, 0b1111_0_11_000000000, 0b1011_0_10_000000000) {
 		Ok(PushPop)
 	} else {
 		Err(WTFisThis)
@@ -2588,16 +2558,16 @@ Cpu -> Try(
 )
 thumb_push_pop_execute = |op, c| {
 	sharp_reg = |x| {
-		U16.count_one_bits(get_seg_of_u16_certain(x, 0, 9))
+		U16.count_one_bits(Bits.get_seg_of_u16_certain(x, 0, 9))
 	}
-	if bits_match_16(op, 0b1_1111_1111, 0) {
+	if Bits.bits_match_16(op, 0b1_1111_1111, 0) {
 		Err(UNPREDICTABLE)
 	} else {
 		sp = cpu_getReg(R13, c)?
 		base = sp
 		aligned_base = (base // 4) * 4
 		span = U8.to_u32(sharp_reg(op)) * 4
-		match get_ith_bit_u16_certain(op, 11) {
+		match Bits.get_ith_bit_u16_certain(op, 11) {
 			True => {
 				trio = {
 					start_addr: aligned_base,
@@ -2610,7 +2580,7 @@ thumb_push_pop_execute = |op, c| {
 						addr: trio.start_addr,
 						width: W32,
 						continuation: LoadMultiple({
-							mask: get_seg_of_u16_certain(op, 0, 8).to_u32() + if get_ith_bit_u16_certain(op, 8) {
+							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + if Bits.get_ith_bit_u16_certain(op, 8) {
 								U32.shl_wrap(1, 15)
 							} else {
 								0
@@ -2628,7 +2598,7 @@ thumb_push_pop_execute = |op, c| {
 			}
 			False => {
 				# PUSH
-				tmp = U16.count_trailing_zero_bits(get_seg_of_u16_certain(op, 0, 9))
+				tmp = U16.count_trailing_zero_bits(Bits.get_seg_of_u16_certain(op, 0, 9))
 				first_reg = if tmp == 8 {
 					R14
 				} else {
@@ -2646,7 +2616,7 @@ thumb_push_pop_execute = |op, c| {
 						width: W32,
 						val: cpu_getReg(first_reg, c)?,
 						continuation: WriteMultiple({
-							mask: get_seg_of_u16_certain(op, 0, 8).to_u32() + if get_ith_bit_u16_certain(op, 8) {
+							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + if Bits.get_ith_bit_u16_certain(op, 8) {
 								U32.shl_wrap(1, 14)
 							} else {
 								0
@@ -2676,14 +2646,14 @@ Cpu -> Try(
 	],
 )
 thumb_block_data_transfer_execute = |op, c| {
-	rn = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
+	rn = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
 	rn_included = |x| {
-		get_ith_bit_u16_certain(x, get_seg_of_u16_certain(x, 8, 3).to_u8_wrap())
+		Bits.get_ith_bit_u16_certain(x, Bits.get_seg_of_u16_certain(x, 8, 3).to_u8_wrap())
 	}
 	sharp_reg = |x| {
-		U16.count_one_bits(get_seg_of_u16_certain(x, 0, 8))
+		U16.count_one_bits(Bits.get_seg_of_u16_certain(x, 0, 8))
 	}
-	if bits_match_16(op, 0b1111_1111, 0) {
+	if Bits.bits_match_16(op, 0b1111_1111, 0) {
 		Err(UNPREDICTABLE)
 	} else {
 		base = cpu_getReg(rn, c)?
@@ -2698,7 +2668,7 @@ thumb_block_data_transfer_execute = |op, c| {
 			rn: rn,
 			val: base.plus_wrap(span),
 		})
-		match get_ith_bit_u16_certain(op, 11) {
+		match Bits.get_ith_bit_u16_certain(op, 11) {
 			True => {
 				Ok(
 					R({
@@ -2706,7 +2676,7 @@ thumb_block_data_transfer_execute = |op, c| {
 						addr: trio.start_addr,
 						width: W32,
 						continuation: LoadMultiple({
-							mask: get_seg_of_u16_certain(op, 0, 8).to_u32(),
+							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32(),
 							next_addr: trio.start_addr.plus_wrap(4),
 							wba: if rn_included(op) {
 								NoWriteBack
@@ -2721,7 +2691,7 @@ thumb_block_data_transfer_execute = |op, c| {
 			}
 			False => {
 				# STMIA
-				first_reg = gpr_from_idx(U16.count_trailing_zero_bits(get_seg_of_u16_certain(op, 0, 8)))?
+				first_reg = gpr_from_idx(U16.count_trailing_zero_bits(Bits.get_seg_of_u16_certain(op, 0, 8)))?
 				if rn_included(op) and first_reg != rn {
 					Err(UNPREDICTABLE)
 				} else {
@@ -2732,7 +2702,7 @@ thumb_block_data_transfer_execute = |op, c| {
 							width: W32,
 							val: cpu_getReg(first_reg, c)?,
 							continuation: WriteMultiple({
-								mask: get_seg_of_u16_certain(op, 0, 8).to_u32(),
+								mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32(),
 								next_addr: trio.start_addr.plus_wrap(4),
 								wba: potential_wba,
 								kind: CurrentBank,
@@ -2785,17 +2755,17 @@ Cpu -> Try(
 	],
 )
 thumb_branch_execute = |op, c| {
-	if bits_match_16(op, 0b11111_00000000000, 0b11100_00000000000) {
+	if Bits.bits_match_16(op, 0b11111_00000000000, 0b11100_00000000000) {
 		old_PC = cpu_getReg(R15, c)?
-		signed_immed_11 = get_seg_of_u16_certain(op, 0, 11)
+		signed_immed_11 = Bits.get_seg_of_u16_certain(op, 0, 11)
 		extended_immed = signed_extend_u32(signed_immed_11.to_u32(), 11)
 		pc = U32.plus_wrap(old_PC.plus_wrap(4), extended_immed.shl_wrap(1))
 		Ok({ cpu: cpu_setReg(R15, c, pc)?, pc_status: PCWritten })
-	} else if bits_match_16(op, 0b1111_000000000000, 0b1101_000000000000) {
+	} else if Bits.bits_match_16(op, 0b1111_000000000000, 0b1101_000000000000) {
 		old_PC = cpu_getReg(R15, c)?
-		signed_immed_8 = get_seg_of_u16_certain(op, 0, 8)
+		signed_immed_8 = Bits.get_seg_of_u16_certain(op, 0, 8)
 		extended_immed = signed_extend_u32(signed_immed_8.to_u32(), 8)
-		cond_val = get_seg_of_u16_certain(op, 8, 4)
+		cond_val = Bits.get_seg_of_u16_certain(op, 8, 4)
 		if cond_val >= 14 {
 			return Err(Branch_Type_Unknown) # SWI and undefined, should be intercepted earlier.
 		} else {
@@ -2809,8 +2779,8 @@ thumb_branch_execute = |op, c| {
 				Ok({ cpu: c, pc_status: PCSequential })
 			}
 		}
-	} else if bits_match_16(op, 0b111111111_0_000_111, 0b010001110_0_000_000) {
-		rm = gpr_from_idx(get_seg_of_u16_certain(op, 3, 4).to_u8_wrap())?
+	} else if Bits.bits_match_16(op, 0b111111111_0_000_111, 0b010001110_0_000_000) {
+		rm = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 3, 4).to_u8_wrap())?
 		rm_val = cpu_getReg(rm, c)?.plus_wrap(
 			if rm == R15 {
 				4
@@ -2818,19 +2788,19 @@ thumb_branch_execute = |op, c| {
 				0
 			},
 		)
-		if get_seg_of_u32_certain(rm_val, 0, 2) == 0b10 {
+		if Bits.get_seg_of_u32_certain(rm_val, 0, 2) == 0b10 {
 			Err(UNPREDICTABLE)
 		} else {
-			new_cpsr = cpsr_setT(c.cpsr, get_ith_bit_u32_certain(rm_val, 0))
-			pc_update = cpu_setReg(R15, c, get_seg_of_u32_certain(rm_val, 1, 31).shl_wrap(1))?
+			new_cpsr = cpsr_setT(c.cpsr, Bits.get_ith_bit_u32_certain(rm_val, 0))
+			pc_update = cpu_setReg(R15, c, Bits.get_seg_of_u32_certain(rm_val, 1, 31).shl_wrap(1))?
 			Ok({
 				cpu: { ..pc_update, cpsr: new_cpsr },
 				pc_status: PCWritten,
 			})
 		}
-	} else if bits_match_16(op, 0b111_0000000000000, 0b111_0000000000000) {
-		h = get_seg_of_u16_certain(op, 11, 2)
-		offset_11 = get_seg_of_u16_certain(op, 0, 11).to_u32()
+	} else if Bits.bits_match_16(op, 0b111_0000000000000, 0b111_0000000000000) {
+		h = Bits.get_seg_of_u16_certain(op, 11, 2)
+		offset_11 = Bits.get_seg_of_u16_certain(op, 0, 11).to_u32()
 		old_PC = cpu_getReg(R15, c)?
 		if h == 0b10 {
 			extended_immed = signed_extend_u32(offset_11, 11)
@@ -2855,86 +2825,86 @@ thumb_branch_execute = |op, c| {
 
 thumb_data_processing_decode : U16 -> Thumb_ALUOpCode
 thumb_data_processing_decode = |i| {
-	if bits_match_16(i, 0b111111_00000_00000, 0b000110_00000_00000) {
-		if get_ith_bit_u16_certain(i, 9) {
+	if Bits.bits_match_16(i, 0b111111_00000_00000, 0b000110_00000_00000) {
+		if Bits.get_ith_bit_u16_certain(i, 9) {
 			{ code: SUB, format: Format1 }
 		} else {
 			{ code: ADD, format: Format1 }
 		}
-	} else if bits_match_16(i, 0b111111_00000_00000, 0b000111_00000_00000) {
-		if get_ith_bit_u16_certain(i, 9) {
+	} else if Bits.bits_match_16(i, 0b111111_00000_00000, 0b000111_00000_00000) {
+		if Bits.get_ith_bit_u16_certain(i, 9) {
 			{ code: SUB, format: Format2 }
 		} else {
 			{ code: ADD, format: Format2 }
 		}
-	} else if bits_match_16(i, 0b111000_00000_00000, 0b001000_00000_00000) {
-		if bits_match_16(i, 0b110_00000_00000, 0b000_00000_00000) {
+	} else if Bits.bits_match_16(i, 0b111000_00000_00000, 0b001000_00000_00000) {
+		if Bits.bits_match_16(i, 0b110_00000_00000, 0b000_00000_00000) {
 			{ code: MOV, format: Format3 }
-		} else if bits_match_16(i, 0b110_00000_00000, 0b010_00000_00000) {
+		} else if Bits.bits_match_16(i, 0b110_00000_00000, 0b010_00000_00000) {
 			{ code: CMP, format: Format3 }
-		} else if bits_match_16(i, 0b110_00000_00000, 0b100_00000_00000) {
+		} else if Bits.bits_match_16(i, 0b110_00000_00000, 0b100_00000_00000) {
 			{ code: ADD, format: Format3 }
 		} else {
 			{ code: SUB, format: Format3 }
 		}
-	} else if bits_match_16(i, 0b111000_00000_00000, 0) {
-		if bits_match_16(i, 0b000110_00000_00000, 0) {
+	} else if Bits.bits_match_16(i, 0b111000_00000_00000, 0) {
+		if Bits.bits_match_16(i, 0b000110_00000_00000, 0) {
 			{ code: LSL, format: Format4 }
-		} else if bits_match_16(i, 0b000110_00000_00000, 0b010_00000_00000) {
+		} else if Bits.bits_match_16(i, 0b000110_00000_00000, 0b010_00000_00000) {
 			{ code: LSR, format: Format4 }
-		} else if bits_match_16(i, 0b000110_00000_00000, 0b100_00000_00000) {
+		} else if Bits.bits_match_16(i, 0b000110_00000_00000, 0b100_00000_00000) {
 			{ code: ASR, format: Format4 }
 		} else {
 			{ code: NoSuchOp, format: Format4 }
 		}
-	} else if bits_match_16(i, 0b111111_00000_00000, 0b010000_00000_00000) {
-		if bits_match_16(i, 0b1111_000000, 0b0000_000000) {
+	} else if Bits.bits_match_16(i, 0b111111_00000_00000, 0b010000_00000_00000) {
+		if Bits.bits_match_16(i, 0b1111_000000, 0b0000_000000) {
 			{ code: AND, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0001_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0001_000000) {
 			{ code: EOR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0010_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0010_000000) {
 			{ code: LSL, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0011_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0011_000000) {
 			{ code: LSR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0100_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0100_000000) {
 			{ code: ASR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0101_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0101_000000) {
 			{ code: ADC, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0110_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0110_000000) {
 			{ code: SBC, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b0111_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b0111_000000) {
 			{ code: ROR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1000_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1000_000000) {
 			{ code: TST, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1001_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1001_000000) {
 			{ code: NEG, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1010_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1010_000000) {
 			{ code: CMP, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1011_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1011_000000) {
 			{ code: CMN, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1100_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1100_000000) {
 			{ code: ORR, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1101_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1101_000000) {
 			{ code: MUL, format: Format5 }
-		} else if bits_match_16(i, 0b1111_000000, 0b1110_000000) {
+		} else if Bits.bits_match_16(i, 0b1111_000000, 0b1110_000000) {
 			{ code: BIC, format: Format5 }
 		} else {
 			{ code: MVN, format: Format5 }
 		}
-	} else if bits_match_16(i, 0b111100_00000_00000, 0b101000_00000_00000) {
+	} else if Bits.bits_match_16(i, 0b111100_00000_00000, 0b101000_00000_00000) {
 		{ code: ADD, format: Format6 }
-	} else if bits_match_16(i, 0b11111111_000_00000, 0b10110000_000_00000) {
-		if bits_match_16(i, 0b1_0000000, 0b1_0000000) {
+	} else if Bits.bits_match_16(i, 0b11111111_000_00000, 0b10110000_000_00000) {
+		if Bits.bits_match_16(i, 0b1_0000000, 0b1_0000000) {
 			{ code: SUB, format: Format7 }
 		} else {
 			{ code: ADD, format: Format7 }
 		}
-	} else if bits_match_16(i, 0b111111_00000_00000, 0b010001_00000_00000) {
-		if bits_match_16(i, 0b11_00000000, 0b10_00000000) {
+	} else if Bits.bits_match_16(i, 0b111111_00000_00000, 0b010001_00000_00000) {
+		if Bits.bits_match_16(i, 0b11_00000000, 0b10_00000000) {
 			{ code: MOV, format: Format8 }
-		} else if bits_match_16(i, 0b11_00000000, 0b00_00000000) {
+		} else if Bits.bits_match_16(i, 0b11_00000000, 0b00_00000000) {
 			{ code: ADD, format: Format8 }
-		} else if bits_match_16(i, 0b11_00000000, 0b01_00000000) {
+		} else if Bits.bits_match_16(i, 0b11_00000000, 0b01_00000000) {
 			{ code: CMP, format: Format8 }
 		} else {
 			{ code: NoSuchOp, format: Format8 }
@@ -2960,9 +2930,9 @@ thumb_data_processing_execute = |i, c| {
 	op = thumb_data_processing_decode(i)
 	chk = match op.format {
 		Format1 => {
-			rd = get_seg_of_u16_certain(i, 0, 3).to_u32()
-			rn = get_seg_of_u16_certain(i, 3, 3).to_u32()
-			rm = get_seg_of_u16_certain(i, 6, 3).to_u32()
+			rd = Bits.get_seg_of_u16_certain(i, 0, 3).to_u32()
+			rn = Bits.get_seg_of_u16_certain(i, 3, 3).to_u32()
+			rm = Bits.get_seg_of_u16_certain(i, 6, 3).to_u32()
 			match op.code {
 				ADD => {
 					base = 0b1110_00001001_0000_0000_00000000_0000
@@ -2978,9 +2948,9 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format2 => {
-			rd = get_seg_of_u16_certain(i, 0, 3).to_u32()
-			rn = get_seg_of_u16_certain(i, 3, 3).to_u32()
-			tri_bit_immediate = get_seg_of_u16_certain(i, 6, 3).to_u32()
+			rd = Bits.get_seg_of_u16_certain(i, 0, 3).to_u32()
+			rn = Bits.get_seg_of_u16_certain(i, 3, 3).to_u32()
+			tri_bit_immediate = Bits.get_seg_of_u16_certain(i, 6, 3).to_u32()
 			match op.code {
 				ADD => {
 					base = 0b1110_00101001_0000_0000_00000000_0000
@@ -2996,8 +2966,8 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format3 => {
-			octa_bit_immediate = get_seg_of_u16_certain(i, 0, 8).to_u32()
-			rdrn = get_seg_of_u16_certain(i, 8, 3).to_u32()
+			octa_bit_immediate = Bits.get_seg_of_u16_certain(i, 0, 8).to_u32()
+			rdrn = Bits.get_seg_of_u16_certain(i, 8, 3).to_u32()
 			match op.code {
 				ADD => {
 					base = 0b1110_00101001_0000_0000_00000000_0000
@@ -3023,9 +2993,9 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format4 => {
-			shift_immediate = get_seg_of_u16_certain(i, 6, 5).to_u32()
-			rm = get_seg_of_u16_certain(i, 3, 3).to_u32()
-			rd = get_seg_of_u16_certain(i, 0, 3).to_u32()
+			shift_immediate = Bits.get_seg_of_u16_certain(i, 6, 5).to_u32()
+			rm = Bits.get_seg_of_u16_certain(i, 3, 3).to_u32()
+			rd = Bits.get_seg_of_u16_certain(i, 0, 3).to_u32()
 			match op.code {
 				LSL => {
 					base = 0b1110_00011011_0000_0000_00000_000_0000
@@ -3046,8 +3016,8 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format5 => {
-			rdrn = get_seg_of_u16_certain(i, 0, 3).to_u32()
-			rmrs = get_seg_of_u16_certain(i, 3, 3).to_u32()
+			rdrn = Bits.get_seg_of_u16_certain(i, 0, 3).to_u32()
+			rmrs = Bits.get_seg_of_u16_certain(i, 3, 3).to_u32()
 			match op.code {
 				AND => {
 					base = 0b1110_00000001_0000_0000_00000000_0000
@@ -3136,9 +3106,9 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format6 => {
-			shift_immediate = get_seg_of_u16_certain(i, 0, 8).to_u32()
-			rd = get_seg_of_u16_certain(i, 8, 3).to_u32()
-			sp_pc = get_ith_bit_u16_certain(i, 11)
+			shift_immediate = Bits.get_seg_of_u16_certain(i, 0, 8).to_u32()
+			rd = Bits.get_seg_of_u16_certain(i, 8, 3).to_u32()
+			sp_pc = Bits.get_ith_bit_u16_certain(i, 11)
 			if sp_pc {
 				base = 0b1110_00101000_1101_0000_1111_00000000
 				equiv_op = base + shift_immediate + rd.shl_wrap(12)
@@ -3155,7 +3125,7 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format7 => {
-			sept_bit_immediate = get_seg_of_u16_certain(i, 0, 7).to_u32()
+			sept_bit_immediate = Bits.get_seg_of_u16_certain(i, 0, 7).to_u32()
 			match op.code {
 				ADD => {
 					base = 0b1110_00101000_1101_1101_11110_0000000
@@ -3171,10 +3141,10 @@ thumb_data_processing_execute = |i, c| {
 			}
 		}
 		Format8 => {
-			h1 = get_seg_of_u16_certain(i, 7, 1).to_u32()
-			h2 = get_seg_of_u16_certain(i, 6, 1).to_u32()
-			rm = get_seg_of_u16_certain(i, 3, 3).to_u32()
-			rdrn = get_seg_of_u16_certain(i, 0, 3).to_u32()
+			h1 = Bits.get_seg_of_u16_certain(i, 7, 1).to_u32()
+			h2 = Bits.get_seg_of_u16_certain(i, 6, 1).to_u32()
+			rm = Bits.get_seg_of_u16_certain(i, 3, 3).to_u32()
+			rdrn = Bits.get_seg_of_u16_certain(i, 0, 3).to_u32()
 			rm_exact = gpr_from_idx((h2.shl_wrap(3) + rm).to_u8_wrap())?
 			rm_val = cpu_getReg(rm_exact, c)?.plus_wrap(
 				if rm_exact == R15 {
@@ -3263,48 +3233,48 @@ thumb_data_processing_execute = |i, c| {
 
 thumb_load_store_decode : U16 -> Thumb_LoadStoreOpCode
 thumb_load_store_decode = |i| {
-	if bits_match_16(i, 0b11111_00000000000, 0b01001_00000000000) {
+	if Bits.bits_match_16(i, 0b11111_00000000000, 0b01001_00000000000) {
 		{ code: LDR, format: Format3 }
-	} else if bits_match_16(i, 0b1111_000000000000, 0b1001_000000000000) {
-		if get_ith_bit_u16_certain(i, 11) {
+	} else if Bits.bits_match_16(i, 0b1111_000000000000, 0b1001_000000000000) {
+		if Bits.get_ith_bit_u16_certain(i, 11) {
 			{ code: LDR, format: Format4 }
 		} else {
 			{ code: STR, format: Format4 }
 		}
-	} else if bits_match_16(i, 0b111_0000000000000, 0b011_0000000000000) {
-		if get_ith_bit_u16_certain(i, 12) {
-			if get_ith_bit_u16_certain(i, 11) {
+	} else if Bits.bits_match_16(i, 0b111_0000000000000, 0b011_0000000000000) {
+		if Bits.get_ith_bit_u16_certain(i, 12) {
+			if Bits.get_ith_bit_u16_certain(i, 11) {
 				{ code: LDRB, format: Format1 }
 			} else {
 				{ code: STRB, format: Format1 }
 			}
 		} else {
-			if get_ith_bit_u16_certain(i, 11) {
+			if Bits.get_ith_bit_u16_certain(i, 11) {
 				{ code: LDR, format: Format1 }
 			} else {
 				{ code: STR, format: Format1 }
 			}
 		}
-	} else if bits_match_16(i, 0b1111_000000000000, 0b1000_000000000000) {
-		if get_ith_bit_u16_certain(i, 11) {
+	} else if Bits.bits_match_16(i, 0b1111_000000000000, 0b1000_000000000000) {
+		if Bits.get_ith_bit_u16_certain(i, 11) {
 			{ code: LDRH, format: Format1 }
 		} else {
 			{ code: STRH, format: Format1 }
 		}
-	} else if bits_match_16(i, 0b1111_000000000000, 0b0101_000000000000) {
-		if bits_match_16(i, 0b111_000000000, 0b000_000000000) {
+	} else if Bits.bits_match_16(i, 0b1111_000000000000, 0b0101_000000000000) {
+		if Bits.bits_match_16(i, 0b111_000000000, 0b000_000000000) {
 			{ code: STR, format: Format2 }
-		} else if bits_match_16(i, 0b111_000000000, 0b001_000000000) {
+		} else if Bits.bits_match_16(i, 0b111_000000000, 0b001_000000000) {
 			{ code: STRH, format: Format2 }
-		} else if bits_match_16(i, 0b111_000000000, 0b010_000000000) {
+		} else if Bits.bits_match_16(i, 0b111_000000000, 0b010_000000000) {
 			{ code: STRB, format: Format2 }
-		} else if bits_match_16(i, 0b111_000000000, 0b011_000000000) {
+		} else if Bits.bits_match_16(i, 0b111_000000000, 0b011_000000000) {
 			{ code: LDRSB, format: Format2 }
-		} else if bits_match_16(i, 0b111_000000000, 0b100_000000000) {
+		} else if Bits.bits_match_16(i, 0b111_000000000, 0b100_000000000) {
 			{ code: LDR, format: Format2 }
-		} else if bits_match_16(i, 0b111_000000000, 0b101_000000000) {
+		} else if Bits.bits_match_16(i, 0b111_000000000, 0b101_000000000) {
 			{ code: LDRH, format: Format2 }
-		} else if bits_match_16(i, 0b111_000000000, 0b110_000000000) {
+		} else if Bits.bits_match_16(i, 0b111_000000000, 0b110_000000000) {
 			{ code: LDRB, format: Format2 }
 		} else {
 			{ code: LDRSH, format: Format2 }
@@ -3345,14 +3315,14 @@ thumb_load_store_execute = |i, c| {
 
 thumb_load_store_immediate_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
 thumb_load_store_immediate_execute = |op, c, t| {
-	rd = gpr_from_idx(get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
-	rn = gpr_from_idx(get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
+	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
+	rn = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
 	rn_val = cpu_getReg(rn, c)?
-	immed_5 = get_seg_of_u16_certain(op, 6, 5).to_u32()
+	immed_5 = Bits.get_seg_of_u16_certain(op, 6, 5).to_u32()
 	match t.code {
 		LDR => {
 			addr = rn_val.plus_wrap(immed_5.times_wrap(4))
-			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
 				Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3373,7 +3343,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 		STR => {
 			rd_val = cpu_getReg(rd, c)?
 			addr = rn_val.plus_wrap(immed_5.times_wrap(4))
-			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
 				Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3424,7 +3394,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 		}
 		LDRH => {
 			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
-			if get_ith_bit_u32_certain(addr, 0) {
+			if Bits.get_ith_bit_u32_certain(addr, 0) {
 				return Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3445,7 +3415,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 		STRH => {
 			rd_val = cpu_getReg(rd, c)?
 			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
-			if get_ith_bit_u32_certain(addr, 0) {
+			if Bits.get_ith_bit_u32_certain(addr, 0) {
 				return Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3468,15 +3438,15 @@ thumb_load_store_immediate_execute = |op, c, t| {
 
 thumb_load_store_register_offset_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
 thumb_load_store_register_offset_execute = |op, c, t| {
-	rd = gpr_from_idx(get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
-	rn = gpr_from_idx(get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
-	rm = gpr_from_idx(get_seg_of_u16_certain(op, 6, 3).to_u8_wrap())?
+	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
+	rn = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
+	rm = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 6, 3).to_u8_wrap())?
 	rn_val = cpu_getReg(rn, c)?
 	rm_val = cpu_getReg(rm, c)?
 	addr = rn_val.plus_wrap(rm_val)
 	match t.code {
 		LDR => {
-			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
 				Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3495,7 +3465,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 			}
 		}
 		LDRH => {
-			if get_ith_bit_u32_certain(addr, 0) {
+			if Bits.get_ith_bit_u32_certain(addr, 0) {
 				return Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3544,7 +3514,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 			)
 		}
 		LDRSH => {
-			if get_ith_bit_u32_certain(addr, 0) {
+			if Bits.get_ith_bit_u32_certain(addr, 0) {
 				return Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3564,7 +3534,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 		}
 		STR => {
 			rd_val = cpu_getReg(rd, c)?
-			if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
 				Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3598,7 +3568,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 		}
 		STRH => {
 			rd_val = cpu_getReg(rd, c)?
-			if get_ith_bit_u32_certain(addr, 0) {
+			if Bits.get_ith_bit_u32_certain(addr, 0) {
 				return Err(UNPREDICTABLE)
 			} else {
 				Ok(
@@ -3622,8 +3592,8 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 thumb_load_literal_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis])
 thumb_load_literal_execute = |op, c| {
 	pc_val = pc_inc(cpu_getReg(R15, c)?, 4).bitwise_and(0xFFFFFFFC)
-	immed_8 = get_seg_of_u16_certain(op, 0, 8).to_u32()
-	rd = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
+	immed_8 = Bits.get_seg_of_u16_certain(op, 0, 8).to_u32()
+	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
 	addr = pc_val.plus_wrap(immed_8.times_wrap(4))
 	Ok(
 		R({
@@ -3642,13 +3612,13 @@ thumb_load_literal_execute = |op, c| {
 
 thumb_load_store_sp_relative_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
 thumb_load_store_sp_relative_execute = |op, c| {
-	immed_8 = get_seg_of_u16_certain(op, 0, 8).to_u32()
-	rd = gpr_from_idx(get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
+	immed_8 = Bits.get_seg_of_u16_certain(op, 0, 8).to_u32()
+	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
 	sp_val = cpu_getReg(R13, c)?
 	addr = sp_val.plus_wrap(immed_8.times_wrap(4))
-	if get_ith_bit_u16_certain(op, 11) {
+	if Bits.get_ith_bit_u16_certain(op, 11) {
 		# Loading a word here
-		if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+		if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
 			return Err(UNPREDICTABLE)
 		} else {
 			Ok(
@@ -3667,7 +3637,7 @@ thumb_load_store_sp_relative_execute = |op, c| {
 		}
 	} else {
 		rd_val = cpu_getReg(rd, c)?
-		if get_seg_of_u32_certain(addr, 0, 2) != 0 {
+		if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
 			return Err(UNPREDICTABLE)
 		} else {
 			Ok(
@@ -4018,5 +3988,5 @@ cpu_setSPSR = |c, i| {
 
 cpsr_setNZCV : U32, U32_carry_overflow -> U32
 cpsr_setNZCV = |old_cpsr, alu_op_res| {
-	cpsr_setC(cpsr_setV(cpsr_setZ(cpsr_setN(old_cpsr, get_ith_bit_u32_certain(alu_op_res.val, 31)), alu_op_res.val == 0), alu_op_res.overflow), alu_op_res.carry)
+	cpsr_setC(cpsr_setV(cpsr_setZ(cpsr_setN(old_cpsr, Bits.get_ith_bit_u32_certain(alu_op_res.val, 31)), alu_op_res.val == 0), alu_op_res.overflow), alu_op_res.carry)
 }
