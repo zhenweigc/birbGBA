@@ -5,6 +5,20 @@ Sound1Reg : {
 	sound1_cntx : U16,
 }
 
+Sound1State : {
+	enabled : Bool,
+	length_counter : U8,
+	current_volume : U8,
+	envelope_timer : U8,
+	envelope_running : Bool,
+	frequency_timer : U32,
+	duty_position : U8,
+	sweep_shadow : U16,
+	sweep_timer : U8,
+	sweep_enabled : Bool,
+	sweep_negate_used : Bool,
+}
+
 Sound2Reg : {
 	sound2_cntl : U16,
 	sound2_cnth : U16,
@@ -23,6 +37,7 @@ Sound4Reg : {
 
 SoundRegs :: {
 	sound1 : Sound1Reg,
+	sound1state : Sound1State,
 	sound2 : Sound2Reg,
 	sound3 : Sound3Reg,
 	sound4 : Sound4Reg,
@@ -35,6 +50,7 @@ SoundRegs :: {
 	init = || {
 		{
 			sound1: sound1_init(),
+			sound1state: sound1_state_init(),
 			sound2: sound2_init(),
 			sound3: sound3_init(),
 			sound4: sound4_init(),
@@ -79,7 +95,14 @@ SoundRegs :: {
 			}
 			0x82 => Ok(rgs.sound_cnth.bitwise_and(0b111_0111_0000_1111).to_u8_wrap())
 			0x83 => Ok(rgs.sound_cnth.bitwise_and(0b111_0111_0000_1111).shr_wrap(8).to_u8_wrap())
-			0x84 => Ok(rgs.sound_cntx.bitwise_and(0b1000_1111).to_u8_wrap())
+			0x84 => Ok(
+				rgs.sound_cntx.bitwise_and(0b1000_1110).to_u8_wrap()
+					+ if rgs.sound1state.enabled {
+						1
+					} else {
+						0
+					},
+			)
 			0x85 => Ok(rgs.sound_cntx.bitwise_and(0b1000_1111).shr_wrap(8).to_u8_wrap())
 			0x86 | 0x87 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110).to_u8_wrap())
@@ -110,7 +133,14 @@ SoundRegs :: {
 				}
 			}
 			0x82 => Ok(rgs.sound_cnth.bitwise_and(0b111_0111_0000_1111))
-			0x84 => Ok(rgs.sound_cntx.bitwise_and(0b1000_1111))
+			0x84 => Ok(
+				rgs.sound_cntx.bitwise_and(0b1000_1110)
+					+ if rgs.sound1state.enabled {
+						1
+					} else {
+						0
+					},
+			)
 			0x86 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110))
 			0x8A => Ok(0)
@@ -144,7 +174,29 @@ SoundRegs :: {
 			0x62 | 0x63 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				old_val = rgs.sound1.sound1_cnth
 				adjusted_val = Bits.replace_byte(old_val, isHi, val)
-				write16(rgs, 0x62, adjusted_val)
+				if !isHi {
+					Ok({
+						..rgs,
+						sound1: { ..rgs.sound1, sound1_cnth: adjusted_val },
+						sound1state: {
+							..rgs.sound1state,
+							length_counter: 64 - Bits.get_seg_of_u8_certain(val, 0, 6).to_u8_wrap(),
+						},
+					})
+				} else {
+					Ok({
+						..rgs,
+						sound1: { ..rgs.sound1, sound1_cnth: adjusted_val },
+						sound1state: {
+							..rgs.sound1state,
+							enabled: if Bits.get_seg_of_u8_certain(val, 3, 5) == 0 {
+								False
+							} else {
+								rgs.sound1state.enabled
+							},
+						},
+					})
+				}
 			} else {
 				Ok(rgs)
 			}
@@ -194,13 +246,37 @@ SoundRegs :: {
 				Ok(rgs)
 			}
 			0x62 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
-				Ok({ ..rgs, sound1: { ..rgs.sound1, sound1_cnth: val } })
+				Ok({
+					..rgs,
+					sound1: {
+						..rgs.sound1,
+						sound1_cnth: val,
+					},
+					sound1state: {
+						..rgs.sound1state,
+						length_counter: 64 - Bits.get_seg_of_u16_certain(val, 0, 6).to_u8_wrap(),
+						enabled: if Bits.get_seg_of_u16_certain(val, 11, 5) == 0 {
+							False
+						} else {
+							rgs.sound1state.enabled
+						},
+					},
+				})
 			} else {
 				Ok(rgs)
 			}
 			0x64 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
-					Ok({ ..rgs, sound1: { ..rgs.sound1, sound1_cntx: val.bitwise_and(0b100_0111_1111_1111) } })
+					if Bits.get_ith_bit_u16_certain(val, 15) {
+						new_sound1 = { ..rgs.sound1, sound1_cntx: val.bitwise_and(0b100_0111_1111_1111) }
+						Ok({
+							..rgs,
+							sound1: new_sound1,
+							sound1state: sound1_trigger(new_sound1, rgs.sound1state),
+						})
+					} else {
+						Ok({ ..rgs, sound1: { ..rgs.sound1, sound1_cntx: val.bitwise_and(0b100_0111_1111_1111) } })
+					}
 				} else {
 					Ok(rgs)
 				}
@@ -229,6 +305,7 @@ SoundRegs :: {
 						sound_cnth: rgs.sound_cnth.bitwise_and(0xFF00),
 						sound_cntx: 0,
 						sound1: sound1_init(),
+						sound1state: sound1_state_init(),
 					})
 				}
 			}
@@ -260,6 +337,59 @@ sound1_init = || {
 		sound1_cntl: 0,
 		sound1_cnth: 0,
 		sound1_cntx: 0,
+	}
+}
+
+sound1_state_init : () -> Sound1State
+sound1_state_init = || {
+	{
+		enabled: False,
+		length_counter: 0,
+		current_volume: 0,
+		envelope_timer: 0,
+		envelope_running: False,
+		frequency_timer: 0,
+		duty_position: 0,
+		sweep_shadow: 0,
+		sweep_timer: 0,
+		sweep_enabled: False,
+		sweep_negate_used: False,
+	}
+}
+
+sound1_trigger : Sound1Reg, Sound1State -> Sound1State
+sound1_trigger = |reg, state| {
+	cur_vol = Bits.get_seg_of_u16_certain(reg.sound1_cnth, 12, 4).to_u8_wrap()
+	envelope_period = Bits.get_seg_of_u16_certain(reg.sound1_cnth, 8, 3).to_u8_wrap()
+	envelope_increase = Bits.get_ith_bit_u16_certain(reg.sound1_cnth, 11)
+	envelops = Bits.get_seg_of_u16_certain(reg.sound1_cnth, 11, 5)
+	sweep_period = Bits.get_seg_of_u16_certain(reg.sound1_cntl, 4, 3).to_u8_wrap()
+	sweep_shift = Bits.get_seg_of_u16_certain(reg.sound1_cntl, 0, 3).to_u8_wrap()
+	sweep_decrease = Bits.get_ith_bit_u16_certain(reg.sound1_cntl, 3)
+	new_sweep_shadow = Bits.get_seg_of_u16_certain(reg.sound1_cntx, 0, 11)
+	{
+		..state,
+		enabled: envelops != 0 and sweep_shift == 0 or
+			(envelops != 0 and sweep_shift != 0 and (sweep_decrease or
+				(new_sweep_shadow.shr_wrap(sweep_shift) + new_sweep_shadow) <= 2047)),
+		length_counter: if state.length_counter == 0 {
+			64
+		} else {
+			state.length_counter
+		},
+		current_volume: cur_vol,
+		envelope_running: envelope_period != 0
+			and ((cur_vol < 15 and envelope_increase)
+				or (cur_vol > 0 and !envelope_increase)),
+		envelope_timer: envelope_period,
+		sweep_shadow: new_sweep_shadow,
+		sweep_timer: if sweep_period == 0 {
+			8
+		} else {
+			sweep_period
+		}, # Stolen from mGBA
+		sweep_enabled: sweep_period != 0 or sweep_shift != 0,
+		sweep_negate_used: (envelops != 0 and sweep_shift != 0 and sweep_decrease),
 	}
 }
 

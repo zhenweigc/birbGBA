@@ -9,6 +9,12 @@ Bits :: {}.{
 		U32.shr_wrap(U32.shl_wrap(i, 32 - j - 1), 31) == 1
 	}
 
+	get_seg_of_u8_certain : U8, U8, U8 -> U8
+	get_seg_of_u8_certain = |i, lsb, len| {
+		tmp = 8 - len
+		U8.shr_wrap(U8.shl_wrap(U8.shr_wrap(i, lsb), tmp), tmp)
+	}
+
 	get_seg_of_u16_certain : U16, U8, U8 -> U16
 	get_seg_of_u16_certain = |i, lsb, len| {
 		tmp = 16 - len
