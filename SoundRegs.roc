@@ -1,6 +1,31 @@
 import Bits
+Sound1Reg : {
+	sound1_cntl : U16,
+	sound1_cnth : U16,
+	sound1_cntx : U16,
+}
+
+Sound2Reg : {
+	sound2_cntl : U16,
+	sound2_cnth : U16,
+}
+
+Sound3Reg : {
+	sound3_cntl : U16,
+	sound3_cnth : U16,
+	sound3_cntx : U16,
+}
+
+Sound4Reg : {
+	sound4_cntl : U16,
+	sound4_cnth : U16,
+}
 
 SoundRegs :: {
+	sound1 : Sound1Reg,
+	sound2 : Sound2Reg,
+	sound3 : Sound3Reg,
+	sound4 : Sound4Reg,
 	sound_cntl : U16,
 	sound_cnth : U16,
 	sound_cntx : U16,
@@ -9,6 +34,10 @@ SoundRegs :: {
 	init : () -> SoundRegs
 	init = || {
 		{
+			sound1: sound1_init(),
+			sound2: sound2_init(),
+			sound3: sound3_init(),
+			sound4: sound4_init(),
 			sound_cntl: 0,
 			sound_cnth: 0,
 			sound_cntx: 0,
@@ -19,6 +48,23 @@ SoundRegs :: {
 	read8 : SoundRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
 	read8 = |rgs, addr| {
 		match addr {
+			0x60 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111).to_u8_wrap())
+			0x61 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111).shr_wrap(8).to_u8_wrap())
+			0x62 => Ok(rgs.sound1.sound1_cnth.bitwise_and(0b1111_1111_1100_0000).to_u8_wrap())
+			0x63 => Ok(rgs.sound1.sound1_cnth.bitwise_and(0b1111_1111_1100_0000).shr_wrap(8).to_u8_wrap())
+			0x64 | 0x65 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					raw_16 = rgs.sound1.sound1_cntx.bitwise_and(0b100_0000_0000_0000)
+					if addr.mod_by(2) == 0 {
+						Ok(raw_16.to_u8_wrap())
+					} else {
+						Ok(raw_16.shr_wrap(8).to_u8_wrap())
+					}
+				} else {
+					Ok(0)
+				}
+			}
+			0x66 | 0x67 => Ok(0)
 			0x80 | 0x81 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					raw_16 = rgs.sound_cntl.bitwise_and(0b1111_1111_0111_0111)
@@ -46,6 +92,16 @@ SoundRegs :: {
 	read16 : SoundRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
 	read16 = |rgs, addr| {
 		match addr {
+			0x60 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111))
+			0x62 => Ok(rgs.sound1.sound1_cnth.bitwise_and(0b1111_1111_1100_0000))
+			0x64 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound1.sound1_cntx.bitwise_and(0b100_0000_0000_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x66 => Ok(0)
 			0x80 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					Ok(rgs.sound_cntl.bitwise_and(0b1111_1111_0111_0111))
@@ -65,19 +121,9 @@ SoundRegs :: {
 	read32 : SoundRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			0x80 => {
-				low = read16(rgs, 0x80)?.to_u32()
-				hi = read16(rgs, 0x82)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x84 => {
-				low = read16(rgs, 0x84)?.to_u32()
-				hi = read16(rgs, 0x86)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x88 => {
-				low = read16(rgs, 0x88)?.to_u32()
-				hi = read16(rgs, 0x8A)?.to_u32().shl_wrap(16)
+			0x60 | 0x64 | 0x80 | 0x84 | 0x88 => {
+				low = read16(rgs, addr)?.to_u32()
+				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
 			}
 			_ => Err(UnsupportedIORegOffset(addr))
@@ -88,6 +134,30 @@ SoundRegs :: {
 	write8 = |rgs, addr, val| {
 		isHi = addr.mod_by(2) == 1
 		match addr {
+			0x60 | 0x61 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				old_val = rgs.sound1.sound1_cntl
+				adjusted_val = Bits.replace_byte(old_val, isHi, val)
+				write16(rgs, 0x60, adjusted_val)
+			} else {
+				Ok(rgs)
+			}
+			0x62 | 0x63 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				old_val = rgs.sound1.sound1_cnth
+				adjusted_val = Bits.replace_byte(old_val, isHi, val)
+				write16(rgs, 0x62, adjusted_val)
+			} else {
+				Ok(rgs)
+			}
+			0x64 | 0x65 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound1.sound1_cntx
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x64, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x66 | 0x67 => Ok(rgs)
 			0x80 | 0x81 => {
 				old_val = rgs.sound_cntl
 				adjusted_val = Bits.replace_byte(old_val, isHi, val)
@@ -118,6 +188,24 @@ SoundRegs :: {
 	write16 : SoundRegs, U32, U16 -> Try(SoundRegs, [UnsupportedIORegOffset(U32)])
 	write16 = |rgs, addr, val| {
 		match addr {
+			0x60 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, sound1: { ..rgs.sound1, sound1_cntl: val.bitwise_and(0b111_1111) } })
+			} else {
+				Ok(rgs)
+			}
+			0x62 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, sound1: { ..rgs.sound1, sound1_cnth: val } })
+			} else {
+				Ok(rgs)
+			}
+			0x64 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok({ ..rgs, sound1: { ..rgs.sound1, sound1_cntx: val.bitwise_and(0b100_0111_1111_1111) } })
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x66 => Ok(rgs)
 			0x80 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					Ok({ ..rgs, sound_cntl: val.bitwise_and(0b1111_1111_0111_0111) })
@@ -126,19 +214,21 @@ SoundRegs :: {
 				}
 			}
 			0x82 => {
+				# Somehow this reg write in needs to update FIFOs
+				# gonna be painful
 				Ok({ ..rgs, sound_cnth: val.bitwise_and(0b111_0111_0000_1111) })
 			}
 			0x84 => {
-				# Somehow this reg write in needs to update FIFOs
-				# gonna be painful
 				if Bits.get_ith_bit_u16_certain(val, 7) {
 					Ok({ ..rgs, sound_cntx: rgs.sound_cntx.bitwise_and(0b1111).bitwise_or(0b1000_0000) })
 				} else {
+					# Oh boy sound is off and here comes masterbroom
 					Ok({
 						..rgs,
 						sound_cntl: 0,
 						sound_cnth: rgs.sound_cnth.bitwise_and(0xFF00),
 						sound_cntx: 0,
+						sound1: sound1_init(),
 					})
 				}
 			}
@@ -154,10 +244,46 @@ SoundRegs :: {
 		lo = val.to_u16_wrap()
 		hi = val.shr_wrap(16).to_u16_wrap()
 		match addr {
+			0x60 => write16(write16(rgs, 0x60, lo)?, 0x62, hi)
+			0x64 => write16(write16(rgs, 0x64, lo)?, 0x66, 0)
 			0x80 => write16(write16(rgs, 0x80, lo)?, 0x82, hi)
 			0x84 => write16(write16(rgs, 0x84, lo)?, 0x86, 0)
 			0x88 => write16(write16(rgs, 0x88, lo)?, 0x8A, 0)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
+	}
+}
+
+sound1_init : () -> Sound1Reg
+sound1_init = || {
+	{
+		sound1_cntl: 0,
+		sound1_cnth: 0,
+		sound1_cntx: 0,
+	}
+}
+
+sound2_init : () -> Sound2Reg
+sound2_init = || {
+	{
+		sound2_cntl: 0,
+		sound2_cnth: 0,
+	}
+}
+
+sound3_init : () -> Sound3Reg
+sound3_init = || {
+	{
+		sound3_cntl: 0,
+		sound3_cnth: 0,
+		sound3_cntx: 0,
+	}
+}
+
+sound4_init : () -> Sound4Reg
+sound4_init = || {
+	{
+		sound4_cntl: 0,
+		sound4_cnth: 0,
 	}
 }

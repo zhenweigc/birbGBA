@@ -47,19 +47,9 @@ SystemRegs :: {
 	read32 : SystemRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			0x200 => {
-				low = rgs.interrupt_enables.to_u32()
-				hi = read16(rgs, 0x202)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x204 => {
-				low = rgs.waitcnt.to_u32()
-				hi = read16(rgs, 0x206)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x208 => {
-				low = rgs.ime.to_u32()
-				hi = read16(rgs, 0x20A)?.to_u32().shl_wrap(16)
+			0x200 | 0x204 | 0x208 => {
+				low = read16(rgs, addr)?.to_u32()
+				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
 			}
 			_ => Err(UnsupportedIORegOffset(addr))

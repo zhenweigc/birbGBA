@@ -145,34 +145,9 @@ DisplayRegs :: {
 	read32 : DisplayRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			0x0 => {
-				low = rgs.dispcnt.to_u32()
-				hi = read16(rgs, 0x2)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x4 => {
-				low = rgs.dispstat.to_u32()
-				hi = read16(rgs, 0x6)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x008 => {
-				low = rgs.bg0cnt.to_u32()
-				hi = read16(rgs, 0x00A)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x00C => {
-				low = rgs.bg2cnt.to_u32()
-				hi = read16(rgs, 0x00E)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x48 => {
-				low = rgs.winin.to_u32()
-				hi = read16(rgs, 0x04A)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x50 => {
-				low = rgs.bldcnt.to_u32()
-				hi = read16(rgs, 0x052)?.to_u32().shl_wrap(16)
+			0x0 | 0x4 | 0x8 | 0xC | 0x48 | 0x50 => {
+				low = read16(rgs, addr)?.to_u32()
+				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
 			}
 			_ => Err(UnsupportedIORegOffset(addr))

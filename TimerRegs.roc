@@ -62,24 +62,9 @@ TimerRegs :: {
 	read32 : TimerRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			0x100 => {
-				low = rgs.timer0.counter.to_u32()
-				hi = read16(rgs, 0x102)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x104 => {
-				low = rgs.timer1.counter.to_u32()
-				hi = read16(rgs, 0x106)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x108 => {
-				low = rgs.timer2.counter.to_u32()
-				hi = read16(rgs, 0x10A)?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			0x10C => {
-				low = rgs.timer3.counter.to_u32()
-				hi = read16(rgs, 0x10E)?.to_u32().shl_wrap(16)
+			0x100 | 0x104 | 0x108 | 0x10C => {
+				low = read16(rgs, addr)?.to_u32()
+				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
 			}
 			_ => Err(UnsupportedIORegOffset(addr))
