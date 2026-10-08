@@ -65,9 +65,9 @@ SoundRegs :: {
 	read8 = |rgs, addr| {
 		match addr {
 			0x60 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111).to_u8_wrap())
-			0x61 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111).shr_wrap(8).to_u8_wrap())
+			0x61 => Ok(rgs.sound1.sound1_cntl.shr_wrap(8).to_u8_wrap())
 			0x62 => Ok(rgs.sound1.sound1_cnth.bitwise_and(0b1111_1111_1100_0000).to_u8_wrap())
-			0x63 => Ok(rgs.sound1.sound1_cnth.bitwise_and(0b1111_1111_1100_0000).shr_wrap(8).to_u8_wrap())
+			0x63 => Ok(rgs.sound1.sound1_cnth.shr_wrap(8).to_u8_wrap())
 			0x64 | 0x65 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					raw_16 = rgs.sound1.sound1_cntx.bitwise_and(0b100_0000_0000_0000)
@@ -81,6 +81,79 @@ SoundRegs :: {
 				}
 			}
 			0x66 | 0x67 => Ok(0)
+			0x68 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound2.sound2_cntl.to_u8_wrap().bitwise_and(0b1100_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x69 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound2.sound2_cntl.shr_wrap(8).to_u8_wrap())
+				} else {
+					Ok(0)
+				}
+			}
+			0x6A | 0x6B => Ok(0)
+			0x6C => Ok(0)
+			0x6D => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound2.sound2_cnth.shr_wrap(8).to_u8_wrap().bitwise_and(0b100_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x6E | 0x6F => Ok(0)
+			0x70 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound3.sound3_cntl.bitwise_and(0b1110_0000).to_u8_wrap())
+				} else {
+					Ok(0)
+				}
+			}
+			0x71 => Ok(0)
+			0x72 => Ok(0)
+			0x73 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound3.sound3_cnth.shr_wrap(8).to_u8_wrap().bitwise_and(0b1110_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x74 => Ok(0)
+			0x75 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound3.sound3_cntx.shr_wrap(8).to_u8_wrap().bitwise_and(0b100_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x76 | 0x77 => Ok(0)
+			0x78 => Ok(0)
+			0x79 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound4.sound4_cntl.shr_wrap(8).to_u8_wrap())
+				} else {
+					Ok(0)
+				}
+			}
+			0x7A | 0x7B => Ok(0)
+			0x7C => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound4.sound4_cnth.to_u8_wrap())
+				} else {
+					Ok(0)
+				}
+			}
+			0x7D => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound4.sound4_cnth.shr_wrap(8).to_u8_wrap().bitwise_and(0b100_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x7E | 0x7F => Ok(0)
 			0x80 | 0x81 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					raw_16 = rgs.sound_cntl.bitwise_and(0b1111_1111_0111_0111)
@@ -94,7 +167,7 @@ SoundRegs :: {
 				}
 			}
 			0x82 => Ok(rgs.sound_cnth.bitwise_and(0b111_0111_0000_1111).to_u8_wrap())
-			0x83 => Ok(rgs.sound_cnth.bitwise_and(0b111_0111_0000_1111).shr_wrap(8).to_u8_wrap())
+			0x83 => Ok(rgs.sound_cnth.shr_wrap(8).to_u8_wrap().bitwise_and(0b111_0111))
 			0x84 => Ok(
 				rgs.sound_cntx.bitwise_and(0b1000_1110).to_u8_wrap()
 					+ if rgs.sound1state.enabled {
@@ -103,10 +176,10 @@ SoundRegs :: {
 						0
 					},
 			)
-			0x85 => Ok(rgs.sound_cntx.bitwise_and(0b1000_1111).shr_wrap(8).to_u8_wrap())
+			0x85 => Ok(rgs.sound_cntx.shr_wrap(8).to_u8_wrap().bitwise_and(0b1000_1111))
 			0x86 | 0x87 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110).to_u8_wrap())
-			0x89 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110).shr_wrap(8).to_u8_wrap())
+			0x89 => Ok(rgs.sound_bias.shr_wrap(8).to_u8_wrap().bitwise_and(0b1100_0011))
 			0x8A | 0x8B => Ok(0)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
@@ -125,6 +198,60 @@ SoundRegs :: {
 				}
 			}
 			0x66 => Ok(0)
+			0x68 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound2.sound2_cntl.bitwise_and(0b1111_1111_1100_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x6A => Ok(0)
+			0x6C => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound2.sound2_cnth.bitwise_and(0b10000_00000_00000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x6E => Ok(0)
+			0x70 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound3.sound3_cntl.bitwise_and(0b1110_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x72 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound3.sound3_cnth.bitwise_and(0b1110_0000_0000_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x74 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound3.sound3_cntx.bitwise_and(0b100_0000_0000_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x76 => Ok(0)
+			0x78 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound4.sound4_cntl.bitwise_and(0b1111_1111_0000_0000))
+				} else {
+					Ok(0)
+				}
+			}
+			0x7A => Ok(0)
+			0x7C => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					Ok(rgs.sound4.sound4_cnth.bitwise_and(0b100_0000_1111_1111))
+				} else {
+					Ok(0)
+				}
+			}
+			0x7E => Ok(0)
 			0x80 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					Ok(rgs.sound_cntl.bitwise_and(0b1111_1111_0111_0111))
@@ -151,7 +278,7 @@ SoundRegs :: {
 	read32 : SoundRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			0x60 | 0x64 | 0x80 | 0x84 | 0x88 => {
+			0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 | 0x78 | 0x7C | 0x80 | 0x84 | 0x88 => {
 				low = read16(rgs, addr)?.to_u32()
 				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
@@ -210,6 +337,74 @@ SoundRegs :: {
 				}
 			}
 			0x66 | 0x67 => Ok(rgs)
+			0x68 | 0x69 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound2.sound2_cntl
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x68, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x6A | 0x6B => Ok(rgs)
+			0x6C | 0x6D => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound2.sound2_cnth
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x6C, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x6E | 0x6F => Ok(rgs)
+			0x70 | 0x71 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound3.sound3_cntl
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x70, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x72 | 0x73 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound3.sound3_cnth
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x72, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x74 | 0x75 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound3.sound3_cntx
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x74, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x76 | 0x77 => Ok(rgs)
+			0x78 | 0x79 => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound4.sound4_cntl
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x78, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x7A | 0x7B => Ok(rgs)
+			0x7C | 0x7D => {
+				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+					old_val = rgs.sound4.sound4_cnth
+					adjusted_val = Bits.replace_byte(old_val, isHi, val)
+					write16(rgs, 0x7C, adjusted_val)
+				} else {
+					Ok(rgs)
+				}
+			}
+			0x7E | 0x7F => Ok(rgs)
 			0x80 | 0x81 => {
 				old_val = rgs.sound_cntl
 				adjusted_val = Bits.replace_byte(old_val, isHi, val)
@@ -282,6 +477,88 @@ SoundRegs :: {
 				}
 			}
 			0x66 => Ok(rgs)
+			0x68 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound2: {
+						..rgs.sound2,
+						sound2_cntl: val,
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x6A => Ok(rgs)
+			0x6C => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound2: {
+						..rgs.sound2,
+						sound2_cnth: val.bitwise_and(0b100_0111_1111_1111),
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x6E => Ok(rgs)
+			0x70 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound3: {
+						..rgs.sound3,
+						sound3_cntl: val.bitwise_and(0b1110_0000),
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x72 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound3: {
+						..rgs.sound3,
+						sound3_cnth: val.bitwise_and(0b1110_0000_1111_1111),
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x74 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound3: {
+						..rgs.sound3,
+						sound3_cntx: val.bitwise_and(0b100_0111_1111_1111),
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x76 => Ok(rgs)
+			0x78 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound4: {
+						..rgs.sound4,
+						sound4_cntl: val.bitwise_and(0b1111_1111_0011_1111),
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x7A => Ok(rgs)
+			0x7C => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({
+					..rgs,
+					sound4: {
+						..rgs.sound4,
+						sound4_cnth: val.bitwise_and(0b100_0000_1111_1111),
+					},
+				})
+			} else {
+				Ok(rgs)
+			}
+			0x7E => Ok(rgs)
 			0x80 => {
 				if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 					Ok({ ..rgs, sound_cntl: val.bitwise_and(0b1111_1111_0111_0111) })
@@ -306,6 +583,9 @@ SoundRegs :: {
 						sound_cntx: 0,
 						sound1: sound1_init(),
 						sound1state: sound1_state_init(),
+						sound2: sound2_init(),
+						sound3: sound3_init(),
+						sound4: sound4_init(),
 					})
 				}
 			}
@@ -323,9 +603,15 @@ SoundRegs :: {
 		match addr {
 			0x60 => write16(write16(rgs, 0x60, lo)?, 0x62, hi)
 			0x64 => write16(write16(rgs, 0x64, lo)?, 0x66, 0)
+			0x70 => write16(write16(rgs, 0x70, lo)?, 0x72, hi)
+			0x74 => write16(write16(rgs, 0x74, lo)?, 0x76, 0)
+			0x78 => write16(write16(rgs, 0x78, lo)?, 0x7A, hi)
+			0x7C => write16(write16(rgs, 0x7C, lo)?, 0x7E, 0)
 			0x80 => write16(write16(rgs, 0x80, lo)?, 0x82, hi)
 			0x84 => write16(write16(rgs, 0x84, lo)?, 0x86, 0)
 			0x88 => write16(write16(rgs, 0x88, lo)?, 0x8A, 0)
+			0x68 => write16(write16(rgs, 0x68, lo)?, 0x6A, 0)
+			0x6C => write16(write16(rgs, 0x6C, lo)?, 0x6E, 0)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
