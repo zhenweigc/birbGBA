@@ -3,6 +3,7 @@ import DmaRegs
 import TimerRegs
 import SystemRegs
 import SoundRegs
+import SerialRegs
 
 IoRegs :: {
 	display : DisplayRegs,
