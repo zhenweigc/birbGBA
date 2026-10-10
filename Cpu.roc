@@ -1656,7 +1656,7 @@ arm_single_data_transfer_execute = |op, c| {
 		}
 		LDRB => {
 			if rd == R15 {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				base = if rn == R15 {
 					pc_inc(c.regs.r15, 8)
@@ -2047,7 +2047,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 		)
 		LDRH => {
 			if rd == R15 {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				base = if rn == R15 {
 					pc_inc(c.regs.r15, 8)
@@ -2108,7 +2108,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 		}
 		LDRSB => {
 			if rd == R15 {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				base = if rn == R15 {
 					pc_inc(c.regs.r15, 8)
@@ -2165,7 +2165,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 		}
 		LDRSH => {
 			if rd == R15 {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				base = if rn == R15 {
 					pc_inc(c.regs.r15, 8)
@@ -2226,7 +2226,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 		}
 		STRH => {
 			if rd == R15 {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				rd_val = Bits.get_seg_of_u32_certain(cpu_getReg(rd, c)?, 0, 16)
 				base = if rn == R15 {
@@ -2319,7 +2319,7 @@ arm_block_data_transfer_execute = |op, c| {
 	} else {
 		rn = get_gpr_16_19(op)?
 		if rn == R15 {
-			return Err(UNPREDICTABLE)
+			Err(UNPREDICTABLE)
 		} else {
 			s_bit = Bits.get_ith_bit_u32_certain(op, 22)
 			p_bit = Bits.get_ith_bit_u32_certain(op, 24)
@@ -2480,11 +2480,11 @@ thumb_instructions_decode : U16 -> Try(ThumbInstructions, [WTFisThis, UNPREDICTA
 thumb_instructions_decode = |i| {
 	is_dp = |op| {
 		tmp = thumb_data_processing_decode(op)
-		return tmp.format != UndefinedFormat and tmp.code != NoSuchOp
+		tmp.format != UndefinedFormat and tmp.code != NoSuchOp
 	}
 	is_ls = |op| {
 		tmp = thumb_load_store_decode(op)
-		return tmp.format != UndefinedFormat and tmp.code != NoSuchOp
+		tmp.format != UndefinedFormat and tmp.code != NoSuchOp
 	}
 	if Bits.bits_match_16(i, 0b1111_1111_00000000, 0b1101_1110_00000000) or Bits.bits_match_16(i, 0b11111_00000000000, 0b11101_00000000000) {
 		Ok(UndefinedInstruction)
@@ -2767,7 +2767,7 @@ thumb_branch_execute = |op, c| {
 		extended_immed = signed_extend_u32(signed_immed_8.to_u32(), 8)
 		cond_val = Bits.get_seg_of_u16_certain(op, 8, 4)
 		if cond_val >= 14 {
-			return Err(Branch_Type_Unknown) # SWI and undefined, should be intercepted earlier.
+			Err(Branch_Type_Unknown) # SWI and undefined, should be intercepted earlier.
 		} else {
 			cond = arm_opcode_parse_cond(cond_val.to_u32().shl_wrap(28))?
 			if condition_pass(cond, c.cpsr) {
@@ -3395,7 +3395,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 		LDRH => {
 			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
 			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				Ok(
 					R({
@@ -3416,7 +3416,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 			rd_val = cpu_getReg(rd, c)?
 			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
 			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				Ok(
 					W({
@@ -3466,7 +3466,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 		}
 		LDRH => {
 			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				Ok(
 					R({
@@ -3515,7 +3515,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 		}
 		LDRSH => {
 			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				Ok(
 					R({
@@ -3569,7 +3569,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 		STRH => {
 			rd_val = cpu_getReg(rd, c)?
 			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				return Err(UNPREDICTABLE)
+				Err(UNPREDICTABLE)
 			} else {
 				Ok(
 					W({
@@ -3619,7 +3619,7 @@ thumb_load_store_sp_relative_execute = |op, c| {
 	if Bits.get_ith_bit_u16_certain(op, 11) {
 		# Loading a word here
 		if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-			return Err(UNPREDICTABLE)
+			Err(UNPREDICTABLE)
 		} else {
 			Ok(
 				R({
@@ -3638,7 +3638,7 @@ thumb_load_store_sp_relative_execute = |op, c| {
 	} else {
 		rd_val = cpu_getReg(rd, c)?
 		if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-			return Err(UNPREDICTABLE)
+			Err(UNPREDICTABLE)
 		} else {
 			Ok(
 				W({
