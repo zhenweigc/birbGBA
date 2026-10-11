@@ -6,6 +6,11 @@ import SoundRegs
 import SerialRegs
 import KeyRegs
 
+ReadResult(val_type, rg_type) : {
+	val : val_type,
+	reg : [Unchanged, Updated(rg_type)],
+}
+
 IoRegs :: {
 	display : DisplayRegs,
 	sound : SoundRegs,
@@ -28,47 +33,71 @@ IoRegs :: {
 		}
 	}
 
-	read8 : IoRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
+	read8 : IoRegs, U32 -> Try(ReadResult(U8, IoRegs), [UnsupportedIORegOffset(U32)])
 	read8 = |rgs, addr| {
 		match addr {
-			offset if offset >= 0 and offset < 0x60 => DisplayRegs.read8(rgs.display, addr)
-			offset if offset >= 0x60 and offset < 0xB0 => SoundRegs.read8(rgs.sound, addr)
-			offset if offset >= 0x0B0 and offset < 0x100 => DmaRegs.read8(rgs.dmas, addr)
-			offset if offset >= 0x100 and offset < 0x120 => TimerRegs.read8(rgs.timers, addr)
-			offset if offset >= 0x120 and offset < 0x130 => SerialRegs.read8(rgs.serials, addr)
-			offset if offset >= 0x130 and offset < 0x134 => KeyRegs.read8(rgs.keys, addr)
-			offset if offset >= 0x134 and offset < 0x200 => SerialRegs.read8(rgs.serials, addr)
-			offset if offset >= 0x200 => SystemRegs.read8(rgs.system, addr)
+			offset if offset >= 0 and offset < 0x60 => Ok({ val: DisplayRegs.read8(rgs.display, addr)?, reg: Unchanged })
+			offset if offset >= 0x60 and offset < 0xB0 => Ok({ val: SoundRegs.read8(rgs.sound, addr)?, reg: Unchanged })
+			offset if offset >= 0x0B0 and offset < 0x100 => Ok({ val: DmaRegs.read8(rgs.dmas, addr)?, reg: Unchanged })
+			offset if offset >= 0x100 and offset < 0x120 => Ok({ val: TimerRegs.read8(rgs.timers, addr)?, reg: Unchanged })
+			offset if offset >= 0x130 and offset < 0x134 => Ok({ val: KeyRegs.read8(rgs.keys, addr)?, reg: Unchanged })
+			offset if (offset >= 0x120 and offset < 0x130) or (offset >= 0x134 and offset < 0x200) => {
+				intermediate = SerialRegs.read8(rgs.serials, addr)?
+				Ok({
+					val: intermediate.val,
+					reg: match intermediate.reg {
+						Updated(x) => Updated({ ..rgs, serials: x })
+						_ => Unchanged
+					},
+				})
+			}
+			offset if offset >= 0x200 => Ok({ val: SystemRegs.read8(rgs.system, addr)?, reg: Unchanged })
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
-	read16 : IoRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
+	read16 : IoRegs, U32 -> Try(ReadResult(U16, IoRegs), [UnsupportedIORegOffset(U32)])
 	read16 = |rgs, addr| {
 		match addr {
-			offset if offset >= 0 and offset < 0x60 => DisplayRegs.read16(rgs.display, addr)
-			offset if offset >= 0x60 and offset < 0xB0 => SoundRegs.read16(rgs.sound, addr)
-			offset if offset >= 0xB0 and offset < 0x100 => DmaRegs.read16(rgs.dmas, addr)
-			offset if offset >= 0x100 and offset < 0x120 => TimerRegs.read16(rgs.timers, addr)
-			offset if offset >= 0x120 and offset < 0x130 => SerialRegs.read16(rgs.serials, addr)
-			offset if offset >= 0x130 and offset < 0x134 => KeyRegs.read16(rgs.keys, addr)
-			offset if offset >= 0x134 and offset < 0x200 => SerialRegs.read16(rgs.serials, addr)
-			offset if offset >= 0x200 => SystemRegs.read16(rgs.system, addr)
+			offset if offset >= 0 and offset < 0x60 => Ok({ val: DisplayRegs.read16(rgs.display, addr)?, reg: Unchanged })
+			offset if offset >= 0x60 and offset < 0xB0 => Ok({ val: SoundRegs.read16(rgs.sound, addr)?, reg: Unchanged })
+			offset if offset >= 0xB0 and offset < 0x100 => Ok({ val: DmaRegs.read16(rgs.dmas, addr)?, reg: Unchanged })
+			offset if offset >= 0x100 and offset < 0x120 => Ok({ val: TimerRegs.read16(rgs.timers, addr)?, reg: Unchanged })
+			offset if (offset >= 0x120 and offset < 0x130) or (offset >= 0x134 and offset < 0x200) => {
+				intermediate = SerialRegs.read16(rgs.serials, addr)?
+				Ok({
+					val: intermediate.val,
+					reg: match intermediate.reg {
+						Updated(x) => Updated({ ..rgs, serials: x })
+						_ => Unchanged
+					},
+				})
+			}
+			offset if offset >= 0x130 and offset < 0x134 => Ok({ val: KeyRegs.read16(rgs.keys, addr)?, reg: Unchanged })
+			offset if offset >= 0x200 => Ok({ val: SystemRegs.read16(rgs.system, addr)?, reg: Unchanged })
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
-	read32 : IoRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
+	read32 : IoRegs, U32 -> Try(ReadResult(U32, IoRegs), [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			offset if offset >= 0 and offset < 0x60 => DisplayRegs.read32(rgs.display, addr)
-			offset if offset >= 0x60 and offset < 0xB0 => SoundRegs.read32(rgs.sound, addr)
-			offset if offset >= 0xB0 and offset < 0x100 => DmaRegs.read32(rgs.dmas, addr)
-			offset if offset >= 0x100 and offset < 0x120 => TimerRegs.read32(rgs.timers, addr)
-			offset if offset >= 0x120 and offset < 0x130 => SerialRegs.read32(rgs.serials, addr)
-			offset if offset >= 0x130 and offset < 0x134 => KeyRegs.read32(rgs.keys, addr)
-			offset if offset >= 0x134 and offset < 0x200 => SerialRegs.read32(rgs.serials, addr)
-			offset if offset >= 0x200 => SystemRegs.read32(rgs.system, addr)
+			offset if offset >= 0 and offset < 0x60 => Ok({ val: DisplayRegs.read32(rgs.display, addr)?, reg: Unchanged })
+			offset if offset >= 0x60 and offset < 0xB0 => Ok({ val: SoundRegs.read32(rgs.sound, addr)?, reg: Unchanged })
+			offset if offset >= 0xB0 and offset < 0x100 => Ok({ val: DmaRegs.read32(rgs.dmas, addr)?, reg: Unchanged })
+			offset if offset >= 0x100 and offset < 0x120 => Ok({ val: TimerRegs.read32(rgs.timers, addr)?, reg: Unchanged })
+			offset if offset >= 0x130 and offset < 0x134 => Ok({ val: KeyRegs.read32(rgs.keys, addr)?, reg: Unchanged })
+			offset if (offset >= 0x120 and offset < 0x130) or (offset >= 0x134 and offset < 0x200) => {
+				intermediate = SerialRegs.read32(rgs.serials, addr)?
+				Ok({
+					val: intermediate.val,
+					reg: match intermediate.reg {
+						Updated(x) => Updated({ ..rgs, serials: x })
+						_ => Unchanged
+					},
+				})
+			}
+			offset if offset >= 0x200 => Ok({ val: SystemRegs.read32(rgs.system, addr)?, reg: Unchanged })
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}

@@ -1,6 +1,11 @@
 import MemoryRegion
 import IoRegs
 
+ReadResult(val_type, type) : {
+	val : val_type,
+	state : [Unchanged, Updated(type)],
+}
+
 Bus :: {
 	ewram : List(U8),
 	iwram : List(U8),
@@ -27,7 +32,7 @@ Bus :: {
 
 	read8 : Bus,
 	U32 -> Try(
-		U8,
+		ReadResult(U8, Bus),
 		[
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
@@ -37,11 +42,20 @@ Bus :: {
 	read8 = |bus, addr| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		match region {
-			CPUExternalRAM => (bus.ewram).get(U32.to_u64(relative_addr))
-			CPUInternalRAM => (bus.iwram).get(U32.to_u64(relative_addr))
-			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => (bus.gamepak_rom).get(U32.to_u64(relative_addr))
-			SystemROM => (bus.bios).get(U32.to_u64(relative_addr))
-			IORegs => IoRegs.read8(bus.io_regs, relative_addr)
+			CPUExternalRAM => Ok({ val: (bus.ewram).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			CPUInternalRAM => Ok({ val: (bus.iwram).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ val: (bus.gamepak_rom).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			SystemROM => Ok({ val: (bus.bios).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			IORegs => {
+				intermediate = IoRegs.read8(bus.io_regs, relative_addr)?
+				Ok({
+					val: intermediate.val,
+					state: match intermediate.reg {
+						Unchanged => Unchanged
+						Updated(x) => Updated({ ..bus, io_regs: x })
+					},
+				})
+			}
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -80,7 +94,7 @@ Bus :: {
 
 	read16 : Bus,
 	U32 -> Try(
-		U16,
+		ReadResult(U16, Bus),
 		[
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
@@ -97,11 +111,41 @@ Bus :: {
 			}
 			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 			match region {
-				CPUExternalRAM => Ok(combiner((bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.ewram).get(U32.to_u64(relative_addr))?))
-				CPUInternalRAM => Ok(combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?))
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok(combiner((bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr))?))
-				SystemROM => Ok(combiner((bus.bios).get(U32.to_u64(relative_addr.plus(1)))?, (bus.bios).get(U32.to_u64(relative_addr))?))
-				IORegs => IoRegs.read16(bus.io_regs, relative_addr)
+				CPUExternalRAM => Ok({
+					val: combiner(
+						(bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.ewram).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				CPUInternalRAM => Ok({
+					val: combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?),
+					state: Unchanged,
+				})
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
+					val: combiner(
+						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.gamepak_rom).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				SystemROM => Ok({
+					val: combiner(
+						(bus.bios).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.bios).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				IORegs => {
+					intermediate = IoRegs.read16(bus.io_regs, relative_addr)?
+					Ok({
+						val: intermediate.val,
+						state: match intermediate.reg {
+							Unchanged => Unchanged
+							Updated(x) => Updated({ ..bus, io_regs: x })
+						},
+					})
+				}
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
@@ -150,7 +194,7 @@ Bus :: {
 
 	read32 : Bus,
 	U32 -> Try(
-		U32,
+		ReadResult(U32, Bus),
 		[
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
@@ -167,11 +211,52 @@ Bus :: {
 			}
 			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 			match region {
-				CPUExternalRAM => Ok(combiner((bus.ewram).get(U32.to_u64(relative_addr.plus(3)))?, (bus.ewram).get(U32.to_u64(relative_addr.plus(2)))?, (bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.ewram).get(U32.to_u64(relative_addr))?))
-				CPUInternalRAM => Ok(combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(3)))?, (bus.iwram).get(U32.to_u64(relative_addr.plus(2)))?, (bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?))
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok(combiner((bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(3)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(2)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?, (bus.gamepak_rom).get(U32.to_u64(relative_addr))?))
-				SystemROM => Ok(combiner((bus.bios).get(U32.to_u64(relative_addr.plus(3)))?, (bus.bios).get(U32.to_u64(relative_addr.plus(2)))?, (bus.bios).get(U32.to_u64(relative_addr.plus(1)))?, (bus.bios).get(U32.to_u64(relative_addr))?))
-				IORegs => IoRegs.read32(bus.io_regs, relative_addr)
+				CPUExternalRAM => Ok({
+					val: combiner(
+						(bus.ewram).get(U32.to_u64(relative_addr.plus(3)))?,
+						(bus.ewram).get(U32.to_u64(relative_addr.plus(2)))?,
+						(bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.ewram).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				CPUInternalRAM => Ok({
+					val: combiner(
+						(bus.iwram).get(U32.to_u64(relative_addr.plus(3)))?,
+						(bus.iwram).get(U32.to_u64(relative_addr.plus(2)))?,
+						(bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.iwram).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
+					val: combiner(
+						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(3)))?,
+						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(2)))?,
+						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.gamepak_rom).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				SystemROM => Ok({
+					val: combiner(
+						(bus.bios).get(U32.to_u64(relative_addr.plus(3)))?,
+						(bus.bios).get(U32.to_u64(relative_addr.plus(2)))?,
+						(bus.bios).get(U32.to_u64(relative_addr.plus(1)))?,
+						(bus.bios).get(U32.to_u64(relative_addr))?,
+					),
+					state: Unchanged,
+				})
+				IORegs => {
+					intermediate = IoRegs.read32(bus.io_regs, relative_addr)?
+					Ok({
+						val: intermediate.val,
+						state: match intermediate.reg {
+							Unchanged => Unchanged
+							Updated(x) => Updated({ ..bus, io_regs: x })
+						},
+					})
+				}
 				_ => Err(UnsupportedRegion(region))
 			}
 		}
