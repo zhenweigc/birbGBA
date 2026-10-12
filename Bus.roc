@@ -9,6 +9,9 @@ ReadResult(val_type, type) : {
 Bus :: {
 	ewram : List(U8),
 	iwram : List(U8),
+	paletteram : List(U8),
+	vram : List(U8),
+	oam : List(U8),
 	gamepak_rom : List(U8),
 	bios : List(U8),
 	io_regs : IoRegs,
@@ -23,6 +26,9 @@ Bus :: {
 			Ok({
 				ewram: List.repeat(0, 0x40000),
 				iwram: List.repeat(0, 0x8000),
+				paletteram: List.repeat(0, 1024),
+				vram: List.repeat(0, 0x18000),
+				oam: List.repeat(0, 0x400),
 				gamepak_rom: rom,
 				bios: bios,
 				io_regs: IoRegs.init(),
@@ -44,6 +50,18 @@ Bus :: {
 		match region {
 			CPUExternalRAM => Ok({ val: (bus.ewram).get(U32.to_u64(relative_addr))?, state: Unchanged })
 			CPUInternalRAM => Ok({ val: (bus.iwram).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			PaletteRAM => Ok({ val: (bus.paletteram).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			VRAM => {
+				dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
+				mode = dispcnt.bitwise_and(0b111)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					Ok({ val: 0, state: Unchanged })
+				} else {
+					Ok({ val: (bus.vram).get(U32.to_u64(relative_addr))?, state: Unchanged })
+				}
+			}
+			OAM => Ok({ val: (bus.oam).get(U32.to_u64(relative_addr))?, state: Unchanged })
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ val: (bus.gamepak_rom).get(U32.to_u64(relative_addr))?, state: Unchanged })
 			SystemROM => Ok({ val: (bus.bios).get(U32.to_u64(relative_addr))?, state: Unchanged })
 			IORegs => {
@@ -82,6 +100,40 @@ Bus :: {
 				..bus,
 				iwram: (bus.iwram).set(relative_addr.to_u64(), cxt)?,
 			})
+			PaletteRAM => {
+				aligned_addr = if relative_addr.mod_by(2) == 0 {
+					relative_addr
+				} else {
+					relative_addr - 1
+				}
+				Ok({
+					..bus,
+					paletteram: (bus.paletteram).set(aligned_addr.to_u64(), cxt)?.set(aligned_addr.plus(1).to_u64(), cxt)?,
+				})
+			}
+			VRAM => {
+				dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
+				mode = dispcnt.bitwise_and(0b111)
+				window_offset = (addr - 0x06000000).mod_by(0x20000)
+				maximum_addr = if mode < 3 {
+					0x10000
+				} else if mode < 6 {
+					0x14000
+				} else {
+					0x14000 # technically banned, but somehow mGBA allows it
+				}
+				aligned_addr = if relative_addr.mod_by(2) == 0 {
+					relative_addr
+				} else {
+					relative_addr - 1
+				}
+				if window_offset >= maximum_addr {
+					Ok(bus)
+				} else {
+					Ok({ ..bus, vram: (bus.vram).set(aligned_addr.to_u64(), cxt)?.set(aligned_addr.plus(1).to_u64(), cxt)? })
+				}
+			}
+			OAM => Ok(bus) # GBAtek explicitly said no 1byte write
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
 			SystemROM => Ok(bus)
 			IORegs => Ok({
@@ -120,6 +172,28 @@ Bus :: {
 				})
 				CPUInternalRAM => Ok({
 					val: read_le16(bus.iwram, relative_addr)?,
+					state: Unchanged,
+				})
+				PaletteRAM => Ok({
+					val: read_le16(bus.paletteram, relative_addr)?,
+					state: Unchanged,
+				})
+				VRAM => {
+					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
+					mode = dispcnt.bitwise_and(0b111)
+					window_offset = (addr - 0x6000000).mod_by(0x20000)
+					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+						# If cond directly stolen from mGBA
+						Ok({ val: 0, state: Unchanged })
+					} else {
+						Ok({
+							val: read_le16(bus.vram, relative_addr)?,
+							state: Unchanged,
+						})
+					}
+				}
+				OAM => Ok({
+					val: read_le16(bus.oam, relative_addr)?,
 					state: Unchanged,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
@@ -175,6 +249,27 @@ Bus :: {
 					..bus,
 					iwram: (bus.iwram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
 				})
+				PaletteRAM => Ok({
+					..bus,
+					paletteram: (bus.paletteram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				})
+				VRAM => {
+					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
+					mode = dispcnt.bitwise_and(0b111)
+					window_offset = (addr - 0x6000000).mod_by(0x20000)
+					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+						Ok(bus)
+					} else {
+						Ok({
+							..bus,
+							vram: (bus.vram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+						})
+					}
+				}
+				OAM => Ok({
+					..bus,
+					oam: (bus.oam).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
 				SystemROM => Ok(bus)
 				IORegs => Ok({
@@ -216,6 +311,27 @@ Bus :: {
 				})
 				CPUInternalRAM => Ok({
 					val: read_le32(bus.iwram, relative_addr)?,
+					state: Unchanged,
+				})
+				PaletteRAM => Ok({
+					val: read_le32(bus.paletteram, relative_addr)?,
+					state: Unchanged,
+				})
+				VRAM => {
+					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
+					mode = dispcnt.bitwise_and(0b111)
+					window_offset = (addr - 0x6000000).mod_by(0x20000)
+					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+						Ok({ val: 0, state: Unchanged })
+					} else {
+						Ok({
+							val: read_le32(bus.vram, relative_addr)?,
+							state: Unchanged,
+						})
+					}
+				}
+				OAM => Ok({
+					val: read_le32(bus.oam, relative_addr)?,
 					state: Unchanged,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
@@ -275,6 +391,27 @@ Bus :: {
 				CPUInternalRAM => Ok({
 					..bus,
 					iwram: (bus.iwram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+				})
+				PaletteRAM => Ok({
+					..bus,
+					paletteram: (bus.paletteram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+				})
+				VRAM => {
+					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
+					mode = dispcnt.bitwise_and(0b111)
+					window_offset = (addr - 0x6000000).mod_by(0x20000)
+					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+						Ok(bus)
+					} else {
+						Ok({
+							..bus,
+							vram: (bus.vram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+						})
+					}
+				}
+				OAM => Ok({
+					..bus,
+					oam: (bus.oam).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
 				SystemROM => Ok(bus)

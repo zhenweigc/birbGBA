@@ -53,6 +53,8 @@ MemoryRegion := [
 			# Bytes 0x06010000 - 0x06017FFF is mirrored from 0x06018000 - 0x0601FFFF.
 			# The entire region from 0x06000000 - 0x06020000 is in turn mirrored every
 			# 0x20000 bytes from 0x06000000 - 0x06FFFFFF.
+			# TLDR: [A B C C], 0x20000 long
+			vram_decoder : U32 -> U32
 			vram_decoder = |i| {
 				if i >= 0x6020000 {
 					vram_decoder((i - 0x6020000).mod_by(0x20000) + 0x6000000)
