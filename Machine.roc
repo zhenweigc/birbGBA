@@ -1,11 +1,5 @@
 import Bus
 import Cpu
-import MemoryRegion
-
-ReadResult(val_type, type) : {
-	val : val_type,
-	state : [Unchanged, Updated(type)],
-}
 
 Machine :: {
 	bus : Bus,
@@ -21,26 +15,21 @@ Machine :: {
 
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
-		if (m.cpu).is_thumb() {
-			cur_pc = (m.cpu).getPC()
+		cur_pc = (m.cpu).getPC()
+		{ execution_state, bus_update } = if (m.cpu).is_thumb() {
 			intermediate = Bus.read16(m.bus, cur_pc)?
 			instruction = intermediate.val
 			state = Cpu.execute_thumb_opcode(m.cpu, instruction)?
-			new_bus = match intermediate.state {
-				Unchanged => m.bus
-				Updated(x) => x
-			}
-			walk_execution_state({ ..m, bus: new_bus }, state)
+			{ execution_state: state, bus_update: intermediate.state }
 		} else {
-			cur_pc = (m.cpu).getPC()
 			intermediate = Bus.read32(m.bus, cur_pc)?
 			instruction = intermediate.val
 			state = Cpu.execute_arm_opcode(m.cpu, instruction)?
-			new_bus = match intermediate.state {
-				Unchanged => m.bus
-				Updated(x) => x
-			}
-			walk_execution_state({ ..m, bus: new_bus }, state)
+			{ execution_state: state, bus_update: intermediate.state }
+		}
+		match bus_update {
+			Unchanged => walk_execution_state(m, execution_state)
+			Updated(new_bus) => walk_execution_state({ ..m, bus: new_bus }, execution_state)
 		}
 	}
 

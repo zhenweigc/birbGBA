@@ -45,10 +45,7 @@ IoRegs :: {
 				intermediate = SerialRegs.read8(rgs.serials, addr)?
 				Ok({
 					val: intermediate.val,
-					reg: match intermediate.reg {
-						Updated(x) => Updated({ ..rgs, serials: x })
-						_ => Unchanged
-					},
+					reg: catch_read_side_effect(rgs, intermediate.reg),
 				})
 			}
 			offset if offset >= 0x200 => Ok({ val: SystemRegs.read8(rgs.system, addr)?, reg: Unchanged })
@@ -67,10 +64,7 @@ IoRegs :: {
 				intermediate = SerialRegs.read16(rgs.serials, addr)?
 				Ok({
 					val: intermediate.val,
-					reg: match intermediate.reg {
-						Updated(x) => Updated({ ..rgs, serials: x })
-						_ => Unchanged
-					},
+					reg: catch_read_side_effect(rgs, intermediate.reg),
 				})
 			}
 			offset if offset >= 0x130 and offset < 0x134 => Ok({ val: KeyRegs.read16(rgs.keys, addr)?, reg: Unchanged })
@@ -91,10 +85,7 @@ IoRegs :: {
 				intermediate = SerialRegs.read32(rgs.serials, addr)?
 				Ok({
 					val: intermediate.val,
-					reg: match intermediate.reg {
-						Updated(x) => Updated({ ..rgs, serials: x })
-						_ => Unchanged
-					},
+					reg: catch_read_side_effect(rgs, intermediate.reg),
 				})
 			}
 			offset if offset >= 0x200 => Ok({ val: SystemRegs.read32(rgs.system, addr)?, reg: Unchanged })
@@ -193,5 +184,13 @@ IoRegs :: {
 			}
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
+	}
+}
+
+catch_read_side_effect : IoRegs, [Unchanged, Updated(SerialRegs)] -> [Unchanged, Updated(IoRegs)]
+catch_read_side_effect = |rgs, reg| {
+	match reg {
+		Updated(new_reg) => Updated({ ..rgs, serials: new_reg })
+		_ => Unchanged
 	}
 }

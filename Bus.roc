@@ -106,34 +106,28 @@ Bus :: {
 		if addr.mod_by(2) == 1 {
 			Err(MisalignedAddress(addr))
 		} else {
-			combiner = |i, j| {
-				U8.to_u16(i).shl_wrap(8) + U8.to_u16(j)
+			read_le16 : List(U8), U32 -> Try(U16, [OutOfBounds])
+			read_le16 = |lst, relative_addr| {
+				i = lst.get(relative_addr.plus(1).to_u64())?
+				j = lst.get(relative_addr.to_u64())?
+				Ok(i.to_u16().shl_wrap(8) + j.to_u16())
 			}
 			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 			match region {
 				CPUExternalRAM => Ok({
-					val: combiner(
-						(bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.ewram).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le16(bus.ewram, relative_addr)?,
 					state: Unchanged,
 				})
 				CPUInternalRAM => Ok({
-					val: combiner((bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?, (bus.iwram).get(U32.to_u64(relative_addr))?),
+					val: read_le16(bus.iwram, relative_addr)?,
 					state: Unchanged,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
-					val: combiner(
-						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.gamepak_rom).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le16(bus.gamepak_rom, relative_addr)?,
 					state: Unchanged,
 				})
 				SystemROM => Ok({
-					val: combiner(
-						(bus.bios).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.bios).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le16(bus.bios, relative_addr)?,
 					state: Unchanged,
 				})
 				IORegs => {
@@ -206,45 +200,30 @@ Bus :: {
 		if addr.mod_by(4) > 0 {
 			Err(MisalignedAddress(addr))
 		} else {
-			combiner = |i, j, k, l| {
-				U8.to_u32(i).shl_wrap(24) + U8.to_u32(j).shl_wrap(16) + U8.to_u32(k).shl_wrap(8) + U8.to_u32(l)
+			read_le32 : List(U8), U32 -> Try(U32, [OutOfBounds])
+			read_le32 = |lst, relative_addr| {
+				i = lst.get(relative_addr.plus(3).to_u64())?
+				j = lst.get(relative_addr.plus(2).to_u64())?
+				k = lst.get(relative_addr.plus(1).to_u64())?
+				l = lst.get(relative_addr.to_u64())?
+				Ok(i.to_u32().shl_wrap(24) + j.to_u32().shl_wrap(16) + k.to_u32().shl_wrap(8) + l.to_u32())
 			}
 			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 			match region {
 				CPUExternalRAM => Ok({
-					val: combiner(
-						(bus.ewram).get(U32.to_u64(relative_addr.plus(3)))?,
-						(bus.ewram).get(U32.to_u64(relative_addr.plus(2)))?,
-						(bus.ewram).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.ewram).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le32(bus.ewram, relative_addr)?,
 					state: Unchanged,
 				})
 				CPUInternalRAM => Ok({
-					val: combiner(
-						(bus.iwram).get(U32.to_u64(relative_addr.plus(3)))?,
-						(bus.iwram).get(U32.to_u64(relative_addr.plus(2)))?,
-						(bus.iwram).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.iwram).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le32(bus.iwram, relative_addr)?,
 					state: Unchanged,
 				})
 				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
-					val: combiner(
-						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(3)))?,
-						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(2)))?,
-						(bus.gamepak_rom).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.gamepak_rom).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le32(bus.gamepak_rom, relative_addr)?,
 					state: Unchanged,
 				})
 				SystemROM => Ok({
-					val: combiner(
-						(bus.bios).get(U32.to_u64(relative_addr.plus(3)))?,
-						(bus.bios).get(U32.to_u64(relative_addr.plus(2)))?,
-						(bus.bios).get(U32.to_u64(relative_addr.plus(1)))?,
-						(bus.bios).get(U32.to_u64(relative_addr))?,
-					),
+					val: read_le32(bus.bios, relative_addr)?,
 					state: Unchanged,
 				})
 				IORegs => {
