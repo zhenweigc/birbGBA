@@ -6,7 +6,7 @@ ReadResult(val_type, type) : {
 	state : [Unchanged, Updated(type)],
 }
 
-Bus :: {
+Bus := {
 	ewram : List(U8),
 	iwram : List(U8),
 	paletteram : List(U8),
@@ -421,6 +421,14 @@ Bus :: {
 				})
 				_ => Err(UnsupportedRegion(region))
 			}
+		}
+	}
+
+	requires_bios : [W8, W16, W32], U32 -> Bool
+	requires_bios = |width, addr| {
+		match width {
+			W8 => addr == 0x4000300 or addr == 0x4000301
+			W16 | W32 => addr == 0x4000300
 		}
 	}
 }

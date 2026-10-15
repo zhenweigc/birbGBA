@@ -475,4 +475,41 @@ DisplayRegs :: {
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
+
+	advance_scanline : DisplayRegs -> (DisplayRegs, U16)
+	advance_scanline = |rgs| {
+		advanced_vcount = (rgs.vcount + 1).mod_by(228)
+		bit0 = if (advanced_vcount > 159 and advanced_vcount < 227) {
+			1
+		} else {
+			0
+		}
+		bit2 = if advanced_vcount == Bits.get_seg_of_u16_certain(rgs.dispstat, 8, 8) {
+			1
+		} else {
+			0
+		}
+		low_3_bit = bit0 + bit2.shl_wrap(2)
+		mask = (
+			if advanced_vcount == 160 and Bits.get_ith_bit_u16_certain(rgs.dispstat, 3) {
+				1
+			} else {
+				0
+			}
+		) + (
+			if bit2 == 1 and Bits.get_ith_bit_u16_certain(rgs.dispstat, 5) {
+				0b100
+			} else {
+				0
+			}
+		)
+		(
+			{
+				..rgs,
+				vcount: advanced_vcount,
+				dispstat: rgs.dispstat.bitwise_and(0b1111_1111_1111_1000) + low_3_bit,
+			},
+			mask,
+		)
+	}
 }

@@ -5,6 +5,8 @@ SystemRegs :: {
 	pending_interrupts : U16,
 	waitcnt : U16,
 	ime : U16,
+	postflg : U8,
+	haltcnt : [None(U8), Pending(U8)], # oh boy, I hate sideeffects
 }.{
 	init : () -> SystemRegs
 	init = || {
@@ -12,6 +14,8 @@ SystemRegs :: {
 		pending_interrupts: 0,
 		waitcnt: 0,
 		ime: 0,
+		postflg: 0,
+		haltcnt: None(0),
 	}
 
 	read8 : SystemRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
@@ -27,6 +31,9 @@ SystemRegs :: {
 			0x208 => Ok(rgs.ime.to_u8_wrap())
 			0x209 => Ok(rgs.ime.shr_wrap(8).to_u8_wrap())
 			0x20A | 0x20B => Ok(0)
+			0x300 => Ok(rgs.postflg)
+			0x301 => Ok(0)
+			0x302 | 0x303 => Ok(0)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -40,6 +47,12 @@ SystemRegs :: {
 			0x206 => Ok(0)
 			0x208 => Ok(rgs.ime)
 			0x20A => Ok(0)
+			0x300 => {
+				lo = read8(rgs, 0x300)?.to_u16()
+				hi = read8(rgs, 0x301)?.to_u16().shl_wrap(8)
+				Ok(lo + hi)
+			}
+			0x302 => Ok(0)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -47,7 +60,7 @@ SystemRegs :: {
 	read32 : SystemRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
 	read32 = |rgs, addr| {
 		match addr {
-			0x200 | 0x204 | 0x208 => {
+			0x200 | 0x204 | 0x208 | 0x300 => {
 				low = read16(rgs, addr)?.to_u32()
 				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
@@ -80,7 +93,18 @@ SystemRegs :: {
 				adjusted_val = Bits.replace_byte(old_val, isHi, val)
 				write16(rgs, 0x208, adjusted_val)
 			}
-			0x20A | 0x20B => Ok(rgs)
+			offset if offset >= 0x20A and offset < 0x300 => Ok(rgs)
+			0x300 => {
+				# https://github.com/mgba-emu/mgba/issues/2309
+				# Whenever come down to undocumented hardware behavior, shit will go lose.
+				old_val = rgs.postflg
+				Ok({
+					..rgs,
+					postflg: old_val.bitwise_or(val.bitwise_and(0b1)),
+				})
+			}
+			0x301 => Ok({ ..rgs, haltcnt: Pending(val) })
+			offset if offset >= 0x302 and offset < 0x800 => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -97,7 +121,17 @@ SystemRegs :: {
 			0x204 => Ok({ ..rgs, waitcnt: val.bitwise_and(0x5FFF) })
 			0x206 => Ok(rgs)
 			0x208 => Ok({ ..rgs, ime: val.bitwise_and(0x1) })
-			0x20A => Ok(rgs)
+			offset if offset >= 0x20A and offset < 0x300 => Ok(rgs)
+			0x300 => {
+				lo = val.to_u8_wrap()
+				hi = val.shr_wrap(8).to_u8_wrap()
+				Ok({
+					..rgs,
+					postflg: rgs.postflg.bitwise_or(lo.bitwise_and(0b1)),
+					haltcnt: Pending(hi),
+				})
+			}
+			offset if offset >= 0x302 and offset < 0x800 => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -110,7 +144,35 @@ SystemRegs :: {
 			0x200 => write16(write16(rgs, 0x200, lo)?, 0x202, hi)
 			0x204 => write16(write16(rgs, 0x204, lo)?, 0x206, 0)
 			0x208 => write16(write16(rgs, 0x208, lo)?, 0x20A, 0)
+			offset if offset >= 0x20A and offset < 0x300 => Ok(rgs)
+			0x300 => write16(write16(rgs, 0x300, lo)?, 0x302, 0)
+			offset if offset >= 0x302 and offset < 0x800 => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
+	}
+
+	process_haltcnt : SystemRegs -> (SystemRegs, [NoReq, Request(U8)])
+	process_haltcnt = |rgs| {
+		match rgs.haltcnt {
+			None(_) => (rgs, NoReq)
+			Pending(x) => ({ ..rgs, haltcnt: None(x) }, Request(x))
+		}
+	}
+
+	hardware_request_interrupts : SystemRegs, U16 -> SystemRegs
+	hardware_request_interrupts = |rgs, val| {
+		# IF modification initiated via hardware
+		new_val = Bits.get_seg_of_u16_certain(val, 0, 14)
+		{ ..rgs, pending_interrupts: rgs.pending_interrupts.bitwise_or(new_val) }
+	}
+
+	enable_pending : SystemRegs -> U16
+	enable_pending = |rgs| {
+		Bits.get_seg_of_u16_certain(rgs.interrupt_enables, 0, 14).bitwise_and(rgs.pending_interrupts)
+	}
+
+	interrupt_req_fired : SystemRegs -> Bool
+	interrupt_req_fired = |rgs| {
+		enable_pending(rgs) != 0 and Bits.get_ith_bit_u16_certain(rgs.ime, 0)
 	}
 }

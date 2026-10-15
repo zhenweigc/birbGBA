@@ -11,7 +11,7 @@ ReadResult(val_type, rg_type) : {
 	reg : [Unchanged, Updated(rg_type)],
 }
 
-IoRegs :: {
+IoRegs := {
 	display : DisplayRegs,
 	sound : SoundRegs,
 	dmas : DmaRegs,
