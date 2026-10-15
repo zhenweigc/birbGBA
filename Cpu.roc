@@ -902,7 +902,7 @@ arm_instructions_decode = |i| {
 		Ok(SingleDataTransfer)
 	} else if !Bits.get_ith_bit_u32_certain(i, 25)
 		and Bits.get_ith_bit_u32_certain(i, 4)
-			and Bits.get_ith_bit_u32_certain(i, 7) {
+		and Bits.get_ith_bit_u32_certain(i, 7) {
 		Err(WTFisThis) # A5-3 DDI01001
 	} else if Bits.bits_match_32(i, 0b1100_00000000000000000000_0000, 0) {
 		Ok(DataProcessingPSRTransfer)
@@ -2497,9 +2497,9 @@ thumb_instructions_decode = |i| {
 		Err(UNPREDICTABLE)
 	} else if Bits.bits_match_16(i, 0b11111111_1_0000_111, 0b01000111_0_0000_000) # Reg BLX is not supported by old ARM
 		or Bits.bits_match_16(i, 0b1111_000000000000, 0b1101_000000000000)
-			or Bits.bits_match_16(i, 0b11111_00000000000, 0b11100_00000000000)
-				or Bits.bits_match_16(i, 0b11111_00000000000, 0b11110_00000000000)
-					or Bits.bits_match_16(i, 0b11111_00000000000, 0b11111_00000000000) {
+		or Bits.bits_match_16(i, 0b11111_00000000000, 0b11100_00000000000)
+		or Bits.bits_match_16(i, 0b11111_00000000000, 0b11110_00000000000)
+		or Bits.bits_match_16(i, 0b11111_00000000000, 0b11111_00000000000) {
 		Ok(Branch)
 	} else if is_dp(i) {
 		Ok(DataProcessing)
@@ -2580,11 +2580,13 @@ thumb_push_pop_execute = |op, c| {
 						addr: trio.start_addr,
 						width: W32,
 						continuation: LoadMultiple({
-							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + if Bits.get_ith_bit_u16_certain(op, 8) {
-								U32.shl_wrap(1, 15)
-							} else {
-								0
-							},
+							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + (
+								if Bits.get_ith_bit_u16_certain(op, 8) {
+									U32.shl_wrap(1, 15)
+								} else {
+									0
+								}
+							),
 							next_addr: trio.start_addr.plus_wrap(4),
 							wba: WriteBack({
 								rn: R13,
@@ -2616,11 +2618,13 @@ thumb_push_pop_execute = |op, c| {
 						width: W32,
 						val: cpu_getReg(first_reg, c)?,
 						continuation: WriteMultiple({
-							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + if Bits.get_ith_bit_u16_certain(op, 8) {
-								U32.shl_wrap(1, 14)
-							} else {
-								0
-							},
+							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + (
+								if Bits.get_ith_bit_u16_certain(op, 8) {
+									U32.shl_wrap(1, 14)
+								} else {
+									0
+								}
+							),
 							next_addr: trio.start_addr.plus_wrap(4),
 							wba: WriteBack({
 								rn: R13,

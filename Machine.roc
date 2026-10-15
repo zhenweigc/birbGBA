@@ -2,14 +2,21 @@ import Bus
 import Cpu
 import SystemRegs
 import DisplayRegs
+import TimerRegs
 
-Machine :: { bus : Bus, cpu : Cpu, power_state : [Running, Halted, Stopped] }.{
+Machine :: {
+	bus : Bus,
+	cpu : Cpu,
+	power_state : [Running, Halted, Stopped],
+	now : U64,
+}.{
 	init : List(U8), List(U8) -> Try(Machine, _)
 	init = |bios, rom| {
 		Ok({
 			bus: Bus.init(bios, rom)?,
 			cpu: Cpu.init(),
 			power_state: Running,
+			now: 0,
 		})
 	}
 
@@ -58,6 +65,62 @@ Machine :: { bus : Bus, cpu : Cpu, power_state : [Running, Halted, Stopped] }.{
 			io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
 			new_bus = { ..m.bus, io_regs: io_rgs }
 			{ ..m, bus: new_bus }
+		}
+	}
+
+	# The returned overflow is for better debugging purpose
+	tick_timer : Machine, [Timer0, Timer1, Timer2, Timer3] -> (Machine, U8)
+	tick_timer = |m, selected_timer| {
+		match m.power_state {
+			Stopped => (m, 0)
+			_ => {
+				(new_timer_rgs, masks) = TimerRegs.tick(m.bus.io_regs.timers, selected_timer, Clock)
+				new_sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, masks.irq_mask)
+				(
+					{
+						..m,
+						bus: {
+							..m.bus,
+							io_regs: {
+								..m.bus.io_regs,
+								system: new_sys_rgs,
+								timers: new_timer_rgs,
+							},
+						},
+					},
+					masks.overflow_mask,
+				)
+			}
+		}
+	}
+
+	process_timer_at : Machine, U64 -> Try((Machine, U8), _)
+	process_timer_at = |m, at| {
+		match m.power_state {
+			Stopped => Ok((m, 0))
+			_ => {
+				if at >= m.now {
+					(new_timers_rgs, masks) = TimerRegs.process_at(m.bus.io_regs.timers, at)?
+					new_system_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, masks.irq_mask)
+					Ok((
+						{
+							..m,
+							bus: {
+								..m.bus,
+								io_regs: {
+									..m.bus.io_regs,
+									timers: new_timers_rgs,
+									system: new_system_rgs,
+								},
+							},
+							now: at,
+						},
+						masks.overflow_mask,
+					))
+				} else {
+					Err(WrongEventTime)
+				}
+			}
 		}
 	}
 }

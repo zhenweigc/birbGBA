@@ -170,11 +170,13 @@ SoundRegs :: {
 			0x83 => Ok(rgs.sound_cnth.shr_wrap(8).to_u8_wrap().bitwise_and(0b111_0111))
 			0x84 => Ok(
 				rgs.sound_cntx.bitwise_and(0b1000_1110).to_u8_wrap()
-					+ if rgs.sound1state.enabled {
-						1
-					} else {
-						0
-					},
+					+ (
+						if rgs.sound1state.enabled {
+							1
+						} else {
+							0
+						}
+					),
 			)
 			0x85 => Ok(rgs.sound_cntx.shr_wrap(8).to_u8_wrap().bitwise_and(0b1000_1111))
 			0x86 | 0x87 => Ok(0)
@@ -262,11 +264,13 @@ SoundRegs :: {
 			0x82 => Ok(rgs.sound_cnth.bitwise_and(0b111_0111_0000_1111))
 			0x84 => Ok(
 				rgs.sound_cntx.bitwise_and(0b1000_1110)
-					+ if rgs.sound1state.enabled {
-						1
-					} else {
-						0
-					},
+					+ (
+						if rgs.sound1state.enabled {
+							1
+						} else {
+							0
+						}
+					),
 			)
 			0x86 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110))
