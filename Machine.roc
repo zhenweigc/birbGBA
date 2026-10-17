@@ -9,6 +9,7 @@ Machine :: {
 	cpu : Cpu,
 	power_state : [Running, Halted, Stopped],
 	now : U64,
+	next_lcd_at : U64,
 }.{
 	init : List(U8), List(U8) -> Try(Machine, _)
 	init = |bios, rom| {
@@ -17,32 +18,40 @@ Machine :: {
 			cpu: Cpu.init(),
 			power_state: Running,
 			now: 0,
+			next_lcd_at: 1232,
 		})
 	}
 
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
 		if m.power_state == Running {
-			cur_pc = (m.cpu).getPC()
-			{ execution_state, bus_update } = if (m.cpu).is_thumb() {
-				intermediate = Bus.read16(m.bus, cur_pc)?
+			# A IRQ will cause cpu to shift mode and update regs
+			ready = if SystemRegs.interrupt_req_fired(m.bus.io_regs.system) {
+				{ ..m, cpu: Cpu.handle_irq(m.cpu)? }
+			} else {
+				m
+			}
+			cur_pc = (ready.cpu).getPC()
+			{ execution_state, bus_update } = if (ready.cpu).is_thumb() {
+				intermediate = Bus.read16(ready.bus, cur_pc)?
 				instruction = intermediate.val
-				state = Cpu.execute_thumb_opcode(m.cpu, instruction)?
+				state = Cpu.execute_thumb_opcode(ready.cpu, instruction)?
 				{ execution_state: state, bus_update: intermediate.state }
 			} else {
-				intermediate = Bus.read32(m.bus, cur_pc)?
+				intermediate = Bus.read32(ready.bus, cur_pc)?
 				instruction = intermediate.val
-				state = Cpu.execute_arm_opcode(m.cpu, instruction)?
+				state = Cpu.execute_arm_opcode(ready.cpu, instruction)?
 				{ execution_state: state, bus_update: intermediate.state }
 			}
 			match bus_update {
-				Unchanged => walk_execution_state(m, execution_state)
-				Updated(new_bus) => walk_execution_state({ ..m, bus: new_bus }, execution_state)
+				Unchanged => walk_execution_state(ready, execution_state)
+				Updated(new_bus) => walk_execution_state({ ..ready, bus: new_bus }, execution_state)
 			}
 		} else if m.power_state == Halted {
 			if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 {
 				step_forward({ ..m, power_state: Running })
 			} else {
+				# A normal run flow will use run_with_budget() and will not crash into this Err
 				Err(CpuHalted)
 			}
 		} else {
@@ -55,71 +64,64 @@ Machine :: {
 		m.cpu
 	}
 
-	advance_lcd_scanline : Machine -> Machine
-	advance_lcd_scanline = |m| {
+	process_next_event : Machine -> Try((Machine, U8), _)
+	process_next_event = |m| {
 		if m.power_state == Stopped {
-			m
+			Ok((m, 0))
 		} else {
-			(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
-			sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
-			io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
-			new_bus = { ..m.bus, io_regs: io_rgs }
-			{ ..m, bus: new_bus }
-		}
-	}
-
-	# The returned overflow is for better debugging purpose
-	tick_timer : Machine, [Timer0, Timer1, Timer2, Timer3] -> (Machine, U8)
-	tick_timer = |m, selected_timer| {
-		match m.power_state {
-			Stopped => (m, 0)
-			_ => {
-				(new_timer_rgs, masks) = TimerRegs.tick(m.bus.io_regs.timers, selected_timer, Clock)
-				new_sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, masks.irq_mask)
-				(
-					{
-						..m,
-						bus: {
-							..m.bus,
-							io_regs: {
-								..m.bus.io_regs,
-								system: new_sys_rgs,
-								timers: new_timer_rgs,
-							},
-						},
-					},
-					masks.overflow_mask,
-				)
+			timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+			at = match timer_at {
+				None => m.next_lcd_at
+				At(t) => t.min(m.next_lcd_at)
 			}
-		}
-	}
-
-	process_timer_at : Machine, U64 -> Try((Machine, U8), _)
-	process_timer_at = |m, at| {
-		match m.power_state {
-			Stopped => Ok((m, 0))
-			_ => {
-				if at >= m.now {
-					(new_timers_rgs, masks) = TimerRegs.process_at(m.bus.io_regs.timers, at)?
-					new_system_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, masks.irq_mask)
-					Ok((
+			if at < m.now {
+				Err(WrongEventTime)
+			} else {
+				var $cur_machine = m
+				var $overflow_mask = 0
+				# Timer processing
+				($cur_machine, $overflow_mask) = if timer_at == At(at) {
+					process_timer_at($cur_machine, at)?
+				} else {
+					(
 						{
 							..m,
 							bus: {
 								..m.bus,
 								io_regs: {
 									..m.bus.io_regs,
-									timers: new_timers_rgs,
-									system: new_system_rgs,
+									timers: TimerRegs.sync_idle_to($cur_machine.bus.io_regs.timers, at)?,
 								},
 							},
-							now: at,
 						},
-						masks.overflow_mask,
-					))
-				} else {
-					Err(WrongEventTime)
+						0,
+					)
 				}
+				# LCD processing
+				if $cur_machine.next_lcd_at == at {
+					after_lcd = advance_lcd_scanline($cur_machine)
+					$cur_machine = { ..after_lcd, next_lcd_at: at + 1232 }
+				} else {} # No need to touch lcd as its not triggered yet.
+				# So the new at will either be the (now previous) next_lcd_at update timestamp
+				# or the next timer reg event time, or both, since it is determined by a min
+				Ok(({ ..$cur_machine, now: at }, $overflow_mask))
+			}
+		}
+	}
+
+	run_with_budget : Machine, U32 -> Try(Machine, _)
+	run_with_budget = |m, num_of_actions| {
+		if num_of_actions == 0 {
+			Ok(m)
+		} else {
+			match m.power_state {
+				Running => run_with_budget(step_forward(m)?, num_of_actions - 1)
+				Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => run_with_budget(step_forward(m)?, num_of_actions - 1)
+				Halted => {
+					(new_m, _) = process_next_event(m)?
+					run_with_budget(new_m, num_of_actions - 1)
+				}
+				Stopped => Ok(m)
 			}
 		}
 	}
@@ -210,5 +212,49 @@ walk_execution_state = |m, state| {
 			)?
 			walk_execution_state({ ..m, bus: post_write_bus }, cpu_continue)
 		}
+	}
+}
+
+# overflow val is returned for better debugging purpose
+process_timer_at : Machine, U64 -> Try((Machine, U8), _)
+process_timer_at = |m, at| {
+	match m.power_state {
+		Stopped => Ok((m, 0))
+		_ => {
+			if at >= m.now {
+				(new_timers_rgs, masks) = TimerRegs.process_at(m.bus.io_regs.timers, at)?
+				new_system_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, masks.irq_mask)
+				Ok((
+					{
+						..m,
+						bus: {
+							..m.bus,
+							io_regs: {
+								..m.bus.io_regs,
+								timers: new_timers_rgs,
+								system: new_system_rgs,
+							},
+						},
+						now: at,
+					},
+					masks.overflow_mask,
+				))
+			} else {
+				Err(WrongEventTime)
+			}
+		}
+	}
+}
+
+advance_lcd_scanline : Machine -> Machine
+advance_lcd_scanline = |m| {
+	if m.power_state == Stopped {
+		m
+	} else {
+		(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
+		sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
+		io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
+		new_bus = { ..m.bus, io_regs: io_rgs }
+		{ ..m, bus: new_bus }
 	}
 }

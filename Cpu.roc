@@ -456,6 +456,25 @@ Cpu := {
 	execute_thumb_opcode = |c, op| {
 		thumb_instructions_execute(op, c)
 	}
+
+	# A2.6.8, P62
+	handle_irq : Cpu -> Try(Cpu, [InvalidMode, NoSPSR])
+	handle_irq = |c| {
+		if cpsr_getI(c.cpsr) {
+			Ok(c)
+		} else {
+			Ok({
+				..c,
+				regs: {
+					..c.regs,
+					r14_irq: c.regs.r15.plus_wrap(4),
+					r15: 0x18,
+				},
+				spsr_irq: c.cpsr,
+				cpsr: cpsr_setMode(IRQ, cpsr_setT(cpsr_setI(c.cpsr, True), False)),
+			})
+		}
+	}
 }
 
 PC_status : [PCSequential, PCWritten]

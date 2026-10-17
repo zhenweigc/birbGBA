@@ -192,58 +192,6 @@ TimerRegs :: {
 		}
 	}
 
-	# Process one supplied counting pulse without advancing system time.
-	# An overflow reloads the counter and propagates a Cascade pulse to the next timer reg, no wrap around!
-	tick : TimerRegs, TimerSelection, [Clock, Cascade] -> (TimerRegs, { overflow_mask : U8, irq_mask : U16 })
-	tick = |rgs, selection, source| {
-		reg_to_tick = pick_reg(rgs, selection)
-		source_mismatch = match source {
-			Clock => selection != Timer0 and Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
-			Cascade => selection == Timer0 or !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
-		}
-		if !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 7) {
-			(rgs, { overflow_mask: 0, irq_mask: 0 })
-		} else if source_mismatch {
-			(rgs, { overflow_mask: 0, irq_mask: 0 })
-		} else {
-			(reg, overflow) = timer_tick(reg_to_tick)
-			(updated_timer_rgs, overflow_mask, irq_mask, nxt) = match selection {
-				Timer0 => ({ ..rgs, timer0: reg }, 0b1, 0b1000, Timer1)
-				Timer1 => ({ ..rgs, timer1: reg }, 0b10, 0b1_0000, Timer2)
-				Timer2 => ({ ..rgs, timer2: reg }, 0b100, 0b10_0000, Timer3)
-				# Well there is no wrap around for cascade, so treat it as a None
-				Timer3 => ({ ..rgs, timer3: reg }, 0b1000, 0b100_0000, Timer0)
-			}
-			if !overflow {
-				(updated_timer_rgs, { overflow_mask: 0, irq_mask: 0 })
-			} else {
-				interrupt_masking = if Bits.get_ith_bit_u16_certain(reg.control, 6) {
-					irq_mask
-				} else {
-					0
-				}
-				if nxt == Timer0 {
-					(
-						updated_timer_rgs,
-						{
-							overflow_mask: overflow_mask,
-							irq_mask: interrupt_masking,
-						},
-					)
-				} else {
-					(t, b) = tick(updated_timer_rgs, nxt, Cascade)
-					(
-						t,
-						{
-							overflow_mask: b.overflow_mask.bitwise_or(overflow_mask),
-							irq_mask: b.irq_mask.bitwise_or(interrupt_masking),
-						},
-					)
-				}
-			}
-		}
-	}
-
 	next_event_at : TimerRegs -> [None, At(U64)]
 	next_event_at = |rgs| {
 		var $res = None
@@ -272,6 +220,19 @@ TimerRegs :: {
 			}
 		}
 		$res
+	}
+
+	sync_idle_to : TimerRegs, U64 -> Try(TimerRegs, [WrongEventTime])
+	sync_idle_to = |rgs, target| {
+		if target < rgs.synced_at {
+			Err(WrongEventTime)
+		} else {
+			nxt_action_time = next_event_at(rgs)
+			match nxt_action_time {
+				At(t) if t <= target => Err(WrongEventTime)
+				_ => Ok({ ..rgs, synced_at: target })
+			}
+		}
 	}
 
 	# Process all potential update/tick at the given timestamp
@@ -469,6 +430,58 @@ apply_pending_control = |reg, now, selection| {
 						}
 					}
 				}
+			}
+		}
+	}
+}
+
+# Process one supplied counting pulse without advancing system time.
+# An overflow reloads the counter and propagates a Cascade pulse to the next timer reg, no wrap around!
+tick : TimerRegs, TimerSelection, [Clock, Cascade] -> (TimerRegs, { overflow_mask : U8, irq_mask : U16 })
+tick = |rgs, selection, source| {
+	reg_to_tick = pick_reg(rgs, selection)
+	source_mismatch = match source {
+		Clock => selection != Timer0 and Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
+		Cascade => selection == Timer0 or !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
+	}
+	if !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 7) {
+		(rgs, { overflow_mask: 0, irq_mask: 0 })
+	} else if source_mismatch {
+		(rgs, { overflow_mask: 0, irq_mask: 0 })
+	} else {
+		(reg, overflow) = timer_tick(reg_to_tick)
+		(updated_timer_rgs, overflow_mask, irq_mask, nxt) = match selection {
+			Timer0 => ({ ..rgs, timer0: reg }, 0b1, 0b1000, Timer1)
+			Timer1 => ({ ..rgs, timer1: reg }, 0b10, 0b1_0000, Timer2)
+			Timer2 => ({ ..rgs, timer2: reg }, 0b100, 0b10_0000, Timer3)
+			# Well there is no wrap around for cascade, so treat it as a None
+			Timer3 => ({ ..rgs, timer3: reg }, 0b1000, 0b100_0000, Timer0)
+		}
+		if !overflow {
+			(updated_timer_rgs, { overflow_mask: 0, irq_mask: 0 })
+		} else {
+			interrupt_masking = if Bits.get_ith_bit_u16_certain(reg.control, 6) {
+				irq_mask
+			} else {
+				0
+			}
+			if nxt == Timer0 {
+				(
+					updated_timer_rgs,
+					{
+						overflow_mask: overflow_mask,
+						irq_mask: interrupt_masking,
+					},
+				)
+			} else {
+				(t, b) = tick(updated_timer_rgs, nxt, Cascade)
+				(
+					t,
+					{
+						overflow_mask: b.overflow_mask.bitwise_or(overflow_mask),
+						irq_mask: b.irq_mask.bitwise_or(interrupt_masking),
+					},
+				)
 			}
 		}
 	}
