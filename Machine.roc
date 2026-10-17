@@ -22,6 +22,12 @@ Machine :: {
 		})
 	}
 
+	# Pretty much a visual debugging function, maybe can be used for screenshot support
+	get_video_snapshot : Machine -> Try({ dispcnt : U16, vram : List(U8) }, _)
+	get_video_snapshot = |m| {
+		Ok({ dispcnt: DisplayRegs.read16(m.bus.io_regs.display, 0)?, vram: m.bus.vram })
+	}
+
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
 		if m.power_state == Running {

@@ -412,7 +412,12 @@ Cpu := {
 						if next_gpr == R15 {
 							pc_inc(c.regs.r15, 12)
 						} else if x.kind == CurrentBank {
-							cpu_getReg(next_gpr, c)?
+							# if rn is selected and not the first reg
+							# write the wba.val into that mem block rather than initial value of rn
+							match x.wba {
+								WriteBack(wb) if next_gpr == wb.rn => wb.val
+								_ => cpu_getReg(next_gpr, c)?
+							}
 						} else {
 							regs_get(next_gpr, User, c.regs)
 						}
@@ -1970,7 +1975,8 @@ arm_single_data_swap_execute = |op, c| {
 	rd = get_gpr_12_15(op)?
 	rn = get_gpr_16_19(op)?
 	rm = get_gpr_0_3(op)?
-	if (rd == R15 or rn == R15 or rm == R15) or (rn == rm or rn == rd) {
+	if (rd == R15 or rn == R15 or rm == R15) or rn == rd {
+		# Somehow rn == rm is fine in GBA's arm7
 		Err(UNPREDICTABLE)
 	} else {
 		match arm_single_data_swap_decode(op) {
@@ -2098,31 +2104,36 @@ arm_halfword_data_transfer_execute = |op, c| {
 						base
 					}
 				}
-				if Bits.get_ith_bit_u32_certain(addr, 0) {
-					Err(UNPREDICTABLE)
-				} else {
-					Ok(
-						R({
-							cpu: c,
-							addr: addr,
-							width: W16,
-							continuation: SetRegAndFinish({
-								rd: rd,
-								rot: Identity,
-								wba: if w_bit or !(p_bit) {
-									if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
-										return Err(UNPREDICTABLE)
-									} else {
-										WriteBack({ rn: rn, val: adjusted })
-									}
+				odd_addr = Bits.get_ith_bit_u32_certain(addr, 0)
+				Ok(
+					R({
+						cpu: c,
+						addr: if odd_addr {
+							addr.bitwise_and(0xFFFF_FFFE)
+						} else {
+							addr
+						},
+						width: W16,
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: if odd_addr {
+								RotRight(8)
+							} else {
+								Identity
+							},
+							wba: if w_bit or !(p_bit) {
+								if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+									return Err(UNPREDICTABLE)
 								} else {
-									NoWriteBack
-								},
-								isThumb: False,
-							}),
+									WriteBack({ rn: rn, val: adjusted })
+								}
+							} else {
+								NoWriteBack
+							},
+							isThumb: False,
 						}),
-					)
-				}
+					}),
+				)
 			}
 		}
 		LDRSB => {
@@ -2216,31 +2227,36 @@ arm_halfword_data_transfer_execute = |op, c| {
 						base
 					}
 				}
-				if Bits.get_ith_bit_u32_certain(addr, 0) {
-					Err(UNPREDICTABLE)
-				} else {
-					Ok(
-						R({
-							cpu: c,
-							addr: addr,
-							width: W16,
-							continuation: SetRegAndFinish({
-								rd: rd,
-								rot: SignedExtend16,
-								wba: if w_bit or !(p_bit) {
-									if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
-										return Err(UNPREDICTABLE)
-									} else {
-										WriteBack({ rn: rn, val: adjusted })
-									}
+				odd_addr = Bits.get_ith_bit_u32_certain(addr, 0)
+				Ok(
+					R({
+						cpu: c,
+						addr: addr,
+						width: if odd_addr {
+							W8
+						} else {
+							W16
+						},
+						continuation: SetRegAndFinish({
+							rd: rd,
+							rot: if odd_addr {
+								SignedExtend8
+							} else {
+								SignedExtend16
+							},
+							wba: if w_bit or !(p_bit) {
+								if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+									return Err(UNPREDICTABLE)
 								} else {
-									NoWriteBack
-								},
-								isThumb: False,
-							}),
+									WriteBack({ rn: rn, val: adjusted })
+								}
+							} else {
+								NoWriteBack
+							},
+							isThumb: False,
 						}),
-					)
-				}
+					}),
+				)
 			}
 		}
 		STRH => {
@@ -2278,30 +2294,30 @@ arm_halfword_data_transfer_execute = |op, c| {
 						base
 					}
 				}
-				if Bits.get_ith_bit_u32_certain(addr, 0) {
-					Err(UNPREDICTABLE)
-				} else {
-					Ok(
-						W({
-							cpu: c,
-							addr: addr,
-							width: W16,
-							val: rd_val,
-							continuation: StoreAndFinish({
-								wba: if w_bit or !(p_bit) {
-									if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
-										return Err(UNPREDICTABLE)
-									} else {
-										WriteBack({ rn: rn, val: adjusted })
-									}
+				Ok(
+					W({
+						cpu: c,
+						# https://mgba-emu.github.io/gbatek/gba.html#armcpumemoryalignments
+						# On unaligned(odd) addr, it should not panic
+						# Instead it's bit 0 will be ignored
+						# However WBA val will not be forcefully aligned
+						addr: (addr // 2) * 2,
+						width: W16,
+						val: rd_val,
+						continuation: StoreAndFinish({
+							wba: if w_bit or !(p_bit) {
+								if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+									return Err(UNPREDICTABLE)
 								} else {
-									NoWriteBack
-								},
-								isThumb: False,
-							}),
+									WriteBack({ rn: rn, val: adjusted })
+								}
+							} else {
+								NoWriteBack
+							},
+							isThumb: False,
 						}),
-					)
-				}
+					}),
+				)
 			}
 		}
 	}
@@ -2333,121 +2349,126 @@ arm_block_data_transfer_execute = |op, c| {
 	sharp_reg = |x| {
 		U32.count_one_bits(Bits.get_seg_of_u32_certain(x, 0, 16))
 	}
-	if Bits.bits_match_32(op, 0b1_11111_11111_11111, 0) {
+	no_reg_selected = Bits.bits_match_32(op, 0b1_11111_11111_11111, 0)
+	mask = if no_reg_selected {
+		0b1000_0000_0000_0000
+	} else {
+		Bits.get_seg_of_u32_certain(op, 0, 16)
+	}
+	rn = get_gpr_16_19(op)?
+	if rn == R15 {
 		Err(UNPREDICTABLE)
 	} else {
-		rn = get_gpr_16_19(op)?
-		if rn == R15 {
-			Err(UNPREDICTABLE)
+		s_bit = Bits.get_ith_bit_u32_certain(op, 22)
+		p_bit = Bits.get_ith_bit_u32_certain(op, 24)
+		u_bit = Bits.get_ith_bit_u32_certain(op, 23)
+		w_bit = Bits.get_ith_bit_u32_certain(op, 21)
+		mode = cpsr_getMode(c.cpsr)?
+		base = cpu_getReg(rn, c)?
+		aligned_base = (base // 4) * 4
+		span = if no_reg_selected {
+			0x40.U32 # Yes, rather than 4, its 64. No idea why but hardware just behaves like this.
 		} else {
-			s_bit = Bits.get_ith_bit_u32_certain(op, 22)
-			p_bit = Bits.get_ith_bit_u32_certain(op, 24)
-			u_bit = Bits.get_ith_bit_u32_certain(op, 23)
-			w_bit = Bits.get_ith_bit_u32_certain(op, 21)
-			mode = cpsr_getMode(c.cpsr)?
-			base = cpu_getReg(rn, c)?
-			aligned_base = (base // 4) * 4
-			span = U8.to_u32(sharp_reg(op)) * 4
-			trio = if !p_bit and u_bit {
-				# IA
-				{
-					start_addr: aligned_base,
-					end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
-					wb_addr: base.plus_wrap(span),
-				}
-			} else if p_bit and u_bit {
-				# IB
-				{
-					start_addr: aligned_base.plus_wrap(4),
-					end_addr: aligned_base.plus_wrap(span),
-					wb_addr: base.plus_wrap(span),
-				}
-			} else if !p_bit and !u_bit {
-				# DA
-				{
-					start_addr: aligned_base.minus_wrap(span).plus_wrap(4),
-					end_addr: aligned_base,
-					wb_addr: base.minus_wrap(span),
-				}
-			} else {
-				# DB
-				{
-					start_addr: aligned_base.minus_wrap(span),
-					end_addr: aligned_base.minus_wrap(4),
-					wb_addr: base.minus_wrap(span),
-				}
+			U8.to_u32(sharp_reg(op)) * 4
+		}
+		trio = if !p_bit and u_bit {
+			# IA
+			{
+				start_addr: aligned_base,
+				end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
+				wb_addr: base.plus_wrap(span),
 			}
-			wba = if w_bit {
-				WriteBack({ rn: rn, val: trio.wb_addr })
-			} else {
-				NoWriteBack
+		} else if p_bit and u_bit {
+			# IB
+			{
+				start_addr: aligned_base.plus_wrap(4),
+				end_addr: aligned_base.plus_wrap(span),
+				wb_addr: base.plus_wrap(span),
 			}
-			match arm_block_data_transfer_decode(op) {
-				LDM => {
-					if s_bit and (mode == User or mode == Sys) {
-						Err(UNPREDICTABLE)
-					} else if w_bit and rn_included(op) {
-						Err(UNPREDICTABLE)
-					} else if Bits.bits_match_32(op, 0b111_0000_1_000000000000000, 0b111_0000_0_000000000000000) {
-						Err(UNPREDICTABLE)
-					} else {
-						Ok(
-							R({
-								cpu: c,
-								addr: trio.start_addr,
-								width: W32,
-								continuation: LoadMultiple({
-									mask: Bits.get_seg_of_u32_certain(op, 0, 16),
-									next_addr: trio.start_addr.plus_wrap(4),
-									wba: wba,
-									kind: if !s_bit {
-										CurrentBank
-									} else if Bits.get_ith_bit_u32_certain(op, 15) {
-										ModeChanges({ spsr: cpu_getSPSR(c)? })
-									} else {
-										UserBank
-									},
-									isThumb: False,
-								}),
-							}),
-						)
-					}
-				}
-				STM => {
-					first_reg = gpr_from_idx(U32.count_trailing_zero_bits(Bits.get_seg_of_u32_certain(op, 0, 16)))?
-					if s_bit and ((mode == User or mode == Sys) or w_bit) {
-						Err(UNPREDICTABLE)
-					} else if w_bit and rn_included(op)
-						and (Bits.get_seg_of_u32_certain(op, 16, 4).to_u8_wrap() != 0
-							and U32.count_one_bits(Bits.get_seg_of_u32_certain(op, 0, Bits.get_seg_of_u32_certain(op, 16, 4).to_u8_wrap())) != 0) {
-						Err(UNPREDICTABLE)
-					} else {
-						Ok(
-							W({
-								cpu: c,
-								addr: trio.start_addr,
-								width: W32,
-								val: if first_reg == R15 {
-									pc_inc(c.regs.r15, 12)
-								} else if !s_bit {
-									cpu_getReg(first_reg, c)?
+		} else if !p_bit and !u_bit {
+			# DA
+			{
+				start_addr: aligned_base.minus_wrap(span).plus_wrap(4),
+				end_addr: aligned_base,
+				wb_addr: base.minus_wrap(span),
+			}
+		} else {
+			# DB
+			{
+				start_addr: aligned_base.minus_wrap(span),
+				end_addr: aligned_base.minus_wrap(4),
+				wb_addr: base.minus_wrap(span),
+			}
+		}
+		wba = if w_bit {
+			WriteBack({ rn: rn, val: trio.wb_addr })
+		} else {
+			NoWriteBack
+		}
+		match arm_block_data_transfer_decode(op) {
+			LDM => {
+				if s_bit and (mode == User or mode == Sys) {
+					Err(UNPREDICTABLE)
+				} else if s_bit and w_bit and !Bits.get_ith_bit_u32_certain(mask, 15) {
+					# Empty reg selection => slected mask. Hardware said so.
+					Err(UNPREDICTABLE)
+				} else {
+					Ok(
+						R({
+							cpu: c,
+							addr: trio.start_addr,
+							width: W32,
+							continuation: LoadMultiple({
+								mask: mask,
+								next_addr: trio.start_addr.plus_wrap(4),
+								wba: if rn_included(op) {
+									NoWriteBack # Again, rather than panic, this will just cancel a write back to rn
 								} else {
-									regs_get(first_reg, User, c.regs)
+									wba
 								},
-								continuation: WriteMultiple({
-									mask: Bits.get_seg_of_u32_certain(op, 0, 16),
-									next_addr: trio.start_addr.plus_wrap(4),
-									wba: wba,
-									kind: if !s_bit {
-										CurrentBank
-									} else {
-										UserBank
-									},
-									isThumb: False,
-								}),
+								kind: if !s_bit {
+									CurrentBank
+								} else if Bits.get_ith_bit_u32_certain(mask, 15) {
+									ModeChanges({ spsr: cpu_getSPSR(c)? })
+								} else {
+									UserBank
+								},
+								isThumb: False,
 							}),
-						)
-					}
+						}),
+					)
+				}
+			}
+			STM => {
+				first_reg = gpr_from_idx(U32.count_trailing_zero_bits(mask))?
+				if s_bit and ((mode == User or mode == Sys) or w_bit) {
+					Err(UNPREDICTABLE)
+				} else {
+					Ok(
+						W({
+							cpu: c,
+							addr: trio.start_addr,
+							width: W32,
+							val: if first_reg == R15 {
+								pc_inc(c.regs.r15, 12)
+							} else if !s_bit {
+								cpu_getReg(first_reg, c)?
+							} else {
+								regs_get(first_reg, User, c.regs)
+							},
+							continuation: WriteMultiple({
+								mask: mask,
+								next_addr: trio.start_addr.plus_wrap(4),
+								wba: wba,
+								kind: if !s_bit {
+									CurrentBank
+								} else {
+									UserBank
+								},
+								isThumb: False,
+							}),
+						}),
+					)
 				}
 			}
 		}
@@ -2676,65 +2697,73 @@ thumb_block_data_transfer_execute = |op, c| {
 	sharp_reg = |x| {
 		U16.count_one_bits(Bits.get_seg_of_u16_certain(x, 0, 8))
 	}
-	if Bits.bits_match_16(op, 0b1111_1111, 0) {
-		Err(UNPREDICTABLE)
+	no_reg_selected = Bits.bits_match_16(op, 0b1111_1111, 0)
+	mask = if no_reg_selected {
+		0b1000_0000_0000_0000
+		# That's right, when not selected, you will by default selecting R15
+		# While the OG range of thumb mode is R0 - R7, Magic!
 	} else {
-		base = cpu_getReg(rn, c)?
-		aligned_base = (base // 4) * 4
-		span = U8.to_u32(sharp_reg(op)) * 4
-		trio = {
-			start_addr: aligned_base,
-			end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
-			wb_addr: base.plus_wrap(span),
-		}
-		potential_wba = WriteBack({
-			rn: rn,
-			val: base.plus_wrap(span),
-		})
-		match Bits.get_ith_bit_u16_certain(op, 11) {
-			True => {
-				Ok(
-					R({
-						cpu: c,
-						addr: trio.start_addr,
-						width: W32,
-						continuation: LoadMultiple({
-							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32(),
-							next_addr: trio.start_addr.plus_wrap(4),
-							wba: if rn_included(op) {
-								NoWriteBack
-							} else {
-								potential_wba
-							},
-							kind: CurrentBank,
-							isThumb: True,
-						}),
+		Bits.get_seg_of_u16_certain(op, 0, 8)
+	}
+	base = cpu_getReg(rn, c)?
+	aligned_base = (base // 4) * 4
+	span = if no_reg_selected {
+		0x40.U32
+	} else {
+		U8.to_u32(sharp_reg(op)) * 4
+	}
+	trio = {
+		start_addr: aligned_base,
+		end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
+		wb_addr: base.plus_wrap(span),
+	}
+	potential_wba = WriteBack({
+		rn: rn,
+		val: base.plus_wrap(span),
+	})
+	match Bits.get_ith_bit_u16_certain(op, 11) {
+		True => {
+			Ok(
+				R({
+					cpu: c,
+					addr: trio.start_addr,
+					width: W32,
+					continuation: LoadMultiple({
+						mask: mask.to_u32(),
+						next_addr: trio.start_addr.plus_wrap(4),
+						wba: if rn_included(op) {
+							NoWriteBack
+						} else {
+							potential_wba
+						},
+						kind: CurrentBank,
+						isThumb: True,
 					}),
-				)
-			}
-			False => {
-				# STMIA
-				first_reg = gpr_from_idx(U16.count_trailing_zero_bits(Bits.get_seg_of_u16_certain(op, 0, 8)))?
-				if rn_included(op) and first_reg != rn {
-					Err(UNPREDICTABLE)
-				} else {
-					Ok(
-						W({
-							cpu: c,
-							addr: trio.start_addr,
-							width: W32,
-							val: cpu_getReg(first_reg, c)?,
-							continuation: WriteMultiple({
-								mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32(),
-								next_addr: trio.start_addr.plus_wrap(4),
-								wba: potential_wba,
-								kind: CurrentBank,
-								isThumb: True,
-							}),
-						}),
-					)
-				}
-			}
+				}),
+			)
+		}
+		False => {
+			# STMIA
+			first_reg = gpr_from_idx(U16.count_trailing_zero_bits(mask))?
+			Ok(
+				W({
+					cpu: c,
+					addr: trio.start_addr,
+					width: W32,
+					val: if first_reg == R15 {
+						pc_inc(c.regs.r15, 6) # mGBA and nanoBoy all do this
+					} else {
+						cpu_getReg(first_reg, c)?
+					},
+					continuation: WriteMultiple({
+						mask: mask.to_u32(),
+						next_addr: trio.start_addr.plus_wrap(4),
+						wba: potential_wba,
+						kind: CurrentBank,
+						isThumb: True,
+					}),
+				}),
+			)
 		}
 	}
 }
@@ -3336,7 +3365,7 @@ thumb_load_store_execute = |i, c| {
 	}
 }
 
-thumb_load_store_immediate_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
+thumb_load_store_immediate_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis])
 thumb_load_store_immediate_execute = |op, c, t| {
 	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
 	rn = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
@@ -3345,43 +3374,35 @@ thumb_load_store_immediate_execute = |op, c, t| {
 	match t.code {
 		LDR => {
 			addr = rn_val.plus_wrap(immed_5.times_wrap(4))
-			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W32,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: Identity,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			Ok(
+				R({
+					cpu: c,
+					addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+					width: W32,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: RotRight((addr.bitwise_and(0b11).times_wrap(8)).to_u8_wrap()),
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		STR => {
 			rd_val = cpu_getReg(rd, c)?
 			addr = rn_val.plus_wrap(immed_5.times_wrap(4))
-			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					W({
-						cpu: c,
-						addr: addr,
-						width: W32,
-						val: rd_val,
-						continuation: StoreAndFinish({
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			Ok(
+				W({
+					cpu: c,
+					addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+					width: W32,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		LDRB => {
 			addr = rn_val.plus_wrap(immed_5)
@@ -3417,49 +3438,51 @@ thumb_load_store_immediate_execute = |op, c, t| {
 		}
 		LDRH => {
 			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
-			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: Identity,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			odd_addr = Bits.get_ith_bit_u32_certain(addr, 0)
+			Ok(
+				R({
+					cpu: c,
+					addr: if odd_addr {
+						addr.bitwise_and(0xFFFF_FFFE)
+					} else {
+						addr
+					},
+					width: W16,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: if odd_addr {
+							RotRight(8)
+						} else {
+							Identity
+						},
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		STRH => {
 			rd_val = cpu_getReg(rd, c)?
-			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
-			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					W({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						val: rd_val,
-						continuation: StoreAndFinish({
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			# Similar to ARM mode STRH, align to even num
+			addr = rn_val.plus_wrap(immed_5.times_wrap(2)).bitwise_and((0.U32).bitwise_not() - 1)
+			Ok(
+				W({
+					cpu: c,
+					addr: addr,
+					width: W16,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		_ => Err(WTFisThis)
 	}
 }
 
-thumb_load_store_register_offset_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
+thumb_load_store_register_offset_execute : U16, Cpu, Thumb_LoadStoreOpCode -> Try(Execution_state, [InvalidMode, WTFisThis])
 thumb_load_store_register_offset_execute = |op, c, t| {
 	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 0, 3).to_u8_wrap())?
 	rn = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 3, 3).to_u8_wrap())?
@@ -3469,42 +3492,43 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 	addr = rn_val.plus_wrap(rm_val)
 	match t.code {
 		LDR => {
-			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W32,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: Identity,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			Ok(
+				R({
+					cpu: c,
+					addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+					width: W32,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: RotRight((addr.bitwise_and(0b11).times_wrap(8)).to_u8_wrap()),
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		LDRH => {
-			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: Identity,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			odd_addr = Bits.get_ith_bit_u32_certain(addr, 0)
+			Ok(
+				R({
+					cpu: c,
+					addr: if odd_addr {
+						addr.bitwise_and(0xFFFF_FFFE)
+					} else {
+						addr
+					},
+					width: W16,
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: if odd_addr {
+							RotRight(8)
+						} else {
+							Identity
+						},
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		LDRB => {
 			Ok(
@@ -3537,42 +3561,43 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 			)
 		}
 		LDRSH => {
-			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					R({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						continuation: SetRegAndFinish({
-							rd: rd,
-							rot: SignedExtend16,
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			odd_addr = Bits.get_ith_bit_u32_certain(addr, 0)
+			Ok(
+				R({
+					cpu: c,
+					addr: addr,
+					width: if odd_addr {
+						W8
+					} else {
+						W16
+					},
+					continuation: SetRegAndFinish({
+						rd: rd,
+						rot: if odd_addr {
+							SignedExtend8
+						} else {
+							SignedExtend16
+						},
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		STR => {
 			rd_val = cpu_getReg(rd, c)?
-			if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					W({
-						cpu: c,
-						addr: addr,
-						width: W32,
-						val: rd_val,
-						continuation: StoreAndFinish({
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			Ok(
+				W({
+					cpu: c,
+					addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+					width: W32,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		STRB => {
 			rd_val = cpu_getReg(rd, c)?
@@ -3591,22 +3616,18 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 		}
 		STRH => {
 			rd_val = cpu_getReg(rd, c)?
-			if Bits.get_ith_bit_u32_certain(addr, 0) {
-				Err(UNPREDICTABLE)
-			} else {
-				Ok(
-					W({
-						cpu: c,
-						addr: addr,
-						width: W16,
-						val: rd_val,
-						continuation: StoreAndFinish({
-							wba: NoWriteBack,
-							isThumb: True,
-						}),
+			Ok(
+				W({
+					cpu: c,
+					addr: addr.bitwise_and(0xFFFF_FFFE),
+					width: W16,
+					val: rd_val,
+					continuation: StoreAndFinish({
+						wba: NoWriteBack,
+						isThumb: True,
 					}),
-				)
-			}
+				}),
+			)
 		}
 		_ => Err(WTFisThis)
 	}
@@ -3633,7 +3654,7 @@ thumb_load_literal_execute = |op, c| {
 	)
 }
 
-thumb_load_store_sp_relative_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis, UNPREDICTABLE])
+thumb_load_store_sp_relative_execute : U16, Cpu -> Try(Execution_state, [InvalidMode, WTFisThis])
 thumb_load_store_sp_relative_execute = |op, c| {
 	immed_8 = Bits.get_seg_of_u16_certain(op, 0, 8).to_u32()
 	rd = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 8, 3).to_u8_wrap())?
@@ -3641,41 +3662,33 @@ thumb_load_store_sp_relative_execute = |op, c| {
 	addr = sp_val.plus_wrap(immed_8.times_wrap(4))
 	if Bits.get_ith_bit_u16_certain(op, 11) {
 		# Loading a word here
-		if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-			Err(UNPREDICTABLE)
-		} else {
-			Ok(
-				R({
-					cpu: c,
-					addr: addr,
-					width: W32,
-					continuation: SetRegAndFinish({
-						rd: rd,
-						rot: Identity,
-						wba: NoWriteBack,
-						isThumb: True,
-					}),
+		Ok(
+			R({
+				cpu: c,
+				addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+				width: W32,
+				continuation: SetRegAndFinish({
+					rd: rd,
+					rot: RotRight((addr.bitwise_and(0b11).times_wrap(8)).to_u8_wrap()),
+					wba: NoWriteBack,
+					isThumb: True,
 				}),
-			)
-		}
+			}),
+		)
 	} else {
 		rd_val = cpu_getReg(rd, c)?
-		if Bits.get_seg_of_u32_certain(addr, 0, 2) != 0 {
-			Err(UNPREDICTABLE)
-		} else {
-			Ok(
-				W({
-					cpu: c,
-					addr: addr,
-					width: W32,
-					val: rd_val,
-					continuation: StoreAndFinish({
-						wba: NoWriteBack,
-						isThumb: True,
-					}),
+		Ok(
+			W({
+				cpu: c,
+				addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+				width: W32,
+				val: rd_val,
+				continuation: StoreAndFinish({
+					wba: NoWriteBack,
+					isThumb: True,
 				}),
-			)
-		}
+			}),
+		)
 	}
 }
 
