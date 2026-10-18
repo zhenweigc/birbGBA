@@ -1975,8 +1975,8 @@ arm_single_data_swap_execute = |op, c| {
 	rd = get_gpr_12_15(op)?
 	rn = get_gpr_16_19(op)?
 	rm = get_gpr_0_3(op)?
-	if (rd == R15 or rn == R15 or rm == R15) or rn == rd {
-		# Somehow rn == rm is fine in GBA's arm7
+	if (rd == R15 or rn == R15 or rm == R15) {
+		# Somehow rn == rm / rn == rd is fine in GBA's arm7
 		Err(UNPREDICTABLE)
 	} else {
 		match arm_single_data_swap_decode(op) {
@@ -2600,82 +2600,92 @@ thumb_push_pop_execute = |op, c| {
 	sharp_reg = |x| {
 		U16.count_one_bits(Bits.get_seg_of_u16_certain(x, 0, 9))
 	}
-	if Bits.bits_match_16(op, 0b1_1111_1111, 0) {
-		Err(UNPREDICTABLE)
+	no_reg_selected = Bits.bits_match_16(op, 0b1_1111_1111, 0)
+	sp = cpu_getReg(R13, c)?
+	base = sp
+	aligned_base = (base // 4) * 4
+	span = if no_reg_selected {
+		0x40
 	} else {
-		sp = cpu_getReg(R13, c)?
-		base = sp
-		aligned_base = (base // 4) * 4
-		span = U8.to_u32(sharp_reg(op)) * 4
-		match Bits.get_ith_bit_u16_certain(op, 11) {
-			True => {
-				trio = {
-					start_addr: aligned_base,
-					end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
-					wb_addr: base.plus_wrap(span),
-				}
-				Ok(
-					R({
-						cpu: c,
-						addr: trio.start_addr,
-						width: W32,
-						continuation: LoadMultiple({
-							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + (
-								if Bits.get_ith_bit_u16_certain(op, 8) {
-									U32.shl_wrap(1, 15)
-								} else {
-									0
-								}
-							),
-							next_addr: trio.start_addr.plus_wrap(4),
-							wba: WriteBack({
-								rn: R13,
-								val: base.plus_wrap(span),
-							}),
-							kind: CurrentBank,
-							isThumb: True,
-						}),
-					}),
+		U8.to_u32(sharp_reg(op)) * 4
+	}
+	match Bits.get_ith_bit_u16_certain(op, 11) {
+		True => {
+			mask = if no_reg_selected {
+				0x8000
+			} else {
+				Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + (
+					if Bits.get_ith_bit_u16_certain(op, 8) {
+						U32.shl_wrap(1, 15)
+					} else {
+						0
+					}
 				)
 			}
-			False => {
-				# PUSH
-				tmp = U16.count_trailing_zero_bits(Bits.get_seg_of_u16_certain(op, 0, 9))
-				first_reg = if tmp == 8 {
-					R14
-				} else {
-					gpr_from_idx(tmp)?
-				}
-				trio = {
-					start_addr: aligned_base.minus_wrap(span),
-					end_addr: aligned_base.minus_wrap(4),
-					wb_addr: base.minus_wrap(span),
-				}
-				Ok(
-					W({
-						cpu: c,
-						addr: trio.start_addr,
-						width: W32,
-						val: cpu_getReg(first_reg, c)?,
-						continuation: WriteMultiple({
-							mask: Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + (
-								if Bits.get_ith_bit_u16_certain(op, 8) {
-									U32.shl_wrap(1, 14)
-								} else {
-									0
-								}
-							),
-							next_addr: trio.start_addr.plus_wrap(4),
-							wba: WriteBack({
-								rn: R13,
-								val: base.minus_wrap(span),
-							}),
-							kind: CurrentBank,
-							isThumb: True,
+			trio = {
+				start_addr: aligned_base,
+				end_addr: U32.plus_wrap(aligned_base, span).minus_wrap(4),
+				wb_addr: base.plus_wrap(span),
+			}
+			Ok(
+				R({
+					cpu: c,
+					addr: trio.start_addr,
+					width: W32,
+					continuation: LoadMultiple({
+						mask: mask,
+						next_addr: trio.start_addr.plus_wrap(4),
+						wba: WriteBack({
+							rn: R13,
+							val: base.plus_wrap(span),
 						}),
+						kind: CurrentBank,
+						isThumb: True,
 					}),
+				}),
+			)
+		}
+		False => {
+			# PUSH
+			mask = if no_reg_selected {
+				0x8000
+			} else {
+				Bits.get_seg_of_u16_certain(op, 0, 8).to_u32() + (
+					if Bits.get_ith_bit_u16_certain(op, 8) {
+						U32.shl_wrap(1, 14)
+					} else {
+						0
+					}
 				)
 			}
+			first_reg = gpr_from_idx(U32.count_trailing_zero_bits(mask))?
+			trio = {
+				start_addr: aligned_base.minus_wrap(span),
+				end_addr: aligned_base.minus_wrap(4),
+				wb_addr: base.minus_wrap(span),
+			}
+			Ok(
+				W({
+					cpu: c,
+					addr: trio.start_addr,
+					width: W32,
+					val: if first_reg == R15 {
+						pc_inc(c.regs.r15, 6)
+					} else {
+						cpu_getReg(first_reg, c)?
+					},
+					continuation: WriteMultiple({
+						mask: mask,
+						next_addr: trio.start_addr.plus_wrap(4),
+						wba: WriteBack({
+							rn: R13,
+							val: base.minus_wrap(span),
+						}),
+						kind: CurrentBank,
+						isThumb: True,
+					}),
+				}),
+			)
 		}
 	}
 }
