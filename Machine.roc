@@ -1,8 +1,11 @@
+import Bits
 import Bus
 import Cpu
 import SystemRegs
 import DisplayRegs
 import TimerRegs
+
+FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
 Machine :: {
 	bus : Bus,
@@ -10,6 +13,16 @@ Machine :: {
 	power_state : [Running, Halted, Stopped],
 	now : U64,
 	next_lcd_at : U64,
+	pipeline : [
+		Empty,
+		Ready(
+			{
+				first : FetchedCode,
+				second : FetchedCode,
+				access_kind : [NonSequential, Sequential],
+			},
+		),
+	],
 }.{
 	init : List(U8), List(U8) -> Try(Machine, _)
 	init = |bios, rom| {
@@ -19,6 +32,7 @@ Machine :: {
 			power_state: Running,
 			now: 0,
 			next_lcd_at: 1232,
+			pipeline: Empty,
 		})
 	}
 
@@ -34,28 +48,18 @@ Machine :: {
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
 		if m.power_state == Running {
-			# A IRQ will cause cpu to shift mode and update regs
-			ready = if SystemRegs.interrupt_req_fired(m.bus.io_regs.system) {
-				{ ..m, cpu: Cpu.handle_irq(m.cpu)? }
+			ready = accept_pending_irq(m)?
+			(fetched, code) = take_opcode(ready)?
+			instruction = match code {
+				Opcode(op) => op
+				Unmapped(addr) => return Err(UnmappedInstructionFetch(addr))
+			}
+			execution_state = if fetched.cpu.is_thumb() {
+				Cpu.execute_thumb_opcode(fetched.cpu, instruction.to_u16_wrap())?
 			} else {
-				m
+				Cpu.execute_arm_opcode(fetched.cpu, instruction)?
 			}
-			cur_pc = (ready.cpu).getPC()
-			{ execution_state, bus_update } = if (ready.cpu).is_thumb() {
-				intermediate = Bus.read16(ready.bus, cur_pc)?
-				instruction = intermediate.val
-				state = Cpu.execute_thumb_opcode(ready.cpu, instruction)?
-				{ execution_state: state, bus_update: intermediate.state }
-			} else {
-				intermediate = Bus.read32(ready.bus, cur_pc)?
-				instruction = intermediate.val
-				state = Cpu.execute_arm_opcode(ready.cpu, instruction)?
-				{ execution_state: state, bus_update: intermediate.state }
-			}
-			match bus_update {
-				Unchanged => walk_execution_state(ready, execution_state)
-				Updated(new_bus) => walk_execution_state({ ..ready, bus: new_bus }, execution_state)
-			}
+			walk_execution_state(fetched, execution_state)
 		} else if m.power_state == Halted {
 			if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 {
 				step_forward({ ..m, power_state: Running })
@@ -173,17 +177,26 @@ walk_execution_state = |m, state| {
 		Complete(done) => {
 			cycle_consumed_machine = Machine.advance_to(m, m.now + done.remaining_cycles)?
 			c = done.cpu
+			completed = if done.remaining_cycles > 0 {
+				mark_fetch_nonsequential({ ..cycle_consumed_machine, cpu: done.cpu })
+			} else {
+				{ ..cycle_consumed_machine, cpu: done.cpu }
+			}
+			pipeline_side_effect_considered = match done.pc_status {
+				PCSequential => completed
+				PCWritten => reload_pipeline(completed)?
+			}
 			# Luckily, for halt command which happens in the middle of a batch write in,
 			# we do not need to interrupt the opcode and immediately enter Cpu Pause mode.
-			(new_system, req) = SystemRegs.process_haltcnt(cycle_consumed_machine.bus.io_regs.system)
-			new_ioregs = { ..cycle_consumed_machine.bus.io_regs, system: new_system }
-			new_bus = { ..cycle_consumed_machine.bus, io_regs: new_ioregs }
+			(new_system, req) = SystemRegs.process_haltcnt(pipeline_side_effect_considered.bus.io_regs.system)
+			new_ioregs = { ..pipeline_side_effect_considered.bus.io_regs, system: new_system }
+			new_bus = { ..pipeline_side_effect_considered.bus, io_regs: new_ioregs }
 			Ok({
-				..cycle_consumed_machine,
+				..pipeline_side_effect_considered,
 				cpu: c,
 				bus: new_bus,
 				power_state: match req {
-					NoReq => cycle_consumed_machine.power_state
+					NoReq => pipeline_side_effect_considered.power_state
 					Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
 						Halted
 					} else {
@@ -216,7 +229,7 @@ walk_execution_state = |m, state| {
 				raw_val,
 				box.continuation,
 			)?
-			walk_execution_state({ ..io_delay_applied_machine, bus: new_bus }, cpu_continue)
+			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus }), cpu_continue)
 		}
 		W(box) => {
 			cur_addr = Cpu.getPC(m.cpu)
@@ -250,7 +263,7 @@ walk_execution_state = |m, state| {
 				box.cpu,
 				box.continuation,
 			)?
-			walk_execution_state({ ..io_delay_applied_machine, bus: post_write_bus }, cpu_continue)
+			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: post_write_bus }), cpu_continue)
 		}
 	}
 }
@@ -296,5 +309,106 @@ advance_lcd_scanline = |m| {
 		io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
 		new_bus = { ..m.bus, io_regs: io_rgs }
 		{ ..m, bus: new_bus }
+	}
+}
+
+# Turns out ARM 7 of GBA is a 3 level pipeline
+fetch_opcode : Machine, U32, [W16, W32], [NonSequential, Sequential] -> Try((Machine, FetchedCode), _)
+fetch_opcode = |m, addr, width, req_kind| {
+	bus_width : [W8, W16, W32] # All these just to calm down the compiler
+	bus_width = match width {
+		W16 => W16
+		W32 => W32
+	}
+	if addr >= 0x4000 and addr < 0x100_0000 { # Unmapped reigon right after BIOS
+		alignment = if (width == W16) 2 else 4
+		if (addr.mod_by(alignment) != 0) return Err(MisalignedAddress(addr)) else {}
+		advanced = Machine.advance_to(m, m.now + 1)?
+		Ok((advanced, Unmapped(addr)))
+	} else {
+		cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
+		advanced = Machine.advance_to(m, m.now + cycles_needed)?
+		intermediate = match width {
+			W16 => {
+				inner = Bus.read16(advanced.bus, addr)?
+				{ val: inner.val.to_u32(), state: inner.state }
+			}
+			W32 => Bus.read32(advanced.bus, addr)?
+		}
+		new_bus = match intermediate.state {
+			Unchanged => advanced.bus
+			Updated(x) => x # Again, sideeffect of reading
+		}
+		# Machine + opcode
+		Ok(({ ..advanced, bus: new_bus }, Opcode(intermediate.val)))
+	}
+}
+
+# Technically these funcs should be in Cpu
+# As they are all Cpu pipelines....
+reload_pipeline : Machine -> Try(Machine, _)
+reload_pipeline = |m| {
+	cur_pc = Cpu.getPC(m.cpu)
+	(width, steps) = if (m.cpu.is_thumb()) (W16, 2.U32) else (W32, 4)
+	(m_1stop_done, first) = fetch_opcode(m, cur_pc, width, NonSequential)?
+	(m_2ndop_done, second) = fetch_opcode(m_1stop_done, cur_pc.plus_wrap(steps), width, Sequential)?
+	Ok({
+		..m_2ndop_done,
+		pipeline: Ready({ first: first, second: second, access_kind: Sequential }),
+	})
+}
+
+# Returns the opcode pointed by current PC &
+# a new machine with the pipeline field refreshed
+# CPU and its PC are unchanged
+take_opcode : Machine -> Try((Machine, FetchedCode), _)
+take_opcode = |m| {
+	match m.pipeline {
+		Empty => take_opcode(reload_pipeline(m)?)
+		Ready(x) => {
+			first = x.first
+			second = x.second
+			(next_addr, width) = if m.cpu.is_thumb() {
+				(Cpu.getPC(m.cpu).plus_wrap(4), W16)
+			} else {
+				(Cpu.getPC(m.cpu).plus_wrap(8), W32)
+			}
+			(advanced, third) = fetch_opcode(m, next_addr, width, x.access_kind)?
+			Ok((
+				{
+					..advanced,
+					pipeline: Ready({
+						first: second,
+						second: third,
+						access_kind: Sequential,
+					}),
+				},
+				first,
+			))
+		}
+	}
+}
+
+mark_fetch_nonsequential : Machine -> Machine
+mark_fetch_nonsequential = |m| {
+	match m.pipeline {
+		Empty => m
+		Ready(x) => {
+			..m,
+			pipeline: Ready({ ..x, access_kind: NonSequential }),
+		}
+	}
+}
+
+accept_pending_irq : Machine -> Try(Machine, _)
+accept_pending_irq = |m| {
+	# A IRQ will cause cpu to shift mode and update regs
+	if SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
+		and !Bits.get_ith_bit_u32_certain(m.cpu.cpsr, 7) { # Cpu can block IRQ
+		(advanced, _) = take_opcode(m)?
+		irq_cpu = Cpu.handle_irq(advanced.cpu)?
+		reload_pipeline({ ..advanced, cpu: irq_cpu })
+	} else {
+		Ok(m)
 	}
 }
