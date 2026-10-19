@@ -167,12 +167,8 @@ SystemRegs :: {
 	}
 
 	enable_pending : SystemRegs -> U16
-	enable_pending = |rgs| {
-		Bits.get_seg_of_u16_certain(rgs.interrupt_enables, 0, 14).bitwise_and(rgs.pending_interrupts)
-	}
+	enable_pending = |rgs| Bits.get_seg_of_u16_certain(rgs.interrupt_enables, 0, 14).bitwise_and(rgs.pending_interrupts)
 
 	interrupt_req_fired : SystemRegs -> Bool
-	interrupt_req_fired = |rgs| {
-		enable_pending(rgs) != 0 and Bits.get_ith_bit_u16_certain(rgs.ime, 0)
-	}
+	interrupt_req_fired = |rgs| enable_pending(rgs) != 0 and Bits.get_ith_bit_u16_certain(rgs.ime, 0)
 }

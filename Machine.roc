@@ -28,6 +28,9 @@ Machine :: {
 		Ok({ dispcnt: DisplayRegs.read16(m.bus.io_regs.display, 0)?, vram: m.bus.vram })
 	}
 
+	get_time : Machine -> U64 # slop method
+	get_time = |m| m.now
+
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |m| {
 		if m.power_state == Running {
@@ -131,23 +134,56 @@ Machine :: {
 			}
 		}
 	}
+
+	advance_to : Machine, U64 -> Try(Machine, _)
+	advance_to = |m, target| {
+		if m.power_state == Stopped {
+			Ok(m)
+		} else if target < m.now {
+			Err(WrongEventTime)
+		} else {
+			timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+			at = match timer_at {
+				None => m.next_lcd_at
+				At(t) => t.min(m.next_lcd_at)
+			}
+			if at <= target {
+				(new_machine, _) = process_next_event(m)?
+				advance_to(new_machine, target)
+			} else {
+				Ok({
+					..m,
+					bus: {
+						..m.bus,
+						io_regs: {
+							..m.bus.io_regs,
+							timers: TimerRegs.sync_idle_to(m.bus.io_regs.timers, target)?,
+						},
+					},
+					now: target,
+				})
+			}
+		}
+	}
 }
 
 walk_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
 walk_execution_state = |m, state| {
 	match state {
-		Complete(c) => {
+		Complete(done) => {
+			cycle_consumed_machine = Machine.advance_to(m, m.now + done.remaining_cycles)?
+			c = done.cpu
 			# Luckily, for halt command which happens in the middle of a batch write in,
 			# we do not need to interrupt the opcode and immediately enter Cpu Pause mode.
-			(new_system, req) = SystemRegs.process_haltcnt(m.bus.io_regs.system)
-			new_ioregs = { ..m.bus.io_regs, system: new_system }
-			new_bus = { ..m.bus, io_regs: new_ioregs }
+			(new_system, req) = SystemRegs.process_haltcnt(cycle_consumed_machine.bus.io_regs.system)
+			new_ioregs = { ..cycle_consumed_machine.bus.io_regs, system: new_system }
+			new_bus = { ..cycle_consumed_machine.bus, io_regs: new_ioregs }
 			Ok({
-				..m,
+				..cycle_consumed_machine,
 				cpu: c,
 				bus: new_bus,
 				power_state: match req {
-					NoReq => m.power_state
+					NoReq => cycle_consumed_machine.power_state
 					Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
 						Halted
 					} else {
@@ -157,26 +193,22 @@ walk_execution_state = |m, state| {
 			})
 		}
 		R(box) => {
+			cycles = Bus.base_access_cycles(m.bus, box.width, box.addr, box.access_kind)?
+			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
 			intermediate = match box.width {
 				W8 => {
-					inner = m.bus.read8(box.addr)?
-					{
-						val: inner.val.to_u32(),
-						state: inner.state,
-					}
+					inner = io_delay_applied_machine.bus.read8(box.addr)?
+					{ val: inner.val.to_u32(), state: inner.state }
 				}
 				W16 => {
-					inner = m.bus.read16(box.addr)?
-					{
-						val: inner.val.to_u32(),
-						state: inner.state,
-					}
+					inner = io_delay_applied_machine.bus.read16(box.addr)?
+					{ val: inner.val.to_u32(), state: inner.state }
 				}
-				W32 => m.bus.read32(box.addr)?
+				W32 => io_delay_applied_machine.bus.read32(box.addr)?
 			}
 			raw_val = intermediate.val
 			new_bus = match intermediate.state {
-				Unchanged => m.bus
+				Unchanged => io_delay_applied_machine.bus
 				Updated(x) => x
 			}
 			cpu_continue = Cpu.resume_read(
@@ -184,31 +216,33 @@ walk_execution_state = |m, state| {
 				raw_val,
 				box.continuation,
 			)?
-			walk_execution_state({ ..m, bus: new_bus }, cpu_continue)
+			walk_execution_state({ ..io_delay_applied_machine, bus: new_bus }, cpu_continue)
 		}
 		W(box) => {
 			cur_addr = Cpu.getPC(m.cpu)
 			req_bios = Bus.requires_bios(box.width, box.addr)
+			cycles = Bus.base_access_cycles(m.bus, box.width, box.addr, box.access_kind)?
+			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
 			post_write_bus = match box.width {
 				W8 => {
 					if req_bios and cur_addr > 0x3FFF {
-						m.bus
+						io_delay_applied_machine.bus
 					} else {
-						m.bus.write8(box.addr, box.val.to_u8_wrap())?
+						io_delay_applied_machine.bus.write8(box.addr, box.val.to_u8_wrap())?
 					}
 				}
 				W16 => {
 					if req_bios and cur_addr > 0x3FFF {
-						m.bus
+						io_delay_applied_machine.bus
 					} else {
-						m.bus.write16(box.addr, box.val.to_u16_wrap())?
+						io_delay_applied_machine.bus.write16(box.addr, box.val.to_u16_wrap())?
 					}
 				}
 				W32 => {
 					if req_bios and cur_addr > 0x3FFF {
-						m.bus
+						io_delay_applied_machine.bus
 					} else {
-						m.bus.write32(box.addr, box.val)?
+						io_delay_applied_machine.bus.write32(box.addr, box.val)?
 					}
 				}
 			}
@@ -216,7 +250,7 @@ walk_execution_state = |m, state| {
 				box.cpu,
 				box.continuation,
 			)?
-			walk_execution_state({ ..m, bus: post_write_bus }, cpu_continue)
+			walk_execution_state({ ..io_delay_applied_machine, bus: post_write_bus }, cpu_continue)
 		}
 	}
 }

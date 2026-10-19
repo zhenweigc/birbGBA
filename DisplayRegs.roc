@@ -479,7 +479,7 @@ DisplayRegs :: {
 	advance_scanline : DisplayRegs -> (DisplayRegs, U16)
 	advance_scanline = |rgs| {
 		advanced_vcount = (rgs.vcount + 1).mod_by(228)
-		bit0 = if (advanced_vcount > 159 and advanced_vcount < 227) {
+		bit0 = if advanced_vcount > 159 and advanced_vcount < 227 {
 			1
 		} else {
 			0

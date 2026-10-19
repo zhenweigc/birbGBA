@@ -673,11 +673,7 @@ sound1_trigger = |reg, state| {
 				or (cur_vol > 0 and !envelope_increase)),
 		envelope_timer: envelope_period,
 		sweep_shadow: new_sweep_shadow,
-		sweep_timer: if sweep_period == 0 {
-			8
-		} else {
-			sweep_period
-		}, # Stolen from mGBA
+		sweep_timer: if (sweep_period == 0) 8 else sweep_period, # Stolen from mGBA
 		sweep_enabled: sweep_period != 0 or sweep_shift != 0,
 		sweep_negate_used: (envelops != 0 and sweep_shift != 0 and sweep_decrease),
 	}

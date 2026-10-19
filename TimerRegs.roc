@@ -460,11 +460,7 @@ tick = |rgs, selection, source| {
 		if !overflow {
 			(updated_timer_rgs, { overflow_mask: 0, irq_mask: 0 })
 		} else {
-			interrupt_masking = if Bits.get_ith_bit_u16_certain(reg.control, 6) {
-				irq_mask
-			} else {
-				0
-			}
+			interrupt_masking = if (Bits.get_ith_bit_u16_certain(reg.control, 6)) irq_mask else 0
 			if nxt == Timer0 {
 				(
 					updated_timer_rgs,

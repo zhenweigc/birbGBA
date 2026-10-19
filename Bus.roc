@@ -1,5 +1,6 @@
 import MemoryRegion
 import IoRegs
+import Bits
 
 ReadResult(val_type, type) : {
 	val : val_type,
@@ -429,6 +430,48 @@ Bus := {
 		match width {
 			W8 => addr == 0x4000300 or addr == 0x4000301
 			W16 | W32 => addr == 0x4000300
+		}
+	}
+
+	# Stolen from mGBA and NoCashGBA author's tech manual
+	# https://mgba-emu.github.io/gbatek/gba.html#gbamemorymap
+	# https://mgba-emu.github.io/gbatek/gba.html#gbasystemcontrol
+	base_access_cycles : Bus, [W8, W16, W32], U32, [NonSequential, Sequential] -> Try(U64, _)
+	base_access_cycles = |bus, width, addr, kind| {
+		region = MemoryRegion.memory_map_decode(addr).region
+		match region {
+			SystemROM | CPUInternalRAM | IORegs | OAM => Ok(1)
+			CPUExternalRAM => match width {
+				W32 => Ok(6)
+				_ => Ok(3)
+			}
+			PaletteRAM | VRAM => match width {
+				W32 => Ok(2)
+				_ => Ok(1)
+			}
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				wait_cnt = IoRegs.read16(bus.io_regs, 0x204)?.val
+				two_bits = match region {
+					GamePakROMWS0 => Bits.get_seg_of_u16_certain(wait_cnt, 2, 2)
+					GamePakROMWS1 => Bits.get_seg_of_u16_certain(wait_cnt, 5, 2)
+					_ => Bits.get_seg_of_u16_certain(wait_cnt, 8, 2)
+				}
+				# n(onsequential)_cycles
+				n_cycles = match two_bits {
+					0 => 5
+					1 => 4
+					2 => 3
+					_ => 9
+				}
+				s_cycles = match region {
+					GamePakROMWS0 => if (Bits.get_ith_bit_u16_certain(wait_cnt, 4)) 2 else 3
+					GamePakROMWS1 => if (Bits.get_ith_bit_u16_certain(wait_cnt, 7)) 2 else 5
+					_ => if (Bits.get_ith_bit_u16_certain(wait_cnt, 10)) 2 else 9
+				}
+				first_cycles = if (kind == NonSequential or addr.mod_by(0x20000) == 0) n_cycles else s_cycles
+				if (width == W32) Ok(first_cycles + s_cycles) else Ok(first_cycles)
+			}
+			GamePakRAM | Unused => Err(UnsupportedRegion(region))
 		}
 	}
 }
