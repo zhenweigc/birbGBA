@@ -3,8 +3,8 @@ app [main!] { pf: platform "https://github.com/roc-lang/basic-cli/releases/downl
 import pf.Path
 import pf.Stdout
 import pf.OsStr
-import Machine
-import Cpu
+import src/Machine
+import src/Cpu
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
