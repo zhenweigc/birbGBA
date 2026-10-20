@@ -13,6 +13,7 @@ Machine :: {
 	power_state : [Running, Halted, Stopped],
 	now : U64,
 	next_lcd_at : U64,
+	next_lcd_event : [EnterHBlank, NextScanline],
 	pipeline : [
 		Empty,
 		Ready(
@@ -31,7 +32,8 @@ Machine :: {
 			cpu: Cpu.init(),
 			power_state: Running,
 			now: 0,
-			next_lcd_at: 1232,
+			next_lcd_at: 1007,
+			next_lcd_event: EnterHBlank,
 			pipeline: Empty,
 		})
 	}
@@ -112,8 +114,8 @@ Machine :: {
 				}
 				# LCD processing
 				if $cur_machine.next_lcd_at == at {
-					after_lcd = advance_lcd_scanline($cur_machine)
-					$cur_machine = { ..after_lcd, next_lcd_at: at + 1232 }
+					after_lcd = process_lcd_event($cur_machine, at)
+					$cur_machine = after_lcd
 				} else {} # No need to touch lcd as its not triggered yet.
 				# So the new at will either be the (now previous) next_lcd_at update timestamp
 				# or the next timer reg event time, or both, since it is determined by a min
@@ -299,16 +301,28 @@ process_timer_at = |m, at| {
 	}
 }
 
-advance_lcd_scanline : Machine -> Machine
-advance_lcd_scanline = |m| {
+process_lcd_event : Machine, U64 -> Machine
+process_lcd_event = |m, at| {
 	if m.power_state == Stopped {
 		m
 	} else {
-		(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
-		sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
-		io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
-		new_bus = { ..m.bus, io_regs: io_rgs }
-		{ ..m, bus: new_bus }
+		# Hblank will be set every 1007, then for every 1232 it will jump to the next scanline
+		match m.next_lcd_event {
+			EnterHBlank => {
+				(dp_rgs, mask) = DisplayRegs.enter_hblank(m.bus.io_regs.display)
+				sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
+				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
+				new_bus = { ..m.bus, io_regs: io_rgs }
+				{ ..m, bus: new_bus, next_lcd_event: NextScanline, next_lcd_at: at + 225 }
+			}
+			NextScanline => {
+				(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
+				sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
+				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
+				new_bus = { ..m.bus, io_regs: io_rgs }
+				{ ..m, bus: new_bus, next_lcd_event: EnterHBlank, next_lcd_at: at + 1007 }
+			}
+		}
 	}
 }
 
