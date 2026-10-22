@@ -12,6 +12,8 @@ Machine :: {
 	bus : Bus,
 	cpu : Cpu,
 	power_state : [Running, Halted, Stopped],
+	# DMA Channels with lower priority are paused until channels with higher priority have completed.
+	dma_owner : [None, Channel(U8)],
 	now : U64,
 	next_lcd_at : U64,
 	next_lcd_event : [EnterHBlank, NextScanline],
@@ -32,6 +34,7 @@ Machine :: {
 			bus: Bus.init(bios, rom)?,
 			cpu: Cpu.init(),
 			power_state: Running,
+			dma_owner: None,
 			now: 0,
 			next_lcd_at: 1007,
 			next_lcd_event: EnterHBlank,
@@ -49,7 +52,11 @@ Machine :: {
 	get_time = |m| m.now
 
 	step_forward : Machine -> Try(Machine, _)
-	step_forward = |m| {
+	step_forward = |before_dma| {
+		m = match deal_with_dma(before_dma)? {
+			DMAHandled(done) => return Ok(done)
+			NoDMA(available) => available
+		}
 		if m.power_state == Running {
 			ready = accept_pending_irq(m)?
 			(fetched, code) = take_opcode(ready)?
@@ -134,7 +141,19 @@ Machine :: {
 				Running => run_with_budget(step_forward(m)?, num_of_actions - 1)
 				Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => run_with_budget(step_forward(m)?, num_of_actions - 1)
 				Halted => {
-					(new_m, _) = process_next_event(m)?
+					after_dma = match deal_with_dma(m)? {
+						DMAHandled(done) => return run_with_budget(done, num_of_actions - 1)
+						NoDMA(available) => available
+					}
+					next_lcd_time = after_dma.next_lcd_at
+					next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
+					next_dma_time = DmaRegs.next_ready_at(after_dma.bus.io_regs.dmas)
+					closest_next = match (next_timer_time, next_dma_time) {
+						(None, None) => next_lcd_time
+						(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
+						(At(x), At(y)) => next_lcd_time.min(x).min(y)
+					}
+					new_m = Machine.advance_to(after_dma, closest_next)?
 					run_with_budget(new_m, num_of_actions - 1)
 				}
 				Stopped => Ok(m)
@@ -262,11 +281,13 @@ walk_execution_state = |m, state| {
 					}
 				}
 			}
+			scheduled_dma_rgs = DmaRegs.schedule_pending(post_write_bus.io_regs.dmas, io_delay_applied_machine.now)
+			final_bus = { ..post_write_bus, io_regs: { ..post_write_bus.io_regs, dmas: scheduled_dma_rgs } }
 			cpu_continue = Cpu.resume_write(
 				box.cpu,
 				box.continuation,
 			)?
-			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: post_write_bus }), cpu_continue)
+			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), cpu_continue)
 		}
 	}
 }
@@ -364,7 +385,8 @@ timed_write = |m, width, addr, val, req_kind| {
 		W16 => Bus.write16(advanced.bus, addr, val.to_u16_wrap())?
 		W32 => Bus.write32(advanced.bus, addr, val)?
 	}
-	Ok({ ..advanced, bus: new_bus })
+	new_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
+	Ok({ ..advanced, bus: { ..new_bus, io_regs: { ..new_bus.io_regs, dmas: new_dma_rgs } } })
 }
 
 dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential] -> Try(Machine, _)
@@ -378,7 +400,7 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 	if m.power_state == Stopped {
 		Ok(m)
 	} else {
-		match DmaRegs.get_pending(m.bus.io_regs.dmas) {
+		match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
 			None => Ok(m) # Congrats, you got nothing to do as of now
 			Transfer(selection, reg, width) => {
 				DmaRegs.validate_transfer(reg)?
@@ -388,6 +410,7 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 				new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)
 				Ok({
 					..after_write_m,
+					dma_owner: Channel(selection),
 					bus: {
 						..after_write_m.bus,
 						io_regs: {
@@ -397,6 +420,38 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 						},
 					},
 				})
+			}
+		}
+	}
+}
+
+deal_with_dma : Machine -> Try([NoDMA(Machine), DMAHandled(Machine)], _)
+deal_with_dma = |m| {
+	if m.power_state == Stopped {
+		Ok(NoDMA(m))
+	} else {
+		match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
+			None => {
+				match m.dma_owner {
+					None => Ok(NoDMA(m))
+					Channel(_) => {
+						# No ready to IO DMA yet channel is filled -> Should be freed
+						advanced = Machine.advance_to(m, m.now + 1)?
+						clear_seq_sign = mark_fetch_nonsequential({ ..advanced, dma_owner: None })
+						Ok(DMAHandled(clear_seq_sign))
+					}
+				}
+			}
+			Transfer(_, reg, _) => {
+				DmaRegs.validate_transfer(reg)?
+				advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
+				access_kind = match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
+					Transfer(next_selection, _, _) => {
+						if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
+					}
+					None => return Err(DMAReadyRequestLost) # Shouldnt really happen
+				}
+				Ok(DMAHandled(dma_transfer_unit(advanced, access_kind, access_kind)?))
 			}
 		}
 	}

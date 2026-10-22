@@ -13,6 +13,7 @@ DMAReg : {
 	dest_addr : U32,
 	remaining : U32,
 	phase : [Disabled, Waiting, Pending],
+	ready_at : [None, At(U64)],
 }
 
 DmaRegs :: {
@@ -31,17 +32,60 @@ DmaRegs :: {
 		}
 	}
 
-	get_pending : DmaRegs -> [None, Transfer(U8, DMAReg, [W16, W32])]
-	get_pending = |rgs| {
+	schedule_pending : DmaRegs, U64 -> DmaRegs
+	schedule_pending = |rgs, given_now| {
+		# turns out there are CYCLE diff between pending initiated
+		# and acutal IOing for DMA
+		process = |reg| {
+			if reg.phase == Pending and reg.ready_at == None {
+				{ ..reg, ready_at: At(given_now + 2) }
+			} else {
+				reg
+			}
+		}
+		{
+			dma0: process(rgs.dma0),
+			dma1: process(rgs.dma1),
+			dma2: process(rgs.dma2),
+			dma3: process(rgs.dma3),
+		}
+	}
+
+	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
+	get_reg_ready_to_io = |rgs, given_now| {
 		var $num = 0.U8
 		for reg in [rgs.dma0, rgs.dma1, rgs.dma2, rgs.dma3] {
-			if reg.phase == Pending {
-				return Transfer($num, reg, if (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10)) W32 else W16)
+			if reg.phase == Pending and reg.ready_at != None {
+				match reg.ready_at {
+					At(t) if t <= given_now => {
+						return Transfer($num, reg, if (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10)) W32 else W16)
+					}
+					_ => {
+						$num = $num + 1
+					}
+				}
 			} else {
 				$num = $num + 1
 			}
 		}
 		None
+	}
+
+	next_ready_at : DmaRegs -> [None, At(U64)]
+	next_ready_at = |rgs| {
+		var $res = None
+		for reg in [rgs.dma0, rgs.dma1, rgs.dma2, rgs.dma3] {
+			match reg.ready_at {
+				At(t) if reg.phase == Pending => {
+					$res = match $res {
+						None => At(t)
+						At(x) => if (t < x) At(t) else At(x)
+					}
+				}
+				_ => {}
+			}
+		}
+		$res
 	}
 
 	complete_unit : DmaRegs,
@@ -103,6 +147,7 @@ DmaRegs :: {
 				remaining: new_remaining,
 				cnt_h: reg.cnt_h.bitwise_and(0b111_1111_1111_1111),
 				phase: Disabled,
+				ready_at: None,
 			}
 			Ok((
 				put_back(new_reg),
@@ -372,6 +417,7 @@ dma_init = || {
 		dest_addr: 0,
 		remaining: 0,
 		phase: Disabled,
+		ready_at: None,
 	}
 }
 
@@ -384,7 +430,7 @@ write_cnt_h = |reg, new_cnt_h, zero_count| {
 	b0 = if (Bits.get_ith_bit_u16_certain(new_cnt_h, 15)) 1.U8 else 0
 	combined = b1.shl_wrap(1) + b0
 	match combined {
-		0 | 2 => { ..reg, cnt_h: new_cnt_h, phase: Disabled }
+		0 | 2 => { ..reg, cnt_h: new_cnt_h, phase: Disabled, ready_at: None }
 		1 => {
 			..reg,
 			cnt_h: new_cnt_h,
@@ -392,6 +438,7 @@ write_cnt_h = |reg, new_cnt_h, zero_count| {
 			dest_addr: combine_u16(reg.dad_l, reg.dad_h),
 			remaining: if (reg.cnt_l != 0) reg.cnt_l.to_u32() else zero_count,
 			phase: if (new_cnt_h.bitwise_and(0b11_0000_0000_0000) == 0) Pending else Waiting,
+			ready_at: None,
 		}
 		_ => { ..reg, cnt_h: new_cnt_h }
 	}
