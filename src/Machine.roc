@@ -4,6 +4,7 @@ import Cpu
 import SystemRegs
 import DisplayRegs
 import TimerRegs
+import DmaRegs
 
 FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
@@ -326,35 +327,93 @@ process_lcd_event = |m, at| {
 	}
 }
 
+to_bus_width : [W16, W32] -> [W8, W16, W32] # All these just to calm down the compiler
+to_bus_width = |w| if (w == W16) W16 else W32
+
+timed_read : Machine, [W16, W32], U32, [NonSequential, Sequential] -> Try((Machine, U32), _)
+timed_read = |m, width, addr, req_kind| {
+	bus_width = to_bus_width(width)
+	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
+	advanced = Machine.advance_to(m, m.now + cycles_needed)?
+	intermediate = match width {
+		W16 => {
+			inner = Bus.read16(advanced.bus, addr)?
+			{ val: inner.val.to_u32(), state: inner.state }
+		}
+		W32 => Bus.read32(advanced.bus, addr)?
+	}
+	new_bus = match intermediate.state {
+		Unchanged => advanced.bus
+		Updated(x) => x # Again, side effect of reading
+	}
+	Ok(({ ..advanced, bus: new_bus }, intermediate.val))
+}
+
+dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential] -> Try((Machine, U32), _)
+dma_read = |m, width, addr, req_kind| {
+	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
+	timed_read(m, width, aligned_addr, req_kind) # Machine + read val
+}
+
+timed_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential] -> Try(Machine, _)
+timed_write = |m, width, addr, val, req_kind| {
+	bus_width = to_bus_width(width)
+	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
+	advanced = Machine.advance_to(m, m.now + cycles_needed)?
+	new_bus = match width {
+		W16 => Bus.write16(advanced.bus, addr, val.to_u16_wrap())?
+		W32 => Bus.write32(advanced.bus, addr, val)?
+	}
+	Ok({ ..advanced, bus: new_bus })
+}
+
+dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential] -> Try(Machine, _)
+dma_write = |m, width, addr, val, req_kind| {
+	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
+	timed_write(m, width, aligned_addr, val, req_kind)
+}
+
+dma_transfer_unit : Machine, [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
+dma_transfer_unit = |m, req_read_kind, req_write_kind| {
+	if m.power_state == Stopped {
+		Ok(m)
+	} else {
+		match DmaRegs.get_pending(m.bus.io_regs.dmas) {
+			None => Ok(m) # Congrats, you got nothing to do as of now
+			Transfer(selection, reg, width) => {
+				DmaRegs.validate_transfer(reg)?
+				(after_read_m, val) = dma_read(m, width, reg.source_addr, req_read_kind)?
+				after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind)?
+				(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(after_write_m.bus.io_regs.dmas, selection)?
+				new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)
+				Ok({
+					..after_write_m,
+					bus: {
+						..after_write_m.bus,
+						io_regs: {
+							..after_write_m.bus.io_regs,
+							dmas: new_dma_rgs,
+							system: new_sys_rgs,
+						},
+					},
+				})
+			}
+		}
+	}
+}
+
 # Turns out ARM 7 of GBA is a 3 level pipeline
 fetch_opcode : Machine, U32, [W16, W32], [NonSequential, Sequential] -> Try((Machine, FetchedCode), _)
 fetch_opcode = |m, addr, width, req_kind| {
-	bus_width : [W8, W16, W32] # All these just to calm down the compiler
-	bus_width = match width {
-		W16 => W16
-		W32 => W32
-	}
 	if addr >= 0x4000 and addr < 0x100_0000 { # Unmapped reigon right after BIOS
 		alignment = if (width == W16) 2 else 4
 		if (addr.mod_by(alignment) != 0) return Err(MisalignedAddress(addr)) else {}
 		advanced = Machine.advance_to(m, m.now + 1)?
 		Ok((advanced, Unmapped(addr)))
 	} else {
-		cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
-		advanced = Machine.advance_to(m, m.now + cycles_needed)?
-		intermediate = match width {
-			W16 => {
-				inner = Bus.read16(advanced.bus, addr)?
-				{ val: inner.val.to_u32(), state: inner.state }
-			}
-			W32 => Bus.read32(advanced.bus, addr)?
-		}
-		new_bus = match intermediate.state {
-			Unchanged => advanced.bus
-			Updated(x) => x # Again, sideeffect of reading
-		}
+		(resultant_machine, returned_code) = timed_read(m, width, addr, req_kind)?
 		# Machine + opcode
-		Ok(({ ..advanced, bus: new_bus }, Opcode(intermediate.val)))
+		Ok((resultant_machine, Opcode(returned_code)))
 	}
 }
 

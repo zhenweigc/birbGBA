@@ -1,4 +1,5 @@
 import Bits
+
 DMAReg : {
 	sad_l : U16,
 	sad_h : U16,
@@ -6,6 +7,12 @@ DMAReg : {
 	dad_h : U16,
 	cnt_l : U16,
 	cnt_h : U16,
+	# Internal DMA progress info
+	# separate from CPU-written stuff above
+	source_addr : U32,
+	dest_addr : U32,
+	remaining : U32,
+	phase : [Disabled, Waiting, Pending],
 }
 
 DmaRegs :: {
@@ -21,6 +28,87 @@ DmaRegs :: {
 			dma1: dma_init(),
 			dma2: dma_init(),
 			dma3: dma_init(),
+		}
+	}
+
+	get_pending : DmaRegs -> [None, Transfer(U8, DMAReg, [W16, W32])]
+	get_pending = |rgs| {
+		var $num = 0.U8
+		for reg in [rgs.dma0, rgs.dma1, rgs.dma2, rgs.dma3] {
+			if reg.phase == Pending {
+				return Transfer($num, reg, if (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10)) W32 else W16)
+			} else {
+				$num = $num + 1
+			}
+		}
+		None
+	}
+
+	complete_unit : DmaRegs,
+	U8 -> Try(
+		(DmaRegs, U16),
+		[
+			DMAInvalidSelection,
+			DMAImpossibleStepMode,
+			DMARemainingAlreadyZero,
+			DMANotInPending,
+			DMAWrongMode,
+		],
+	)
+	complete_unit = |rgs, selection| {
+		put_back : DMAReg -> DmaRegs
+		put_back = |reg_to_put| {
+			match selection {
+				0 => { ..rgs, dma0: reg_to_put }
+				1 => { ..rgs, dma1: reg_to_put }
+				2 => { ..rgs, dma2: reg_to_put }
+				_ => { ..rgs, dma3: reg_to_put }
+			}
+		}
+		reg = match selection {
+			0 => rgs.dma0
+			1 => rgs.dma1
+			2 => rgs.dma2
+			3 => rgs.dma3
+			_ => return Err(DMAInvalidSelection)
+		}
+		validate_transfer(reg)?
+		width = if (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10)) 4 else 2.U32
+		new_source = match Bits.get_seg_of_u16_certain(reg.cnt_h, 7, 2) {
+			0 => reg.source_addr.plus_wrap(width)
+			1 => reg.source_addr.minus_wrap(width)
+			2 => reg.source_addr
+			_ => return Err(DMAImpossibleStepMode)
+		}
+		new_dest = match Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) {
+			0 => reg.dest_addr.plus_wrap(width)
+			1 => reg.dest_addr.minus_wrap(width)
+			2 => reg.dest_addr
+			_ => reg.dest_addr.plus_wrap(width)
+		}
+		new_remaining = if (reg.remaining > 0) reg.remaining - 1 else return Err(DMARemainingAlreadyZero)
+		if new_remaining > 0 {
+			new_reg = {
+				..reg,
+				source_addr: new_source,
+				dest_addr: new_dest,
+				remaining: new_remaining,
+			}
+			Ok((put_back(new_reg), 0))
+		} else {
+			new_reg = {
+				..reg,
+				source_addr: new_source,
+				dest_addr: new_dest,
+				remaining: new_remaining,
+				cnt_h: reg.cnt_h.bitwise_and(0b111_1111_1111_1111),
+				phase: Disabled,
+			}
+			Ok((
+				put_back(new_reg),
+				# Return a new mask will be applied to Interrupt Request Flags(IF)
+				if (Bits.get_ith_bit_u16_certain(new_reg.cnt_h, 14)) (1.U16).shl_wrap(8 + selection) else 0,
+			))
 		}
 	}
 
@@ -200,25 +288,25 @@ DmaRegs :: {
 			0x0B4 => Ok({ ..rgs, dma0: { ..rgs.dma0, dad_l: val.bitwise_and(0xFFFE) } })
 			0x0B6 => Ok({ ..rgs, dma0: { ..rgs.dma0, dad_h: val.bitwise_and(0x07FF) } })
 			0x0B8 => Ok({ ..rgs, dma0: { ..rgs.dma0, cnt_l: val.bitwise_and(0x3FFF) } })
-			0x0BA => Ok({ ..rgs, dma0: { ..rgs.dma0, cnt_h: val.bitwise_and(0xF7E0) } })
+			0x0BA => Ok({ ..rgs, dma0: write_cnt_h(rgs.dma0, val.bitwise_and(0xF7E0), 0x4000) })
 			0x0BC => Ok({ ..rgs, dma1: { ..rgs.dma1, sad_l: val.bitwise_and(0xFFFE) } })
 			0x0BE => Ok({ ..rgs, dma1: { ..rgs.dma1, sad_h: val.bitwise_and(0x0FFF) } })
 			0x0C0 => Ok({ ..rgs, dma1: { ..rgs.dma1, dad_l: val.bitwise_and(0xFFFE) } })
 			0x0C2 => Ok({ ..rgs, dma1: { ..rgs.dma1, dad_h: val.bitwise_and(0x07FF) } })
 			0x0C4 => Ok({ ..rgs, dma1: { ..rgs.dma1, cnt_l: val.bitwise_and(0x3FFF) } })
-			0x0C6 => Ok({ ..rgs, dma1: { ..rgs.dma1, cnt_h: val.bitwise_and(0xF7E0) } })
+			0x0C6 => Ok({ ..rgs, dma1: write_cnt_h(rgs.dma1, val.bitwise_and(0xF7E0), 0x4000) })
 			0x0C8 => Ok({ ..rgs, dma2: { ..rgs.dma2, sad_l: val.bitwise_and(0xFFFE) } })
 			0x0CA => Ok({ ..rgs, dma2: { ..rgs.dma2, sad_h: val.bitwise_and(0x0FFF) } })
 			0x0CC => Ok({ ..rgs, dma2: { ..rgs.dma2, dad_l: val.bitwise_and(0xFFFE) } })
 			0x0CE => Ok({ ..rgs, dma2: { ..rgs.dma2, dad_h: val.bitwise_and(0x07FF) } })
 			0x0D0 => Ok({ ..rgs, dma2: { ..rgs.dma2, cnt_l: val.bitwise_and(0x3FFF) } })
-			0x0D2 => Ok({ ..rgs, dma2: { ..rgs.dma2, cnt_h: val.bitwise_and(0xF7E0) } })
+			0x0D2 => Ok({ ..rgs, dma2: write_cnt_h(rgs.dma2, val.bitwise_and(0xF7E0), 0x4000) })
 			0x0D4 => Ok({ ..rgs, dma3: { ..rgs.dma3, sad_l: val.bitwise_and(0xFFFE) } })
 			0x0D6 => Ok({ ..rgs, dma3: { ..rgs.dma3, sad_h: val.bitwise_and(0x0FFF) } })
 			0x0D8 => Ok({ ..rgs, dma3: { ..rgs.dma3, dad_l: val.bitwise_and(0xFFFE) } })
 			0x0DA => Ok({ ..rgs, dma3: { ..rgs.dma3, dad_h: val.bitwise_and(0x0FFF) } })
 			0x0DC => Ok({ ..rgs, dma3: { ..rgs.dma3, cnt_l: val } })
-			0x0DE => Ok({ ..rgs, dma3: { ..rgs.dma3, cnt_h: val.bitwise_and(0xFFE0) } })
+			0x0DE => Ok({ ..rgs, dma3: write_cnt_h(rgs.dma3, val.bitwise_and(0xFFE0), 0x10000) })
 			offset if offset >= 0x0E0 and offset <= 0x0FE and offset.mod_by(2) == 0 => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
@@ -245,6 +333,30 @@ DmaRegs :: {
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
+
+	validate_transfer : DMAReg -> Try(
+		{},
+		[
+			DMANotInPending,
+			DMAWrongMode,
+			DMAImpossibleStepMode,
+			DMARemainingAlreadyZero,
+		],
+	)
+	validate_transfer = |reg| {
+		if reg.phase != Pending {
+			Err(DMANotInPending)
+		} else if Bits.get_seg_of_u16_certain(reg.cnt_h, 11, 3) != 0 {
+			# Not Immediate / Game Pak DRQ not here yet
+			Err(DMAWrongMode)
+		} else if reg.remaining == 0 {
+			Err(DMARemainingAlreadyZero)
+		} else if Bits.get_seg_of_u16_certain(reg.cnt_h, 7, 2) > 2 {
+			Err(DMAImpossibleStepMode)
+		} else {
+			Ok({})
+		}
+	}
 }
 
 dma_init : () -> DMAReg
@@ -256,5 +368,31 @@ dma_init = || {
 		dad_h: 0,
 		cnt_l: 0,
 		cnt_h: 0,
+		source_addr: 0,
+		dest_addr: 0,
+		remaining: 0,
+		phase: Disabled,
+	}
+}
+
+write_cnt_h : DMAReg, U16, U32 -> DMAReg
+write_cnt_h = |reg, new_cnt_h, zero_count| {
+	# a value of zero is treated as max length, 0x4000/0x10000h
+	combine_u16 : U16, U16 -> U32
+	combine_u16 = |lo, hi| lo.to_u32() + hi.to_u32().shl_wrap(16)
+	b1 = if (Bits.get_ith_bit_u16_certain(reg.cnt_h, 15)) 1.U8 else 0
+	b0 = if (Bits.get_ith_bit_u16_certain(new_cnt_h, 15)) 1.U8 else 0
+	combined = b1.shl_wrap(1) + b0
+	match combined {
+		0 | 2 => { ..reg, cnt_h: new_cnt_h, phase: Disabled }
+		1 => {
+			..reg,
+			cnt_h: new_cnt_h,
+			source_addr: combine_u16(reg.sad_l, reg.sad_h),
+			dest_addr: combine_u16(reg.dad_l, reg.dad_h),
+			remaining: if (reg.cnt_l != 0) reg.cnt_l.to_u32() else zero_count,
+			phase: if (new_cnt_h.bitwise_and(0b11_0000_0000_0000) == 0) Pending else Waiting,
+		}
+		_ => { ..reg, cnt_h: new_cnt_h }
 	}
 }
