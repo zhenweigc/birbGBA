@@ -11,6 +11,8 @@ FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placehol
 Machine :: {
 	bus : Bus,
 	cpu : Cpu,
+	# Need to put unfinished Cpu IO status here when DMA hold the Bus
+	suspended_cpu : [None, Resume(Cpu.Execution_state)],
 	power_state : [Running, Halted, Stopped],
 	# DMA Channels with lower priority are paused until channels with higher priority have completed.
 	dma_owner : [None, Channel(U8)],
@@ -33,6 +35,7 @@ Machine :: {
 		Ok({
 			bus: Bus.init(bios, rom)?,
 			cpu: Cpu.init(),
+			suspended_cpu: None,
 			power_state: Running,
 			dma_owner: None,
 			now: 0,
@@ -58,6 +61,13 @@ Machine :: {
 			NoDMA(available) => available
 		}
 		if m.power_state == Running {
+			match m.suspended_cpu {
+				None => {}
+				Resume(e_state) => {
+					early_ret_m = { ..m, suspended_cpu: None }
+					return walk_execution_state(early_ret_m, e_state)
+				}
+			}
 			ready = accept_pending_irq(m)?
 			(fetched, code) = take_opcode(ready)?
 			instruction = match code {
@@ -194,7 +204,38 @@ Machine :: {
 }
 
 walk_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
-walk_execution_state = |m, state| {
+walk_execution_state = |before_dma, state| {
+	# Here comes DMA IO 'interruption', it can occupy the bus in the middle of IO
+	# under some scenarios
+	can_yield : Cpu.Execution_state -> Bool
+	can_yield = |e_state| {
+		match e_state {
+			R(_) => True # Well IO hasnt start so yes
+			W(box) => match box.continuation {
+				StoreAndFinish(_) => True
+				WriteMultiple(_) => True
+				SetRegAndFinish(_) => False # SWP/SWPB, should be atomic
+			}
+			Complete(_) => False
+		}
+	}
+	m = if can_yield(state) {
+		match deal_with_dma(before_dma)? {
+			NoDMA(same) => same
+			DMAHandled(done) => {
+				resume_state = match state {
+					R(box) => R({ ..box, access_kind: NonSequential })
+					W(box) => W({ ..box, access_kind: NonSequential })
+					# No way we reach this after can_yield()?
+					Complete(_) => return Err(WTFisThis)
+				}
+				# Well DMA rush out first, so we gotta early return
+				return Ok({ ..done, suspended_cpu: Resume(resume_state) })
+			}
+		}
+	} else {
+		before_dma
+	}
 	match state {
 		Complete(done) => {
 			cycle_consumed_machine = Machine.advance_to(m, m.now + done.remaining_cycles)?
