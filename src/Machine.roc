@@ -445,7 +445,42 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 			None => Ok(m) # Congrats, you got nothing to do as of now
 			Transfer(selection, reg, width) => {
 				DmaRegs.validate_transfer(reg)?
-				(after_read_m, val) = dma_read(m, width, reg.source_addr, req_read_kind)?
+				(after_read_m, val) = if reg.source_addr < 0x2000000 {
+					# Trying to read BIOS/Unused zone? Kind UB
+					# Luckily NBA tells us how to handle it.
+					advanced = Machine.advance_to(m, m.now + 1)?
+					latch_val = if width == W32 {
+						reg.data_latch
+					} else {
+						# Yes, bit1. Since if we use bit0 -> aligned by 8bit not 16
+						if reg.dest_addr.bitwise_and(0b10) == 0 {
+							Bits.get_seg_of_u32_certain(reg.data_latch, 0, 16)
+						} else {
+							Bits.get_seg_of_u32_certain(reg.data_latch, 16, 16)
+						}
+					}
+					(advanced, latch_val)
+				} else {
+					(intermediate_m, before_latch_val) = dma_read(m, width, reg.source_addr, req_read_kind)?
+					val_with_width_considered = if (width == W32) before_latch_val else (before_latch_val.shl_wrap(16) + before_latch_val)
+					(
+						{
+							..intermediate_m,
+							bus: {
+								..intermediate_m.bus,
+								io_regs: {
+									..intermediate_m.bus.io_regs,
+									dmas: DmaRegs.set_data_latch(
+										intermediate_m.bus.io_regs.dmas,
+										selection,
+										val_with_width_considered,
+									)?,
+								},
+							},
+						},
+						val_with_width_considered,
+					)
+				}
 				after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind)?
 				(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(after_write_m.bus.io_regs.dmas, selection)?
 				new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)

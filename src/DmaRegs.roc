@@ -14,6 +14,7 @@ DMAReg : {
 	remaining : U32,
 	phase : [Disabled, Waiting, Pending],
 	ready_at : [None, At(U64)],
+	data_latch : U32,
 }
 
 DmaRegs :: {
@@ -402,6 +403,24 @@ DmaRegs :: {
 			Ok({})
 		}
 	}
+
+	set_data_latch : DmaRegs, U8, U32 -> Try(DmaRegs, [DMAInvalidSelection])
+	set_data_latch = |rgs, selection, val| {
+		reg = match selection {
+			0 => rgs.dma0
+			1 => rgs.dma1
+			2 => rgs.dma2
+			3 => rgs.dma3
+			_ => return Err(DMAInvalidSelection)
+		}
+		new_reg = { ..reg, data_latch: val }
+		match selection {
+			0 => Ok({ ..rgs, dma0: new_reg })
+			1 => Ok({ ..rgs, dma1: new_reg })
+			2 => Ok({ ..rgs, dma2: new_reg })
+			_ => Ok({ ..rgs, dma3: new_reg })
+		}
+	}
 }
 
 dma_init : () -> DMAReg
@@ -418,6 +437,7 @@ dma_init = || {
 		remaining: 0,
 		phase: Disabled,
 		ready_at: None,
+		data_latch: 0,
 	}
 }
 
