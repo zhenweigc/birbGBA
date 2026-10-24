@@ -35,6 +35,16 @@ Sound4Reg : {
 	sound4_cnth : U16,
 }
 
+SoundFIFO :: {
+	buffer : List(U32),
+	read_pos : U8,
+	# valid data #, Do not confuse with len of buffer
+	count : U8,
+	pipe_word : U32,
+	pipe_remaining : U8,
+	sample : U8,
+}
+
 SoundRegs :: {
 	sound1 : Sound1Reg,
 	sound1state : Sound1State,
@@ -45,6 +55,8 @@ SoundRegs :: {
 	sound_cnth : U16,
 	sound_cntx : U16,
 	sound_bias : U16,
+	fifo_a : SoundFIFO,
+	fifo_b : SoundFIFO,
 }.{
 	init : () -> SoundRegs
 	init = || {
@@ -58,6 +70,39 @@ SoundRegs :: {
 			sound_cnth: 0,
 			sound_cntx: 0,
 			sound_bias: 0x200,
+			fifo_a: sound_fifo_init(),
+			fifo_b: sound_fifo_init(),
+		}
+	}
+
+	# The two bool is to tell if either fifo needs new vals to be inserted
+	on_timer_overflow : SoundRegs, U8 -> Try((SoundRegs, { fifo_a : Bool, fifo_b : Bool }), [OutOfBounds])
+	on_timer_overflow = |rgs, overflow_mask| {
+		if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+			timer_a = Bits.get_seg_of_u16_certain(rgs.sound_cnth, 10, 1).to_u8_wrap()
+			timer_b = Bits.get_seg_of_u16_certain(rgs.sound_cnth, 14, 1).to_u8_wrap()
+			tick_a = Bits.get_ith_bit_u16_certain(overflow_mask.to_u16(), timer_a)
+			tick_b = Bits.get_ith_bit_u16_certain(overflow_mask.to_u16(), timer_b)
+			(new_fifo_a, bool_fifo_a) = if tick_a {
+				(sound_fifo_sample(rgs.fifo_a)?, rgs.fifo_a.count < 4)
+			} else {
+				(rgs.fifo_a, False)
+			}
+			(new_fifo_b, bool_fifo_b) = if tick_b {
+				(sound_fifo_sample(rgs.fifo_b)?, rgs.fifo_b.count < 4)
+			} else {
+				(rgs.fifo_b, False)
+			}
+			Ok((
+				{
+					..rgs,
+					fifo_a: new_fifo_a,
+					fifo_b: new_fifo_b,
+				},
+				{ fifo_a: bool_fifo_a, fifo_b: bool_fifo_b },
+			))
+		} else {
+			Ok((rgs, { fifo_a: False, fifo_b: False }))
 		}
 	}
 
@@ -291,7 +336,7 @@ SoundRegs :: {
 		}
 	}
 
-	write8 : SoundRegs, U32, U8 -> Try(SoundRegs, [UnsupportedIORegOffset(U32)])
+	write8 : SoundRegs, U32, U8 -> Try(SoundRegs, [UnsupportedIORegOffset(U32), OutOfBounds])
 	write8 = |rgs, addr, val| {
 		isHi = addr.mod_by(2) == 1
 		match addr {
@@ -432,11 +477,17 @@ SoundRegs :: {
 				write16(rgs, 0x88, adjusted_val)
 			}
 			0x8A | 0x8B => Ok(rgs)
+			0xA0 | 0xA1 | 0xA2 | 0xA3 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, fifo_a: sound_fifo_push_byte(rgs.fifo_a, (addr - 0xA0).to_u8_wrap(), val)? })
+			} else Ok(rgs)
+			0xA4 | 0xA5 | 0xA6 | 0xA7 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, fifo_b: sound_fifo_push_byte(rgs.fifo_b, (addr - 0xA4).to_u8_wrap(), val)? })
+			} else Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
-	write16 : SoundRegs, U32, U16 -> Try(SoundRegs, [UnsupportedIORegOffset(U32)])
+	write16 : SoundRegs, U32, U16 -> Try(SoundRegs, [UnsupportedIORegOffset(U32), OutOfBounds])
 	write16 = |rgs, addr, val| {
 		match addr {
 			0x60 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
@@ -571,14 +622,19 @@ SoundRegs :: {
 				}
 			}
 			0x82 => {
-				# Somehow this reg write in needs to update FIFOs
-				# gonna be painful
-				Ok({ ..rgs, sound_cnth: val.bitwise_and(0b111_0111_0000_1111) })
+				new_fifo_a = if (Bits.get_ith_bit_u16_certain(val, 11)) sound_fifo_reset(rgs.fifo_a) else rgs.fifo_a
+				new_fifo_b = if (Bits.get_ith_bit_u16_certain(val, 15)) sound_fifo_reset(rgs.fifo_b) else rgs.fifo_b
+				Ok({ ..rgs, sound_cnth: val.bitwise_and(0b111_0111_0000_1111), fifo_a: new_fifo_a, fifo_b: new_fifo_b })
 			}
 			0x84 => {
 				if Bits.get_ith_bit_u16_certain(val, 7) {
 					Ok({ ..rgs, sound_cntx: rgs.sound_cntx.bitwise_and(0b1111).bitwise_or(0b1000_0000) })
 				} else {
+					(new_fifo_a, new_fifo_b) = if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+						(sound_fifo_reset(rgs.fifo_a), sound_fifo_reset(rgs.fifo_b))
+					} else {
+						(rgs.fifo_a, rgs.fifo_b)
+					}
 					# Oh boy sound is off and here comes masterbroom
 					Ok({
 						..rgs,
@@ -590,17 +646,25 @@ SoundRegs :: {
 						sound2: sound2_init(),
 						sound3: sound3_init(),
 						sound4: sound4_init(),
+						fifo_a: new_fifo_a,
+						fifo_b: new_fifo_b,
 					})
 				}
 			}
 			0x86 => Ok(rgs)
 			0x88 => Ok({ ..rgs, sound_bias: val.bitwise_and(0b1100_0011_1111_1110) })
 			0x8A => Ok(rgs)
+			0xA0 | 0xA2 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, fifo_a: sound_fifo_push_half(rgs.fifo_a, (addr - 0xA0).to_u8_wrap(), val)? })
+			} else Ok(rgs)
+			0xA4 | 0xA6 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, fifo_b: sound_fifo_push_half(rgs.fifo_b, (addr - 0xA4).to_u8_wrap(), val)? })
+			} else Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
-	write32 : SoundRegs, U32, U32 -> Try(SoundRegs, [UnsupportedIORegOffset(U32)])
+	write32 : SoundRegs, U32, U32 -> Try(SoundRegs, [UnsupportedIORegOffset(U32), OutOfBounds])
 	write32 = |rgs, addr, val| {
 		lo = val.to_u16_wrap()
 		hi = val.shr_wrap(16).to_u16_wrap()
@@ -616,6 +680,12 @@ SoundRegs :: {
 			0x88 => write16(write16(rgs, 0x88, lo)?, 0x8A, 0)
 			0x68 => write16(write16(rgs, 0x68, lo)?, 0x6A, 0)
 			0x6C => write16(write16(rgs, 0x6C, lo)?, 0x6E, 0)
+			0xA0 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, fifo_a: sound_fifo_push_word(rgs.fifo_a, val)? })
+			} else Ok(rgs)
+			0xA4 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
+				Ok({ ..rgs, fifo_b: sound_fifo_push_word(rgs.fifo_b, val)? })
+			} else Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -702,4 +772,76 @@ sound4_init = || {
 		sound4_cntl: 0,
 		sound4_cnth: 0,
 	}
+}
+
+sound_fifo_init : () -> SoundFIFO
+sound_fifo_init = || {
+	{
+		buffer: List.repeat(0, 7),
+		read_pos: 0,
+		count: 0,
+		pipe_word: 0,
+		pipe_remaining: 0,
+		sample: 0,
+	}
+}
+
+sound_fifo_push_byte : SoundFIFO, U8, U8 -> Try(SoundFIFO, [OutOfBounds])
+sound_fifo_push_byte = |fifo, offset, val| {
+	idx = (fifo.read_pos + fifo.count).mod_by(7).to_u64()
+	old_word = fifo.buffer.get(idx)?
+	mask = (0b1111_1111.U32).shl_wrap(offset * 8).bitwise_not()
+	final_val = old_word.bitwise_and(mask) + val.to_u32().shl_wrap(offset * 8)
+	sound_fifo_push_word(fifo, final_val)
+}
+
+sound_fifo_push_half : SoundFIFO, U8, U16 -> Try(SoundFIFO, [OutOfBounds])
+sound_fifo_push_half = |fifo, offset, val| {
+	idx = (fifo.read_pos + fifo.count).mod_by(7).to_u64()
+	old_word = fifo.buffer.get(idx)?
+	mask = (0b1111_1111_1111_1111.U32).shl_wrap(offset * 8).bitwise_not()
+	final_val = old_word.bitwise_and(mask) + val.to_u32().shl_wrap(offset * 8)
+	sound_fifo_push_word(fifo, final_val)
+}
+
+sound_fifo_push_word : SoundFIFO, U32 -> Try(SoundFIFO, [OutOfBounds])
+sound_fifo_push_word = |fifo, val| {
+	if fifo.count < 7 {
+		idx = (fifo.read_pos + fifo.count).mod_by(7).to_u64()
+		Ok({ ..fifo, buffer: List.set(fifo.buffer, idx, val)?, count: fifo.count + 1 })
+	} else {
+		# Overflow behavior, copied from NBA
+		Ok(sound_fifo_reset(fifo))
+	}
+}
+
+sound_fifo_sample : SoundFIFO -> Try(SoundFIFO, [OutOfBounds])
+sound_fifo_sample = |fifo| {
+	pipe_loaded = if fifo.pipe_remaining == 0 and fifo.count > 0 {
+		{
+			..fifo,
+			pipe_word: fifo.buffer.get(fifo.read_pos.to_u64())?,
+			pipe_remaining: 4,
+			count: fifo.count - 1,
+			read_pos: (fifo.read_pos + 1).mod_by(7),
+		}
+	} else {
+		fifo
+	}
+	(new_pipe_word, new_pipe_remaining) = if pipe_loaded.pipe_remaining > 0 {
+		(pipe_loaded.pipe_word.shr_wrap(8), pipe_loaded.pipe_remaining - 1)
+	} else {
+		(pipe_loaded.pipe_word, pipe_loaded.pipe_remaining)
+	}
+	Ok({
+		..pipe_loaded,
+		sample: pipe_loaded.pipe_word.to_u8_wrap(),
+		pipe_word: new_pipe_word,
+		pipe_remaining: new_pipe_remaining,
+	})
+}
+
+sound_fifo_reset : SoundFIFO -> SoundFIFO
+sound_fifo_reset = |fifo| {
+	{ ..fifo, buffer: List.repeat(0, 7), read_pos: 0, count: 0 }
 }

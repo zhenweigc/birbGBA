@@ -5,6 +5,7 @@ import SystemRegs
 import DisplayRegs
 import TimerRegs
 import DmaRegs
+import SoundRegs
 
 FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
@@ -341,17 +342,15 @@ process_timer_at = |m, at| {
 		_ => {
 			if at >= m.now {
 				(new_timers_rgs, masks) = TimerRegs.process_at(m.bus.io_regs.timers, at)?
+				(new_sound_rgs, fifo_requests) = SoundRegs.on_timer_overflow(m.bus.io_regs.sound, masks.overflow_mask)?
 				new_system_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, masks.irq_mask)
+				new_dmas = DmaRegs.schedule_pending(DmaRegs.trigger_fifo(m.bus.io_regs.dmas, fifo_requests), at)
 				Ok((
 					{
 						..m,
 						bus: {
 							..m.bus,
-							io_regs: {
-								..m.bus.io_regs,
-								timers: new_timers_rgs,
-								system: new_system_rgs,
-							},
+							io_regs: { ..m.bus.io_regs, timers: new_timers_rgs, system: new_system_rgs, sound: new_sound_rgs, dmas: new_dmas },
 						},
 						now: at,
 					},
@@ -373,15 +372,27 @@ process_lcd_event = |m, at| {
 		match m.next_lcd_event {
 			EnterHBlank => {
 				(dp_rgs, mask) = DisplayRegs.enter_hblank(m.bus.io_regs.display)
+				new_vcount = DisplayRegs.get_vcount(dp_rgs)
+				new_dmas = if new_vcount < 160 {
+					DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, HBlank), at)
+				} else {
+					m.bus.io_regs.dmas
+				}
 				sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
-				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
+				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs, dmas: new_dmas }
 				new_bus = { ..m.bus, io_regs: io_rgs }
 				{ ..m, bus: new_bus, next_lcd_event: NextScanline, next_lcd_at: at + 225 }
 			}
 			NextScanline => {
 				(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
+				new_vcount = DisplayRegs.get_vcount(dp_rgs)
+				new_dmas = if new_vcount == 160 {
+					DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, VBlank), at)
+				} else {
+					m.bus.io_regs.dmas
+				}
 				sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
-				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs }
+				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs, dmas: new_dmas }
 				new_bus = { ..m.bus, io_regs: io_rgs }
 				{ ..m, bus: new_bus, next_lcd_event: EnterHBlank, next_lcd_at: at + 1007 }
 			}
@@ -444,7 +455,7 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 		match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
 			None => Ok(m) # Congrats, you got nothing to do as of now
 			Transfer(selection, reg, width) => {
-				DmaRegs.validate_transfer(reg)?
+				DmaRegs.validate_transfer(reg, selection)?
 				(after_read_m, val) = if reg.source_addr < 0x2000000 {
 					# Trying to read BIOS/Unused zone? Kind UB
 					# Luckily NBA tells us how to handle it.
@@ -518,8 +529,8 @@ deal_with_dma = |m| {
 					}
 				}
 			}
-			Transfer(_, reg, _) => {
-				DmaRegs.validate_transfer(reg)?
+			Transfer(selection, reg, _) => {
+				DmaRegs.validate_transfer(reg, selection)?
 				advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
 				access_kind = match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
 					Transfer(next_selection, _, _) => {

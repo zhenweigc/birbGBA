@@ -93,7 +93,7 @@ IoRegs := {
 		}
 	}
 
-	write8 : IoRegs, U32, U8 -> Try(IoRegs, [UnsupportedIORegOffset(U32)])
+	write8 : IoRegs, U32, U8 -> Try(IoRegs, [UnsupportedIORegOffset(U32), OutOfBounds])
 	write8 = |rgs, addr, val| {
 		match addr {
 			offset if offset >= 0 and offset < 0x60 => {
@@ -124,7 +124,7 @@ IoRegs := {
 		}
 	}
 
-	write16 : IoRegs, U32, U16 -> Try(IoRegs, [UnsupportedIORegOffset(U32)])
+	write16 : IoRegs, U32, U16 -> Try(IoRegs, [UnsupportedIORegOffset(U32), OutOfBounds])
 	write16 = |rgs, addr, val| {
 		match addr {
 			offset if offset >= 0 and offset < 0x60 => {
@@ -155,7 +155,7 @@ IoRegs := {
 		}
 	}
 
-	write32 : IoRegs, U32, U32 -> Try(IoRegs, [UnsupportedIORegOffset(U32)])
+	write32 : IoRegs, U32, U32 -> Try(IoRegs, [UnsupportedIORegOffset(U32), OutOfBounds])
 	write32 = |rgs, addr, val| {
 		match addr {
 			offset if offset >= 0 and offset < 0x60 => {

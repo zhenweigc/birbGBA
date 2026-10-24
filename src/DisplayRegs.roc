@@ -502,4 +502,7 @@ DisplayRegs :: {
 			if (Bits.get_ith_bit_u16_certain(rgs.dispstat, 4)) 0b10 else 0,
 		)
 	}
+
+	get_vcount : DisplayRegs -> U16
+	get_vcount = |rgs| rgs.vcount
 }
