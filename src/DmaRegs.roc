@@ -55,6 +55,24 @@ DmaRegs :: {
 		}
 	}
 
+	has_video_dma : DmaRegs -> Bool
+	has_video_dma = |rgs| Bits.get_ith_bit_u16_certain(rgs.dma3.cnt_h, 15) and Bits.get_seg_of_u16_certain(rgs.dma3.cnt_h, 12, 2) == 3
+
+	trigger_video : DmaRegs -> DmaRegs
+	trigger_video = |rgs| {
+		{
+			..rgs,
+			dma3: if has_video_dma(rgs) and rgs.dma3.phase == Waiting {
+				{ ..rgs.dma3, phase: Pending, ready_at: None }
+			} else {
+				rgs.dma3
+			},
+		}
+	}
+
+	stop_video_dma : DmaRegs -> DmaRegs
+	stop_video_dma = |rgs| { ..rgs, dma3: { ..rgs.dma3, phase: Disabled, ready_at: None, cnt_h: rgs.dma3.cnt_h.bitwise_and(0b111_1111_1111_1111) } }
+
 	# HBlank & VBlank all triggered by here
 	trigger_blank : DmaRegs, [VBlank, HBlank] -> DmaRegs
 	trigger_blank = |rgs, selection| {
@@ -164,7 +182,10 @@ DmaRegs :: {
 			3 => rgs.dma3
 			_ => return Err(DMAInvalidSelection)
 		}
-		validate_transfer(reg, selection)?
+		# Guess what? If a DMA IO starts and then disabled
+		# This unit of IO has to be completed, so stage var is needed
+		# To avoid throwing errors
+		validate_transfer(reg, selection, Completing)?
 		width = if (is_fifo_dma(reg, selection) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) 4 else 2.U32
 		new_source = match Bits.get_seg_of_u16_certain(reg.cnt_h, 7, 2) {
 			0 => reg.source_addr.plus_wrap(width)
@@ -190,7 +211,8 @@ DmaRegs :: {
 			Ok((put_back(new_reg), 0))
 		} else {
 			new_reg = if Bits.get_ith_bit_u16_certain(reg.cnt_h, 9)
-				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) > 0 {
+				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) > 0
+				and reg.phase == Pending { # Keep Disabled instead of returning to Waiting for repeat.
 				# Not immediate and here comes repeat for vblank/hblank
 				{
 					..reg,
@@ -459,7 +481,8 @@ DmaRegs :: {
 	}
 
 	validate_transfer : DMAReg,
-	U8 -> Try(
+	U8,
+	[Starting, Completing] -> Try(
 		{},
 		[
 			DMANotInPending,
@@ -468,11 +491,11 @@ DmaRegs :: {
 			DMARemainingAlreadyZero,
 		],
 	)
-	validate_transfer = |reg, selection| {
-		if reg.phase != Pending {
+	validate_transfer = |reg, selection, stage| {
+		if reg.phase != Pending and !(reg.phase == Disabled and stage == Completing) {
 			Err(DMANotInPending)
 		} else if Bits.get_ith_bit_u16_certain(reg.cnt_h, 11)
-			or (Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3 and !is_fifo_dma(reg, selection)) {
+			or (Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3 and (!is_fifo_dma(reg, selection) and selection != 3)) {
 			# Game Pak DRQ not here yet
 			Err(DMAWrongMode)
 		} else if reg.remaining == 0 {

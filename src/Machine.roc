@@ -19,7 +19,8 @@ Machine :: {
 	dma_owner : [None, Channel(U8)],
 	now : U64,
 	next_lcd_at : U64,
-	next_lcd_event : [EnterHBlank, NextScanline],
+	next_lcd_event : [EnterHBlank, NextScanline, VideoDMARequest],
+	video_dma_running : Bool,
 	pipeline : [
 		Empty,
 		Ready(
@@ -42,6 +43,7 @@ Machine :: {
 			now: 0,
 			next_lcd_at: 1007,
 			next_lcd_event: EnterHBlank,
+			video_dma_running: False,
 			pipeline: Empty,
 		})
 	}
@@ -386,15 +388,32 @@ process_lcd_event = |m, at| {
 			NextScanline => {
 				(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
 				new_vcount = DisplayRegs.get_vcount(dp_rgs)
+				new_vid_dma_running = if (new_vcount == 163) DmaRegs.has_video_dma(m.bus.io_regs.dmas) else m.video_dma_running
 				new_dmas = if new_vcount == 160 {
 					DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, VBlank), at)
+				} else if new_vcount == 162 and new_vid_dma_running {
+					DmaRegs.stop_video_dma(m.bus.io_regs.dmas)
 				} else {
 					m.bus.io_regs.dmas
 				}
 				sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
 				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs, dmas: new_dmas }
 				new_bus = { ..m.bus, io_regs: io_rgs }
-				{ ..m, bus: new_bus, next_lcd_event: EnterHBlank, next_lcd_at: at + 1007 }
+				video_dma_next = new_vid_dma_running and new_vcount < 162 and new_vcount > 1
+				{
+					..m,
+					bus: new_bus,
+					next_lcd_event: if (video_dma_next) VideoDMARequest else EnterHBlank,
+					next_lcd_at: if (video_dma_next) at + 3 else at + 1007,
+					video_dma_running: new_vid_dma_running,
+				}
+			}
+			VideoDMARequest => {
+				new_dmas = DmaRegs.schedule_pending(DmaRegs.trigger_video(m.bus.io_regs.dmas), at)
+				io_rgs = { ..m.bus.io_regs, dmas: new_dmas }
+				new_bus = { ..m.bus, io_regs: io_rgs }
+				# Hblank is next
+				{ ..m, bus: new_bus, next_lcd_event: EnterHBlank, next_lcd_at: at + 1004 }
 			}
 		}
 	}
@@ -455,7 +474,7 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 		match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
 			None => Ok(m) # Congrats, you got nothing to do as of now
 			Transfer(selection, reg, width) => {
-				DmaRegs.validate_transfer(reg, selection)?
+				DmaRegs.validate_transfer(reg, selection, Starting)?
 				(after_read_m, val) = if reg.source_addr < 0x2000000 {
 					# Trying to read BIOS/Unused zone? Kind UB
 					# Luckily NBA tells us how to handle it.
@@ -530,13 +549,26 @@ deal_with_dma = |m| {
 				}
 			}
 			Transfer(selection, reg, _) => {
-				DmaRegs.validate_transfer(reg, selection)?
+				DmaRegs.validate_transfer(reg, selection, Starting)?
 				advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
 				access_kind = match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
 					Transfer(next_selection, _, _) => {
 						if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
 					}
-					None => return Err(DMAReadyRequestLost) # Shouldnt really happen
+					None => {
+						# Well this can occur now, like this:
+						# DMA3 pending -> vcount advance, DMA3 disabled because vcount == 162
+						# selection is None now, ooof
+						return Ok(
+							DMAHandled(
+								mark_fetch_nonsequential({
+									..Machine.advance_to(advanced, advanced.now + 1)?,
+									dma_owner: None,
+								}),
+							),
+						)
+					}
+
 				}
 				Ok(DMAHandled(dma_transfer_unit(advanced, access_kind, access_kind)?))
 			}
