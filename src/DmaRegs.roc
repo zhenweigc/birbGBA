@@ -162,6 +162,7 @@ DmaRegs :: {
 			DMAImpossibleStepMode,
 			DMARemainingAlreadyZero,
 			DMANotInPending,
+			GamePakDRQUnsupported,
 			DMAWrongMode,
 		],
 	)
@@ -486,17 +487,20 @@ DmaRegs :: {
 		{},
 		[
 			DMANotInPending,
-			DMAWrongMode,
+			GamePakDRQUnsupported,
 			DMAImpossibleStepMode,
 			DMARemainingAlreadyZero,
+			DMAWrongMode,
 		],
 	)
 	validate_transfer = |reg, selection, stage| {
 		if reg.phase != Pending and !(reg.phase == Disabled and stage == Completing) {
 			Err(DMANotInPending)
-		} else if Bits.get_ith_bit_u16_certain(reg.cnt_h, 11)
-			or (Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3 and (!is_fifo_dma(reg, selection) and selection != 3)) {
+		} else if Bits.get_ith_bit_u16_certain(reg.cnt_h, 11) {
 			# Game Pak DRQ not here yet
+			Err(GamePakDRQUnsupported)
+		} else if Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3 and (!is_fifo_dma(reg, selection) and selection != 3) {
+			# Special start timing is prohibited for DMA0
 			Err(DMAWrongMode)
 		} else if reg.remaining == 0 {
 			Err(DMARemainingAlreadyZero)

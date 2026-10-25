@@ -533,6 +533,8 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 
 deal_with_dma : Machine -> Try([NoDMA(Machine), DMAHandled(Machine)], _)
 deal_with_dma = |m| {
+	release_dma : Machine -> Try(Machine, _)
+	release_dma = |m_in| Ok(mark_fetch_nonsequential({ ..Machine.advance_to(m_in, m_in.now + 1)?, dma_owner: None }))
 	if m.power_state == Stopped {
 		Ok(NoDMA(m))
 	} else {
@@ -542,9 +544,7 @@ deal_with_dma = |m| {
 					None => Ok(NoDMA(m))
 					Channel(_) => {
 						# No ready to IO DMA yet channel is filled -> Should be freed
-						advanced = Machine.advance_to(m, m.now + 1)?
-						clear_seq_sign = mark_fetch_nonsequential({ ..advanced, dma_owner: None })
-						Ok(DMAHandled(clear_seq_sign))
+						Ok(DMAHandled(release_dma(m)?))
 					}
 				}
 			}
@@ -559,14 +559,7 @@ deal_with_dma = |m| {
 						# Well this can occur now, like this:
 						# DMA3 pending -> vcount advance, DMA3 disabled because vcount == 162
 						# selection is None now, ooof
-						return Ok(
-							DMAHandled(
-								mark_fetch_nonsequential({
-									..Machine.advance_to(advanced, advanced.now + 1)?,
-									dma_owner: None,
-								}),
-							),
-						)
+						return Ok(DMAHandled(release_dma(advanced)?))
 					}
 
 				}
