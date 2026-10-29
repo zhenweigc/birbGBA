@@ -25,6 +25,10 @@ DisplayRegs :: {
 	bg2xh : U16,
 	bg2yl : U16,
 	bg2yh : U16,
+	bg2_internal_x : I32,
+	bg2_internal_y : I32,
+	bg2_x_written_in_hblank : Bool,
+	bg2_y_written_in_hblank : Bool,
 	bg3pa : U16,
 	bg3pb : U16,
 	bg3pc : U16,
@@ -36,7 +40,9 @@ DisplayRegs :: {
 	win0h : U16,
 	win1h : U16,
 	win0v : U16,
+	win0_y_active : Bool,
 	win1v : U16,
+	win1_y_active : Bool,
 	winin : U16,
 	winout : U16,
 	mosaic : U16,
@@ -79,10 +85,16 @@ DisplayRegs :: {
 			bg3xh: 0,
 			bg3yl: 0,
 			bg3yh: 0,
+			bg2_internal_x: 0,
+			bg2_internal_y: 0,
+			bg2_x_written_in_hblank: False,
+			bg2_y_written_in_hblank: False,
 			win0h: 0,
 			win1h: 0,
 			win0v: 0,
+			win0_y_active: False,
 			win1v: 0,
+			win1_y_active: False,
 			winin: 0,
 			winout: 0,
 			mosaic: 0,
@@ -416,10 +428,26 @@ DisplayRegs :: {
 			0x22 => Ok({ ..rgs, bg2pb: val })
 			0x24 => Ok({ ..rgs, bg2pc: val })
 			0x26 => Ok({ ..rgs, bg2pd: val })
-			0x28 => Ok({ ..rgs, bg2xl: val })
-			0x2A => Ok({ ..rgs, bg2xh: val.bitwise_and(0x0FFF) })
-			0x2C => Ok({ ..rgs, bg2yl: val })
-			0x2E => Ok({ ..rgs, bg2yh: val.bitwise_and(0x0FFF) })
+			0x28 => {
+				new_rgs = { ..rgs, bg2xl: val }
+				i32s = get_bg2_affine(new_rgs)
+				Ok({ ..new_rgs, bg2_internal_x: i32s.x, bg2_x_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
+			0x2A => {
+				new_rgs = { ..rgs, bg2xh: val.bitwise_and(0x0FFF) }
+				i32s = get_bg2_affine(new_rgs)
+				Ok({ ..new_rgs, bg2_internal_x: i32s.x, bg2_x_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
+			0x2C => {
+				new_rgs = { ..rgs, bg2yl: val }
+				i32s = get_bg2_affine(new_rgs)
+				Ok({ ..new_rgs, bg2_internal_y: i32s.y, bg2_y_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
+			0x2E => {
+				new_rgs = { ..rgs, bg2yh: val.bitwise_and(0x0FFF) }
+				i32s = get_bg2_affine(new_rgs)
+				Ok({ ..new_rgs, bg2_internal_y: i32s.y, bg2_y_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
 			0x30 => Ok({ ..rgs, bg3pa: val })
 			0x32 => Ok({ ..rgs, bg3pb: val })
 			0x34 => Ok({ ..rgs, bg3pc: val })
@@ -482,16 +510,28 @@ DisplayRegs :: {
 		bit0 = if (advanced_vcount > 159 and advanced_vcount < 227) 1 else 0
 		bit2 = if (advanced_vcount == Bits.get_seg_of_u16_certain(rgs.dispstat, 8, 8)) 1 else 0
 		low_3_bit = bit0 + bit2.shl_wrap(2)
+		mode = Bits.get_seg_of_u16_certain(rgs.dispcnt, 0, 3)
 		mask = (if (advanced_vcount == 160 and Bits.get_ith_bit_u16_certain(rgs.dispstat, 3)) 1 else 0)
 			+ (if (bit2 == 1 and Bits.get_ith_bit_u16_certain(rgs.dispstat, 5)) 0b100 else 0)
-		(
-			{
-				..rgs,
-				vcount: advanced_vcount,
-				dispstat: rgs.dispstat.bitwise_and(0b1111_1111_1111_1000) + low_3_bit,
-			},
-			mask,
-		)
+		stepped_rgs = if rgs.vcount < 160
+			and Bits.get_ith_bit_u16_certain(rgs.dispcnt, 10)
+			and (mode <= 5 and mode >= 1) {
+			advance_bg2_reference(rgs)
+		} else {
+			rgs
+		}
+		new_rgs = {
+			..stepped_rgs,
+			vcount: advanced_vcount,
+			dispstat: rgs.dispstat.bitwise_and(0b1111_1111_1111_1000) + low_3_bit,
+			bg2_internal_x: if (rgs.bg2_x_written_in_hblank) rgs.bg2_internal_x else stepped_rgs.bg2_internal_x,
+			bg2_internal_y: if (rgs.bg2_y_written_in_hblank) rgs.bg2_internal_y else stepped_rgs.bg2_internal_y,
+			bg2_x_written_in_hblank: False,
+			bg2_y_written_in_hblank: False,
+			win0_y_active: step_window_y(rgs.win0_y_active, rgs.win0v, advanced_vcount),
+			win1_y_active: step_window_y(rgs.win1_y_active, rgs.win1v, advanced_vcount),
+		}
+		(if (advanced_vcount == 0) reload_bg2_reference(new_rgs) else new_rgs, mask)
 	}
 
 	enter_hblank : DisplayRegs -> (DisplayRegs, U16)
@@ -505,4 +545,105 @@ DisplayRegs :: {
 
 	get_vcount : DisplayRegs -> U16
 	get_vcount = |rgs| rgs.vcount
+
+	get_mosaic : DisplayRegs -> U16
+	get_mosaic = |rgs| rgs.mosaic
+
+	get_color_effects : DisplayRegs -> { bldcnt : U16, bldalpha : U16, bldy : U16, green_swap : U16 }
+	get_color_effects = |rgs| { bldcnt: rgs.bldcnt, bldalpha: rgs.bldalpha, bldy: rgs.bldy, green_swap: rgs.green_swap }
+
+	get_windows : DisplayRegs -> {
+		win0h : U16,
+		win1h : U16,
+		win0v : U16,
+		win1v : U16,
+		winin : U16,
+		winout : U16,
+		win0_y_active : Bool,
+		win1_y_active : Bool,
+	}
+	get_windows = |rgs| {
+		{
+			win0h: rgs.win0h,
+			win1h: rgs.win1h,
+			win0v: rgs.win0v,
+			win1v: rgs.win1v,
+			winin: rgs.winin,
+			winout: rgs.winout,
+			win0_y_active: rgs.win0_y_active,
+			win1_y_active: rgs.win1_y_active,
+		}
+	}
+
+	get_text_bgs : DisplayRegs -> {
+		bg0 : { cnt : U16, hofs : U16, vofs : U16 },
+		bg1 : { cnt : U16, hofs : U16, vofs : U16 },
+		bg2 : { cnt : U16, hofs : U16, vofs : U16 },
+		bg3 : { cnt : U16, hofs : U16, vofs : U16 },
+	}
+	get_text_bgs = |rgs| {
+		{
+			bg0: { cnt: rgs.bg0cnt, hofs: rgs.bg0hofs, vofs: rgs.bg0vofs },
+			bg1: { cnt: rgs.bg1cnt, hofs: rgs.bg1hofs, vofs: rgs.bg1vofs },
+			bg2: { cnt: rgs.bg2cnt, hofs: rgs.bg2hofs, vofs: rgs.bg2vofs },
+			bg3: { cnt: rgs.bg3cnt, hofs: rgs.bg3hofs, vofs: rgs.bg3vofs },
+		}
+	}
+
+	get_bg0_text : DisplayRegs -> { cnt : U16, hofs : U16, vofs : U16 }
+	get_bg0_text = |rgs| { cnt: rgs.bg0cnt, hofs: rgs.bg0hofs, vofs: rgs.bg0vofs }
+
+	get_bg2_affine : DisplayRegs -> {
+		pa : I32,
+		pb : I32,
+		pc : I32,
+		pd : I32,
+		x : I32,
+		y : I32,
+	}
+	get_bg2_affine = |rgs| {
+		two_comp_transform_u16 : U16 -> I32
+		two_comp_transform_u16 = |x| if (Bits.get_ith_bit_u16_certain(x, 15)) x.to_i32().minus_wrap(65536) else x.to_i32()
+		two_comp_transform_u32 : U16, U16 -> I32
+		two_comp_transform_u32 = |lo, hi| {
+			if Bits.get_ith_bit_u16_certain(hi, 11) {
+				lo.to_i32() + hi.bitwise_and(0b1111_1111_1111).to_i32().shl_wrap(16) - 0x10000000
+			} else {
+				lo.to_i32() + hi.bitwise_and(0b1111_1111_1111).to_i32().shl_wrap(16)
+			}
+		}
+		{
+			pa: two_comp_transform_u16(rgs.bg2pa),
+			pb: two_comp_transform_u16(rgs.bg2pb),
+			pc: two_comp_transform_u16(rgs.bg2pc),
+			pd: two_comp_transform_u16(rgs.bg2pd),
+			x: two_comp_transform_u32(rgs.bg2xl, rgs.bg2xh),
+			y: two_comp_transform_u32(rgs.bg2yl, rgs.bg2yh),
+		}
+	}
+
+	get_bg2_internal_reference : DisplayRegs -> { x : I32, y : I32 }
+	get_bg2_internal_reference = |rgs| { x: rgs.bg2_internal_x, y: rgs.bg2_internal_y }
+
+	advance_bg2_reference : DisplayRegs -> DisplayRegs
+	advance_bg2_reference = |rgs| {
+		i32s = get_bg2_affine(rgs)
+		{ ..rgs, bg2_internal_x: rgs.bg2_internal_x.plus_wrap(i32s.pb), bg2_internal_y: rgs.bg2_internal_y.plus_wrap(i32s.pd) }
+	}
+
+	reload_bg2_reference : DisplayRegs -> DisplayRegs
+	reload_bg2_reference = |rgs| {
+		i32s = get_bg2_affine(rgs)
+		{ ..rgs, bg2_internal_x: i32s.x, bg2_internal_y: i32s.y }
+	}
+}
+
+step_window_y : Bool, U16, U16 -> Bool
+step_window_y = |was_active, winv, vcount| {
+	(top, bottom) = (Bits.get_seg_of_u16_certain(winv, 8, 8), Bits.get_seg_of_u16_certain(winv, 0, 8))
+	if vcount == bottom {
+		False
+	} else if vcount == top {
+		True
+	} else was_active
 }

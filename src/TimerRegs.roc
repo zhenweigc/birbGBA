@@ -194,32 +194,16 @@ TimerRegs :: {
 
 	next_event_at : TimerRegs -> [None, At(U64)]
 	next_event_at = |rgs| {
-		var $res = None
-		for reg in [rgs.timer0, rgs.timer1, rgs.timer2, rgs.timer3] {
-			for pending_write in [reg.pending_control, reg.pending_reload] {
-				match pending_write {
-					Pending(x) => {
-						$res = match $res {
-							None => At(x.at)
-							At(cur_time) => At(cur_time.min(x.at))
-						}
-					}
-					None => {}
-				}
-			}
-			for scheduled_time in [reg.startup_reload_at, reg.next_tick_at] {
-				match scheduled_time {
-					At(x) => {
-						$res = match $res {
-							None => At(x)
-							At(cur_time) => At(cur_time.min(x))
-						}
-					}
-					None => {}
-				}
-			}
-		}
-		$res
+		earlier_event(
+			earlier_event(
+				timer_next_event_at(rgs.timer0),
+				timer_next_event_at(rgs.timer1),
+			),
+			earlier_event(
+				timer_next_event_at(rgs.timer2),
+				timer_next_event_at(rgs.timer3),
+			),
+		)
 	}
 
 	sync_idle_to : TimerRegs, U64 -> Try(TimerRegs, [WrongEventTime])
@@ -481,4 +465,30 @@ tick = |rgs, selection, source| {
 			}
 		}
 	}
+}
+
+earlier_event : [None, At(U64)], [None, At(U64)] -> [None, At(U64)]
+earlier_event = |t1, t2| {
+	match (t1, t2) {
+		(None, None) => None
+		(None, At(t)) | (At(t), None) => At(t)
+		(At(x), At(y)) => At(x.min(y))
+	}
+}
+
+timer_next_event_at : TimerReg -> [None, At(U64)]
+timer_next_event_at = |reg| {
+	earlier_event(
+		earlier_event(
+			match reg.pending_control {
+				Pending(x) => At(x.at)
+				None => None
+			},
+			match reg.pending_reload {
+				Pending(x) => At(x.at)
+				None => None
+			},
+		),
+		earlier_event(reg.startup_reload_at, reg.next_tick_at),
+	)
 }

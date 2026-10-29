@@ -1,6 +1,7 @@
 import Bits
 import Bus
 import Cpu
+import Ppu
 import SystemRegs
 import DisplayRegs
 import TimerRegs
@@ -12,6 +13,7 @@ FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placehol
 Machine :: {
 	bus : Bus,
 	cpu : Cpu,
+	ppu : Ppu,
 	# Need to put unfinished Cpu IO status here when DMA hold the Bus
 	suspended_cpu : [None, Resume(Cpu.Execution_state)],
 	power_state : [Running, Halted, Stopped],
@@ -37,6 +39,7 @@ Machine :: {
 		Ok({
 			bus: Bus.init(bios, rom)?,
 			cpu: Cpu.init(),
+			ppu: Ppu.init(),
 			suspended_cpu: None,
 			power_state: Running,
 			dma_owner: None,
@@ -47,6 +50,9 @@ Machine :: {
 			pipeline: Empty,
 		})
 	}
+
+	get_framebuffer : Machine -> List(U16)
+	get_framebuffer = |m| Ppu.get_framebuffer(m.ppu)
 
 	# Pretty much a visual debugging function, maybe can be used for screenshot support
 	get_video_snapshot : Machine -> Try({ dispcnt : U16, vram : List(U8) }, _)
@@ -135,7 +141,7 @@ Machine :: {
 				}
 				# LCD processing
 				if $cur_machine.next_lcd_at == at {
-					after_lcd = process_lcd_event($cur_machine, at)
+					after_lcd = process_lcd_event($cur_machine, at)?
 					$cur_machine = after_lcd
 				} else {} # No need to touch lcd as its not triggered yet.
 				# So the new at will either be the (now previous) next_lcd_at update timestamp
@@ -365,25 +371,42 @@ process_timer_at = |m, at| {
 	}
 }
 
-process_lcd_event : Machine, U64 -> Machine
+process_lcd_event : Machine, U64 -> Try(Machine, _)
 process_lcd_event = |m, at| {
 	if m.power_state == Stopped {
-		m
+		Ok(m)
 	} else {
 		# Hblank will be set every 1007, then for every 1232 it will jump to the next scanline
 		match m.next_lcd_event {
 			EnterHBlank => {
 				(dp_rgs, mask) = DisplayRegs.enter_hblank(m.bus.io_regs.display)
 				new_vcount = DisplayRegs.get_vcount(dp_rgs)
-				new_dmas = if new_vcount < 160 {
-					DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, HBlank), at)
+				(new_dmas, new_ppu) = if new_vcount < 160 {
+					affine = DisplayRegs.get_bg2_affine(m.bus.io_regs.display)
+					{ x, y } = DisplayRegs.get_bg2_internal_reference(m.bus.io_regs.display)
+					(
+						DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, HBlank), at),
+						Ppu.render_scanline(
+							m.ppu,
+							DisplayRegs.read16(m.bus.io_regs.display, 0)?,
+							m.bus.vram,
+							m.bus.paletteram,
+							new_vcount.to_u64(),
+							DisplayRegs.get_text_bgs(m.bus.io_regs.display),
+							{ pa: affine.pa, pb: affine.pb, pc: affine.pc, pd: affine.pd, x: x, y: y },
+							m.bus.oam,
+							DisplayRegs.get_windows(m.bus.io_regs.display),
+							DisplayRegs.get_mosaic(m.bus.io_regs.display),
+							DisplayRegs.get_color_effects(m.bus.io_regs.display),
+						)?,
+					)
 				} else {
-					m.bus.io_regs.dmas
+					(m.bus.io_regs.dmas, m.ppu)
 				}
 				sys_rgs = SystemRegs.hardware_request_interrupts(m.bus.io_regs.system, mask)
 				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs, dmas: new_dmas }
 				new_bus = { ..m.bus, io_regs: io_rgs }
-				{ ..m, bus: new_bus, next_lcd_event: NextScanline, next_lcd_at: at + 225 }
+				Ok({ ..m, ppu: new_ppu, bus: new_bus, next_lcd_event: NextScanline, next_lcd_at: at + 225 })
 			}
 			NextScanline => {
 				(dp_rgs, mask) = DisplayRegs.advance_scanline(m.bus.io_regs.display)
@@ -400,20 +423,20 @@ process_lcd_event = |m, at| {
 				io_rgs = { ..m.bus.io_regs, display: dp_rgs, system: sys_rgs, dmas: new_dmas }
 				new_bus = { ..m.bus, io_regs: io_rgs }
 				video_dma_next = new_vid_dma_running and new_vcount < 162 and new_vcount > 1
-				{
+				Ok({
 					..m,
 					bus: new_bus,
 					next_lcd_event: if (video_dma_next) VideoDMARequest else EnterHBlank,
 					next_lcd_at: if (video_dma_next) at + 3 else at + 1007,
 					video_dma_running: new_vid_dma_running,
-				}
+				})
 			}
 			VideoDMARequest => {
 				new_dmas = DmaRegs.schedule_pending(DmaRegs.trigger_video(m.bus.io_regs.dmas), at)
 				io_rgs = { ..m.bus.io_regs, dmas: new_dmas }
 				new_bus = { ..m.bus, io_regs: io_rgs }
 				# Hblank is next
-				{ ..m, bus: new_bus, next_lcd_event: EnterHBlank, next_lcd_at: at + 1004 }
+				Ok({ ..m, bus: new_bus, next_lcd_event: EnterHBlank, next_lcd_at: at + 1004 })
 			}
 		}
 	}

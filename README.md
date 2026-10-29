@@ -1,4 +1,4 @@
-# A Early Stage GBA emulator, in ROC
+# An Early Stage GBA emulator, in ROC
 
 ## Goal
 Rn it will just being able to run some offical ROMs, without crashing during playthrough of course.
