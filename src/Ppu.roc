@@ -1,5 +1,22 @@
 import Bits
 
+PreparedObj := {
+	attr0 : U16,
+	attr1 : U16,
+	attr2 : U16,
+	affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
+	width : U64,
+	height : U64,
+}
+
+LayerCandidate := {
+	pixel : [Transparent, Color(U16)],
+	priority : U16,
+	layer : U8,
+}
+
+AffineParams := { pa : I32, pb : I32, pc : I32, pd : I32, x : I32, y : I32 }
+
 Ppu :: { framebuffer : List(U16) }.{
 	init : () -> Ppu
 	init = || { framebuffer: List.repeat(0, 240 * 160) }
@@ -18,8 +35,8 @@ Ppu :: { framebuffer : List(U16) }.{
 		bg2 : { cnt : U16, hofs : U16, vofs : U16 },
 		bg3 : { cnt : U16, hofs : U16, vofs : U16 },
 	},
-	{ pa : I32, pb : I32, pc : I32, pd : I32, x : I32, y : I32 },
-	{ pa : I32, pb : I32, pc : I32, pd : I32, x : I32, y : I32 },
+	AffineParams,
+	AffineParams,
 	List(U8),
 	{
 		win0h : U16,
@@ -48,7 +65,7 @@ Ppu :: { framebuffer : List(U16) }.{
 		vram,
 		paletteram,
 		row_num,
-		bgs_text,
+		bg_regs,
 		bg2,
 		bg3,
 		oam,
@@ -88,7 +105,7 @@ Ppu :: { framebuffer : List(U16) }.{
 						$i = $i + 1
 					}
 				} else if mode < 6 {
-					bgs = [bgs_text.bg0, bgs_text.bg1, bgs_text.bg2, bgs_text.bg3]
+					bgs = [bg_regs.bg0, bg_regs.bg1, bg_regs.bg2, bg_regs.bg3]
 					objs = prepare_obj_line(oam, dispcnt, row_num)?
 					mosaic_h = Bits.get_seg_of_u16_certain(mosaic, 0, 4).plus_wrap(1)
 					mosaic_v = Bits.get_seg_of_u16_certain(mosaic, 4, 4).plus_wrap(1)
@@ -98,26 +115,13 @@ Ppu :: { framebuffer : List(U16) }.{
 					obj_mosaic_dy = row_num.mod_by(obj_mosaic_v.to_u64())
 					var $bg2_fixed_x : I32
 					var $bg2_fixed_y : I32
-					bg2_mosaic_on = Bits.get_ith_bit_u16_certain(bgs_text.bg2.cnt, 6)
-					if bg2_mosaic_on {
-						dy = row_num.to_i32_wrap().minus_wrap(mosaic_y.to_i32_wrap())
-						$bg2_fixed_x = bg2.x.minus_wrap(bg2.pb.times_wrap(dy))
-						$bg2_fixed_y = bg2.y.minus_wrap(bg2.pd.times_wrap(dy))
-					} else {
-						$bg2_fixed_x = bg2.x
-						$bg2_fixed_y = bg2.y
-					}
+					bg2_mosaic_on = Bits.get_ith_bit_u16_certain(bg_regs.bg2.cnt, 6)
 					var $bg3_fixed_x : I32
 					var $bg3_fixed_y : I32
-					bg3_mosaic_on = Bits.get_ith_bit_u16_certain(bgs_text.bg3.cnt, 6)
-					if bg3_mosaic_on {
-						dy = row_num.to_i32_wrap().minus_wrap(mosaic_y.to_i32_wrap())
-						$bg3_fixed_x = bg3.x.minus_wrap(bg3.pb.times_wrap(dy))
-						$bg3_fixed_y = bg3.y.minus_wrap(bg3.pd.times_wrap(dy))
-					} else {
-						$bg3_fixed_x = bg3.x
-						$bg3_fixed_y = bg3.y
-					}
+					bg3_mosaic_on = Bits.get_ith_bit_u16_certain(bg_regs.bg3.cnt, 6)
+					dy = row_num.to_i32_wrap().minus_wrap(mosaic_y.to_i32_wrap())
+					($bg2_fixed_x, $bg2_fixed_y) = affine_row_start(bg2, bg2_mosaic_on, dy)
+					($bg3_fixed_x, $bg3_fixed_y) = affine_row_start(bg3, bg3_mosaic_on, dy)
 					var $obj_latch = {
 						pixel: Transparent,
 						priority: 4.U16,
@@ -136,30 +140,18 @@ Ppu :: { framebuffer : List(U16) }.{
 							$obj_latch = obj_layer
 						}
 						layer_mask = select_windows_mask(dispcnt, windows, $i, obj_layer.obj_window)
-						var $intermediate = Transparent
-						var $best_priority = 4.U16
-						var $best_layer = 5.U8
-						var $second = Transparent
-						var $second_priority = 4.U16
-						var $second_layer = 5.U8
+						var $top = { pixel: Transparent, priority: 4, layer: 5 }
+						var $second = $top
 						dx = ($i - mosaic_x).to_i32_wrap()
-						(sample_bg2_fixed_x, sample_bg2_fixed_y) = if bg2_mosaic_on {
-							($bg2_fixed_x.minus_wrap(bg2.pa.times_wrap(dx)), $bg2_fixed_y.minus_wrap(bg2.pc.times_wrap(dx)))
-						} else {
-							($bg2_fixed_x, $bg2_fixed_y)
-						}
-						(sample_bg3_fixed_x, sample_bg3_fixed_y) = if bg3_mosaic_on {
-							($bg3_fixed_x.minus_wrap(bg3.pa.times_wrap(dx)), $bg3_fixed_y.minus_wrap(bg3.pc.times_wrap(dx)))
-						} else {
-							($bg3_fixed_x, $bg3_fixed_y)
-						}
+						(sample_bg2_fixed_x, sample_bg2_fixed_y) = affine_sample_position(bg2, $bg2_fixed_x, $bg2_fixed_y, bg2_mosaic_on, dx)
+						(sample_bg3_fixed_x, sample_bg3_fixed_y) = affine_sample_position(bg3, $bg3_fixed_x, $bg3_fixed_y, bg3_mosaic_on, dx)
 						if mode <= 2 {
 							var $j = if (mode == 2) 2.U64 else 0.U64 # Iterating BGs
 							while $j < (if (mode == 1) 3 else 4) {
 								if Bits.get_ith_bit_u16_certain(dispcnt, (8 + $j).to_u8_wrap())
 									and Bits.get_ith_bit_u16_certain(layer_mask, $j.to_u8_wrap()) {
 									bg = bgs.get($j)?
-									tmp = if $j == 2 and (mode == 1 or mode == 2) {
+									bg_pixel = if $j == 2 and (mode == 1 or mode == 2) {
 										sample_affine_bg(vram, paletteram, bg.cnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
 									} else if mode == 2 and $j == 3 {
 										sample_affine_bg(vram, paletteram, bg.cnt, sample_bg3_fixed_x, sample_bg3_fixed_y)?
@@ -169,33 +161,29 @@ Ppu :: { framebuffer : List(U16) }.{
 										sample_text_bg(vram, paletteram, bg, $i, row_num)?
 									}
 									priority = Bits.get_seg_of_u16_certain(bg.cnt, 0, 2)
-									if tmp != Transparent and priority < $best_priority {
-										$second_priority = $best_priority
-										$second_layer = $best_layer
-										$second = $intermediate
-										$best_priority = priority
-										$intermediate = tmp
-										$best_layer = $j.to_u8_wrap()
-									} else if tmp != Transparent and priority < $second_priority {
-										$second = tmp
-										$second_priority = priority
-										$second_layer = $j.to_u8_wrap()
+									if bg_pixel != Transparent and priority < $top.priority {
+										$second = $top
+										$top = { pixel: bg_pixel, layer: $j.to_u8_wrap(), priority: priority }
+									} else if bg_pixel != Transparent and priority < $second.priority {
+										$second = { pixel: bg_pixel, layer: $j.to_u8_wrap(), priority: priority }
 									}
 								}
 								$j = $j + 1
 							}
 						} else {
 							if Bits.get_ith_bit_u16_certain(dispcnt, 10) and Bits.get_ith_bit_u16_certain(layer_mask, 2) {
-								tmp = match mode {
+								bg_pixel = match mode {
 									3 => sample_mode3_bg(vram, sample_bg2_fixed_x, sample_bg2_fixed_y)?
 									4 => sample_mode4_bg(vram, paletteram, dispcnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
 									_ => sample_mode5_bg(vram, dispcnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
 								}
-								match tmp {
+								match bg_pixel {
 									Color(c) => {
-										$intermediate = Color(c)
-										$best_priority = Bits.get_seg_of_u16_certain(bgs_text.bg2.cnt, 0, 2)
-										$best_layer = 2
+										$top = {
+											pixel: Color(c),
+											layer: 2,
+											priority: Bits.get_seg_of_u16_certain(bg_regs.bg2.cnt, 0, 2),
+										}
 									}
 									Transparent => {}
 								}
@@ -203,47 +191,25 @@ Ppu :: { framebuffer : List(U16) }.{
 						}
 						match $obj_latch.pixel {
 							Color(c) if Bits.get_ith_bit_u16_certain(layer_mask, 4) => {
-								if $obj_latch.priority <= $best_priority {
-									$second = $intermediate
-									$second_layer = $best_layer
-									$intermediate = Color(c)
-									$best_layer = 4
-								} else if $obj_latch.priority <= $second_priority {
-									$second = Color(c)
-									$second_layer = 4
+								if $obj_latch.priority <= $top.priority {
+									$second = $top
+									$top = { pixel: Color(c), priority: $obj_latch.priority, layer: 4 }
+								} else if $obj_latch.priority <= $second.priority {
+									$second = { pixel: Color(c), priority: $obj_latch.priority, layer: 4 }
 								}
 							}
 							_ => {}
 						}
-						color = match $intermediate {
-							Transparent => backdrop_color?
-							Color(c) => c
-						}
-						normal_alpha = effect_mode == 1 and Bits.get_ith_bit_u16_certain(layer_mask, 5)
-							and Bits.get_ith_bit_u16_certain(effects.bldcnt, $best_layer)
-						# In NBA a topmost semi-transparent OBJ can bypass normal SFX gates.
-						force_alpha = $best_layer == 4 and $obj_latch.semi_transparent
-						$new_fb = if $best_layer != 5
-							and (force_alpha or normal_alpha)
-							and Bits.get_ith_bit_u16_certain(effects.bldcnt, 8 + $second_layer) {
-							second_color = match $second {
-								Transparent => backdrop_color?
-								Color(c) => c
-							}
-							$new_fb.set(
-								starting_idx.plus_wrap($i),
-								blend_rgb555(color, second_color, effects.bldalpha),
-							)?
-						} else if Bits.get_ith_bit_u16_certain(layer_mask, 5)
-							and effect_mode >= 2
-							and Bits.get_ith_bit_u16_certain(effects.bldcnt, $best_layer) {
-							$new_fb.set(
-								starting_idx.plus_wrap($i),
-								brightness_rgb555(color, effects.bldy, effect_mode == 2),
-							)?
-						} else {
-							$new_fb.set(starting_idx.plus_wrap($i), color)?
-						}
+						final_color = resolve_color(
+							$top,
+							$second,
+							$obj_latch.semi_transparent,
+							layer_mask,
+							effect_mode,
+							effects,
+							backdrop_color,
+						)?
+						$new_fb = $new_fb.set(starting_idx.plus_wrap($i), final_color)?
 						if mode >= 1 and mode <= 5 {
 							$bg2_fixed_x = $bg2_fixed_x.plus_wrap(bg2.pa)
 							$bg2_fixed_y = $bg2_fixed_y.plus_wrap(bg2.pc)
@@ -298,7 +264,7 @@ Ppu :: { framebuffer : List(U16) }.{
 		within_block = tile_y.mod_by(32).times_wrap(32).plus_wrap(tile_x.mod_by(32))
 		entry_offset = map_base.to_u64().plus_wrap(block.times_wrap(32 * 32 * 2)).plus_wrap(within_block.times_wrap(2))
 		if (entry_offset.plus_wrap(1) >= 65536) return Err(OutOfBounds)
-		entry = vram.get(entry_offset)?.to_u16() + vram.get(entry_offset.plus_wrap(1))?.to_u16().shl_wrap(8)
+		entry = read_u16_le(vram, entry_offset)?
 		tile_num = Bits.get_seg_of_u16_certain(entry, 0, 10)
 		flip_x = Bits.get_ith_bit_u16_certain(entry, 10)
 		flip_y = Bits.get_ith_bit_u16_certain(entry, 11)
@@ -325,14 +291,6 @@ Ppu :: { framebuffer : List(U16) }.{
 		color = read_rgb555(paletteram, p_offset)?
 		Ok(Color(color))
 	}
-}
-
-read_rgb555 : List(U8), U64 -> Try(U16, [OutOfBounds])
-read_rgb555 = |lst, idx| {
-	Ok(
-		List.get(lst, idx)?.to_u16()
-			+ List.get(lst, idx.plus_wrap(1))?.bitwise_and(0b111_1111).to_u16().shl_wrap(8),
-	)
 }
 
 decode_size : U16, U16 -> Try((U64, U64), [OutOfBounds, ProhibitedCode])
@@ -367,26 +325,16 @@ read_obj = |oam, obj_num| {
 	} else {
 		base = obj_num * 8
 		Ok({
-			attr0: List.get(oam, base)?.to_u16()
-				+ List.get(oam, base.plus_wrap(1))?.to_u16().shl_wrap(8),
-			attr1: List.get(oam, base.plus_wrap(2))?.to_u16()
-				+ List.get(oam, base.plus_wrap(3))?.to_u16().shl_wrap(8),
-			attr2: List.get(oam, base.plus_wrap(4))?.to_u16()
-				+ List.get(oam, base.plus_wrap(5))?.to_u16().shl_wrap(8),
+			attr0: read_u16_le(oam, base)?,
+			attr1: read_u16_le(oam, base.plus_wrap(2))?,
+			attr2: read_u16_le(oam, base.plus_wrap(4))?,
 		})
 	}
 }
 
 sample_obj_index : List(U8),
 U16,
-{
-	attr0 : U16,
-	attr1 : U16,
-	attr2 : U16,
-	affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
-	width : U64,
-	height : U64,
-},
+PreparedObj,
 U64,
 U64,
 U64 -> Try(
@@ -472,14 +420,7 @@ sample_obj_index = |vram, dispcnt, obj, screen_x, screen_y, obj_mosaic_dy| {
 sample_obj : List(U8),
 List(U8),
 U16,
-{
-	attr0 : U16,
-	attr1 : U16,
-	attr2 : U16,
-	affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
-	width : U64,
-	height : U64,
-},
+PreparedObj,
 U64,
 U64,
 U64 -> Try(
@@ -518,16 +459,7 @@ sample_obj = |vram, paletteram, dispcnt, obj, screen_x, screen_y, obj_mosaic_dy|
 sample_obj_layer : List(U8),
 List(U8),
 U16,
-List(
-	{
-		attr0 : U16,
-		attr1 : U16,
-		attr2 : U16,
-		affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
-		width : U64,
-		height : U64,
-	},
-),
+List(PreparedObj),
 U64,
 U64,
 U64 -> Try(
@@ -585,21 +517,7 @@ sample_obj_layer = |vram, paletteram, dispcnt, objs, screen_x, screen_y, obj_mos
 prepare_obj_line : List(U8),
 U16,
 U64 -> Try(
-	List(
-		{
-			attr0 : U16,
-			attr1 : U16,
-			attr2 : U16,
-			affine : [
-				None,
-				Matrix(
-					{ pa : I32, pb : I32, pc : I32, pd : I32 },
-				),
-			],
-			width : U64,
-			height : U64,
-		},
-	),
+	List(PreparedObj),
 	[OutOfBounds, ProhibitedCode],
 )
 prepare_obj_line = |oam, dispcnt, row_num| {
@@ -765,22 +683,10 @@ read_obj_affine = |oam, matrix_idx| {
 	} else {
 		base = matrix_idx * 32
 		Ok({
-			pa: two_comp_transform_u16(
-				List.get(oam, base + 0x6)?.to_u16()
-					+ List.get(oam, base + 0x7)?.to_u16().shl_wrap(8),
-			),
-			pb: two_comp_transform_u16(
-				List.get(oam, base + 0xE)?.to_u16()
-					+ List.get(oam, base + 0xF)?.to_u16().shl_wrap(8),
-			),
-			pc: two_comp_transform_u16(
-				List.get(oam, base + 0x16)?.to_u16()
-					+ List.get(oam, base + 0x17)?.to_u16().shl_wrap(8),
-			),
-			pd: two_comp_transform_u16(
-				List.get(oam, base + 0x1E)?.to_u16()
-					+ List.get(oam, base + 0x1F)?.to_u16().shl_wrap(8),
-			),
+			pa: two_comp_transform_u16(read_u16_le(oam, base + 0x6)?),
+			pb: two_comp_transform_u16(read_u16_le(oam, base + 0xE)?),
+			pc: two_comp_transform_u16(read_u16_le(oam, base + 0x16)?),
+			pd: two_comp_transform_u16(read_u16_le(oam, base + 0x1E)?),
 		})
 	}
 }
@@ -826,4 +732,82 @@ brightness_rgb555 = |color, bldy, increase| {
 		)
 	}
 	r_adjusted + g_adjusted * 32 + b_adjusted * 1024
+}
+
+resolve_color : LayerCandidate,
+LayerCandidate,
+Bool,
+U16,
+U16,
+{ bldcnt : U16, bldalpha : U16, bldy : U16, green_swap : U16 },
+Try(U16, [OutOfBounds]) -> Try(
+	U16,
+	[OutOfBounds],
+)
+resolve_color = |
+	top,
+	second,
+	obj_semi_transparent,
+	layer_mask,
+	effect_mode,
+	effects,
+	backdrop_color,
+| {
+	best_pixel = top.pixel
+	best_layer = top.layer
+	second_pixel = second.pixel
+	second_layer = second.layer
+	color = match best_pixel {
+		Transparent => backdrop_color?
+		Color(c) => c
+	}
+	normal_alpha = effect_mode == 1 and Bits.get_ith_bit_u16_certain(layer_mask, 5)
+		and Bits.get_ith_bit_u16_certain(effects.bldcnt, best_layer)
+	# In NBA a topmost semi-transparent OBJ can bypass normal SFX gates.
+	force_alpha = best_layer == 4 and obj_semi_transparent
+	if best_layer != 5
+		and (force_alpha or normal_alpha)
+		and Bits.get_ith_bit_u16_certain(effects.bldcnt, 8 + second_layer) {
+		second_color = match second_pixel {
+			Transparent => backdrop_color?
+			Color(c) => c
+		}
+		Ok(blend_rgb555(color, second_color, effects.bldalpha))
+	} else if Bits.get_ith_bit_u16_certain(layer_mask, 5)
+		and effect_mode >= 2
+		and Bits.get_ith_bit_u16_certain(effects.bldcnt, best_layer) {
+		Ok(brightness_rgb555(color, effects.bldy, effect_mode == 2))
+	} else {
+		Ok(color)
+	}
+}
+
+read_u16_le_masked : List(U8), U64, U16 -> Try(U16, [OutOfBounds])
+read_u16_le_masked = |lst, idx, mask| {
+	Ok((List.get(lst, idx)?.to_u16()
+		+ List.get(lst, idx.plus_wrap(1))?.to_u16().shl_wrap(8)).bitwise_and(mask))
+}
+
+read_u16_le : List(U8), U64 -> Try(U16, [OutOfBounds])
+read_u16_le = |lst, idx| read_u16_le_masked(lst, idx, 0xFFFF)
+
+read_rgb555 : List(U8), U64 -> Try(U16, [OutOfBounds])
+read_rgb555 = |lst, idx| read_u16_le_masked(lst, idx, 0b111_1111_1111_1111)
+
+affine_row_start : AffineParams, Bool, I32 -> (I32, I32)
+affine_row_start = |affine, mosaic_on, dy| {
+	if mosaic_on {
+		(affine.x.minus_wrap(affine.pb.times_wrap(dy)), affine.y.minus_wrap(affine.pd.times_wrap(dy)))
+	} else {
+		(affine.x, affine.y)
+	}
+}
+
+affine_sample_position : AffineParams, I32, I32, Bool, I32 -> (I32, I32)
+affine_sample_position = |affine, fixed_x, fixed_y, mosaic_on, dx| {
+	if mosaic_on {
+		(fixed_x.minus_wrap(affine.pa.times_wrap(dx)), fixed_y.minus_wrap(affine.pc.times_wrap(dx)))
+	} else {
+		(fixed_x, fixed_y)
+	}
 }
