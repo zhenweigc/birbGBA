@@ -348,7 +348,14 @@ read_obj = |oam, obj_num| {
 
 sample_obj_index : List(U8),
 U16,
-{ attr0 : U16, attr1 : U16, attr2 : U16, affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })] },
+{
+	attr0 : U16,
+	attr1 : U16,
+	attr2 : U16,
+	affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
+	width : U64,
+	height : U64,
+},
 U64,
 U64,
 U64 -> Try(
@@ -370,12 +377,12 @@ sample_obj_index = |vram, dispcnt, obj, screen_x, screen_y, obj_mosaic_dy| {
 	obj_x = Bits.get_seg_of_u16_certain(obj.attr1, 0, 9)
 	obj_y = Bits.get_seg_of_u16_certain(obj.attr0, 0, 8)
 	shape = Bits.get_seg_of_u16_certain(obj.attr0, 14, 2)
-	size = Bits.get_seg_of_u16_certain(obj.attr1, 14, 2)
 	flip_x = Bits.get_ith_bit_u16_certain(obj.attr1, 12)
 	flip_y = Bits.get_ith_bit_u16_certain(obj.attr1, 13)
 	local_x = screen_x.plus_wrap(512).minus_wrap(obj_x.to_u64()).mod_by(512)
 	local_y = screen_y.plus_wrap(256).minus_wrap(obj_y.to_u64()).mod_by(256)
-	(width, height) = decode_size(shape, size)?
+	if (shape == 3) return Err(ProhibitedCode)
+	(width, height) = (obj.width, obj.height)
 	box_height = if (Bits.get_seg_of_u16_certain(obj.attr0, 8, 2) == 3) height * 2 else height
 	box_width = if (Bits.get_seg_of_u16_certain(obj.attr0, 8, 2) == 3) width * 2 else width
 	# Current screen pixel is outside this OBJ
@@ -439,6 +446,8 @@ U16,
 	attr1 : U16,
 	attr2 : U16,
 	affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
+	width : U64,
+	height : U64,
 },
 U64,
 U64,
@@ -484,6 +493,8 @@ List(
 		attr1 : U16,
 		attr2 : U16,
 		affine : [None, Matrix({ pa : I32, pb : I32, pc : I32, pd : I32 })],
+		width : U64,
+		height : U64,
 	},
 ),
 U64,
@@ -554,6 +565,8 @@ U64 -> Try(
 					{ pa : I32, pb : I32, pc : I32, pd : I32 },
 				),
 			],
+			width : U64,
+			height : U64,
 		},
 	),
 	[OutOfBounds, ProhibitedCode],
@@ -571,7 +584,7 @@ prepare_obj_line = |oam, dispcnt, row_num| {
 			if Bits.get_seg_of_u16_certain(obj.attr0, 8, 2) != 2 {
 				shape = Bits.get_seg_of_u16_certain(obj.attr0, 14, 2)
 				size = Bits.get_seg_of_u16_certain(obj.attr1, 14, 2)
-				(_, height) = decode_size(shape, size)?
+				(width, height) = decode_size(shape, size)?
 				box_height = if (Bits.get_seg_of_u16_certain(obj.attr0, 8, 2) == 3) height * 2 else height
 				obj_y = Bits.get_seg_of_u16_certain(obj.attr0, 0, 8).to_u64()
 				end_y = obj_y.plus_wrap(box_height).mod_by(256)
@@ -583,7 +596,14 @@ prepare_obj_line = |oam, dispcnt, row_num| {
 					} else {
 						None
 					}
-					$objs = $objs.append({ attr0: obj.attr0, attr1: obj.attr1, attr2: obj.attr2, affine: affine })
+					$objs = $objs.append({
+						attr0: obj.attr0,
+						attr1: obj.attr1,
+						attr2: obj.attr2,
+						affine: affine,
+						width: width,
+						height: height,
+					})
 				}
 			}
 			$i = $i + 1

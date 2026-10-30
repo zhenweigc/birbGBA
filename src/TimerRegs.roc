@@ -207,11 +207,13 @@ TimerRegs :: {
 	}
 
 	sync_idle_to : TimerRegs, U64 -> Try(TimerRegs, [WrongEventTime])
-	sync_idle_to = |rgs, target| {
+	sync_idle_to = |rgs, target| sync_idle_to_known_next(rgs, target, next_event_at(rgs))
+
+	sync_idle_to_known_next : TimerRegs, U64, [None, At(U64)] -> Try(TimerRegs, [WrongEventTime])
+	sync_idle_to_known_next = |rgs, target, nxt_action_time| {
 		if target < rgs.synced_at {
 			Err(WrongEventTime)
 		} else {
-			nxt_action_time = next_event_at(rgs)
 			match nxt_action_time {
 				At(t) if t <= target => Err(WrongEventTime)
 				_ => Ok({ ..rgs, synced_at: target })

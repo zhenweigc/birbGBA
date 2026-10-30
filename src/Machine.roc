@@ -116,38 +116,7 @@ Machine :: {
 				None => m.next_lcd_at
 				At(t) => t.min(m.next_lcd_at)
 			}
-			if at < m.now {
-				Err(WrongEventTime)
-			} else {
-				var $cur_machine = m
-				var $overflow_mask = 0
-				# Timer processing
-				($cur_machine, $overflow_mask) = if timer_at == At(at) {
-					process_timer_at($cur_machine, at)?
-				} else {
-					(
-						{
-							..m,
-							bus: {
-								..m.bus,
-								io_regs: {
-									..m.bus.io_regs,
-									timers: TimerRegs.sync_idle_to($cur_machine.bus.io_regs.timers, at)?,
-								},
-							},
-						},
-						0,
-					)
-				}
-				# LCD processing
-				if $cur_machine.next_lcd_at == at {
-					after_lcd = process_lcd_event($cur_machine, at)?
-					$cur_machine = after_lcd
-				} else {} # No need to touch lcd as its not triggered yet.
-				# So the new at will either be the (now previous) next_lcd_at update timestamp
-				# or the next timer reg event time, or both, since it is determined by a min
-				Ok(({ ..$cur_machine, now: at }, $overflow_mask))
-			}
+			process_event_at(m, at, timer_at)
 		}
 	}
 
@@ -193,7 +162,7 @@ Machine :: {
 				At(t) => t.min(m.next_lcd_at)
 			}
 			if at <= target {
-				(new_machine, _) = process_next_event(m)?
+				(new_machine, _) = process_event_at(m, at, timer_at)?
 				advance_to(new_machine, target)
 			} else {
 				Ok({
@@ -202,7 +171,11 @@ Machine :: {
 						..m.bus,
 						io_regs: {
 							..m.bus.io_regs,
-							timers: TimerRegs.sync_idle_to(m.bus.io_regs.timers, target)?,
+							timers: TimerRegs.sync_idle_to_known_next(
+								m.bus.io_regs.timers,
+								target,
+								timer_at,
+							)?,
 						},
 					},
 					now: target,
@@ -339,6 +312,46 @@ walk_execution_state = |before_dma, state| {
 			)?
 			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), cpu_continue)
 		}
+	}
+}
+
+process_event_at : Machine, U64, [None, At(U64)] -> Try((Machine, U8), _)
+process_event_at = |m, at, timer_at| {
+	if at < m.now {
+		Err(WrongEventTime)
+	} else {
+		var $cur_machine = m
+		var $overflow_mask = 0
+		# Timer processing
+		($cur_machine, $overflow_mask) = if timer_at == At(at) {
+			process_timer_at($cur_machine, at)?
+		} else {
+			(
+				{
+					..m,
+					bus: {
+						..m.bus,
+						io_regs: {
+							..m.bus.io_regs,
+							timers: TimerRegs.sync_idle_to_known_next(
+								$cur_machine.bus.io_regs.timers,
+								at,
+								timer_at,
+							)?,
+						},
+					},
+				},
+				0,
+			)
+		}
+		# LCD processing
+		if $cur_machine.next_lcd_at == at {
+			after_lcd = process_lcd_event($cur_machine, at)?
+			$cur_machine = after_lcd
+		} else {} # No need to touch lcd as its not triggered yet.
+		# So the new at will either be the (now previous) next_lcd_at update timestamp
+		# or the next timer reg event time, or both, since it is determined by a min
+		Ok(({ ..$cur_machine, now: at }, $overflow_mask))
 	}
 }
 
@@ -489,6 +502,62 @@ dma_write = |m, width, addr, val, req_kind| {
 	timed_write(m, width, aligned_addr, val, req_kind)
 }
 
+dma_transfer_selected : Machine, U8, DmaRegs.Reg, [W16, W32], [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
+dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind| {
+	DmaRegs.validate_transfer(reg, selection, Starting)?
+	(after_read_m, val) = if reg.source_addr < 0x2000000 {
+		# Trying to read BIOS/Unused zone? Kind UB
+		# Luckily NBA tells us how to handle it.
+		advanced = Machine.advance_to(m, m.now + 1)?
+		latch_val = if width == W32 {
+			reg.data_latch
+		} else {
+			# Yes, bit1. Since if we use bit0 -> aligned by 8bit not 16
+			if reg.dest_addr.bitwise_and(0b10) == 0 {
+				Bits.get_seg_of_u32_certain(reg.data_latch, 0, 16)
+			} else {
+				Bits.get_seg_of_u32_certain(reg.data_latch, 16, 16)
+			}
+		}
+		(advanced, latch_val)
+	} else {
+		(intermediate_m, before_latch_val) = dma_read(m, width, reg.source_addr, req_read_kind)?
+		val_with_width_considered = if (width == W32) before_latch_val else (before_latch_val.shl_wrap(16) + before_latch_val)
+		(
+			{
+				..intermediate_m,
+				bus: {
+					..intermediate_m.bus,
+					io_regs: {
+						..intermediate_m.bus.io_regs,
+						dmas: DmaRegs.set_data_latch(
+							intermediate_m.bus.io_regs.dmas,
+							selection,
+							val_with_width_considered,
+						)?,
+					},
+				},
+			},
+			val_with_width_considered,
+		)
+	}
+	after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind)?
+	(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(after_write_m.bus.io_regs.dmas, selection)?
+	new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)
+	Ok({
+		..after_write_m,
+		dma_owner: Channel(selection),
+		bus: {
+			..after_write_m.bus,
+			io_regs: {
+				..after_write_m.bus.io_regs,
+				dmas: new_dma_rgs,
+				system: new_sys_rgs,
+			},
+		},
+	})
+}
+
 dma_transfer_unit : Machine, [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
 dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 	if m.power_state == Stopped {
@@ -496,60 +565,14 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 	} else {
 		match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
 			None => Ok(m) # Congrats, you got nothing to do as of now
-			Transfer(selection, reg, width) => {
-				DmaRegs.validate_transfer(reg, selection, Starting)?
-				(after_read_m, val) = if reg.source_addr < 0x2000000 {
-					# Trying to read BIOS/Unused zone? Kind UB
-					# Luckily NBA tells us how to handle it.
-					advanced = Machine.advance_to(m, m.now + 1)?
-					latch_val = if width == W32 {
-						reg.data_latch
-					} else {
-						# Yes, bit1. Since if we use bit0 -> aligned by 8bit not 16
-						if reg.dest_addr.bitwise_and(0b10) == 0 {
-							Bits.get_seg_of_u32_certain(reg.data_latch, 0, 16)
-						} else {
-							Bits.get_seg_of_u32_certain(reg.data_latch, 16, 16)
-						}
-					}
-					(advanced, latch_val)
-				} else {
-					(intermediate_m, before_latch_val) = dma_read(m, width, reg.source_addr, req_read_kind)?
-					val_with_width_considered = if (width == W32) before_latch_val else (before_latch_val.shl_wrap(16) + before_latch_val)
-					(
-						{
-							..intermediate_m,
-							bus: {
-								..intermediate_m.bus,
-								io_regs: {
-									..intermediate_m.bus.io_regs,
-									dmas: DmaRegs.set_data_latch(
-										intermediate_m.bus.io_regs.dmas,
-										selection,
-										val_with_width_considered,
-									)?,
-								},
-							},
-						},
-						val_with_width_considered,
-					)
-				}
-				after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind)?
-				(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(after_write_m.bus.io_regs.dmas, selection)?
-				new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)
-				Ok({
-					..after_write_m,
-					dma_owner: Channel(selection),
-					bus: {
-						..after_write_m.bus,
-						io_regs: {
-							..after_write_m.bus.io_regs,
-							dmas: new_dma_rgs,
-							system: new_sys_rgs,
-						},
-					},
-				})
-			}
+			Transfer(selection, reg, width) => dma_transfer_selected(
+				m,
+				selection,
+				reg,
+				width,
+				req_read_kind,
+				req_write_kind,
+			)
 		}
 	}
 }
@@ -574,19 +597,18 @@ deal_with_dma = |m| {
 			Transfer(selection, reg, _) => {
 				DmaRegs.validate_transfer(reg, selection, Starting)?
 				advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
-				access_kind = match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
-					Transfer(next_selection, _, _) => {
-						if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
+				match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
+					Transfer(next_selection, next_reg, next_width) => {
+						access_kind = if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
+						Ok(DMAHandled(dma_transfer_selected(advanced, next_selection, next_reg, next_width, access_kind, access_kind)?))
 					}
 					None => {
 						# Well this can occur now, like this:
 						# DMA3 pending -> vcount advance, DMA3 disabled because vcount == 162
 						# selection is None now, ooof
-						return Ok(DMAHandled(release_dma(advanced)?))
+						Ok(DMAHandled(release_dma(advanced)?))
 					}
-
 				}
-				Ok(DMAHandled(dma_transfer_unit(advanced, access_kind, access_kind)?))
 			}
 		}
 	}

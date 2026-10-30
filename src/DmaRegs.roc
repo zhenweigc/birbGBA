@@ -23,6 +23,8 @@ DmaRegs :: {
 	dma2 : DMAReg,
 	dma3 : DMAReg,
 }.{
+	Reg : DMAReg
+
 	init : () -> DmaRegs
 	init = || {
 		{
@@ -116,7 +118,13 @@ DmaRegs :: {
 	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
 	get_reg_ready_to_io = |rgs, given_now| {
 		var $num = 0.U8
-		for reg in [rgs.dma0, rgs.dma1, rgs.dma2, rgs.dma3] {
+		while $num < 4 {
+			reg = match $num {
+				0 => rgs.dma0
+				1 => rgs.dma1
+				2 => rgs.dma2
+				_ => rgs.dma3
+			}
 			if reg.phase == Pending and reg.ready_at != None {
 				match reg.ready_at {
 					At(t) if t <= given_now => {
@@ -126,13 +134,10 @@ DmaRegs :: {
 							if (is_fifo_dma(reg, $num) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) W32 else W16,
 						)
 					}
-					_ => {
-						$num = $num + 1
-					}
+					_ => {}
 				}
-			} else {
-				$num = $num + 1
 			}
+			$num = $num + 1
 		}
 		None
 	}
@@ -140,7 +145,14 @@ DmaRegs :: {
 	next_ready_at : DmaRegs -> [None, At(U64)]
 	next_ready_at = |rgs| {
 		var $res = None
-		for reg in [rgs.dma0, rgs.dma1, rgs.dma2, rgs.dma3] {
+		var $idx = 0
+		while $idx < 4 {
+			reg = match $idx {
+				0 => rgs.dma0
+				1 => rgs.dma1
+				2 => rgs.dma2
+				_ => rgs.dma3
+			}
 			match reg.ready_at {
 				At(t) if reg.phase == Pending => {
 					$res = match $res {
@@ -150,6 +162,7 @@ DmaRegs :: {
 				}
 				_ => {}
 			}
+			$idx = $idx + 1
 		}
 		$res
 	}
