@@ -395,8 +395,10 @@ process_lcd_event = |m, at| {
 				(dp_rgs, mask) = DisplayRegs.enter_hblank(m.bus.io_regs.display)
 				new_vcount = DisplayRegs.get_vcount(dp_rgs)
 				(new_dmas, new_ppu) = if new_vcount < 160 {
-					affine = DisplayRegs.get_bg2_affine(m.bus.io_regs.display)
-					{ x, y } = DisplayRegs.get_bg2_internal_reference(m.bus.io_regs.display)
+					affine_bg2 = DisplayRegs.get_bg2_affine(m.bus.io_regs.display)
+					ref_bg2 = DisplayRegs.get_bg2_internal_reference(m.bus.io_regs.display)
+					affine_bg3 = DisplayRegs.get_bg3_affine(m.bus.io_regs.display)
+					ref_bg3 = DisplayRegs.get_bg3_internal_reference(m.bus.io_regs.display)
 					(
 						DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, HBlank), at),
 						Ppu.render_scanline(
@@ -406,7 +408,8 @@ process_lcd_event = |m, at| {
 							m.bus.paletteram,
 							new_vcount.to_u64(),
 							DisplayRegs.get_text_bgs(m.bus.io_regs.display),
-							{ pa: affine.pa, pb: affine.pb, pc: affine.pc, pd: affine.pd, x: x, y: y },
+							{ pa: affine_bg2.pa, pb: affine_bg2.pb, pc: affine_bg2.pc, pd: affine_bg2.pd, x: ref_bg2.x, y: ref_bg2.y },
+							{ pa: affine_bg3.pa, pb: affine_bg3.pb, pc: affine_bg3.pc, pd: affine_bg3.pd, x: ref_bg3.x, y: ref_bg3.y },
 							m.bus.oam,
 							DisplayRegs.get_windows(m.bus.io_regs.display),
 							DisplayRegs.get_mosaic(m.bus.io_regs.display),

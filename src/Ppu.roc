@@ -19,6 +19,7 @@ Ppu :: { framebuffer : List(U16) }.{
 		bg3 : { cnt : U16, hofs : U16, vofs : U16 },
 	},
 	{ pa : I32, pb : I32, pc : I32, pd : I32, x : I32, y : I32 },
+	{ pa : I32, pb : I32, pc : I32, pd : I32, x : I32, y : I32 },
 	List(U8),
 	{
 		win0h : U16,
@@ -49,6 +50,7 @@ Ppu :: { framebuffer : List(U16) }.{
 		row_num,
 		bgs_text,
 		bg2,
+		bg3,
 		oam,
 		windows,
 		mosaic,
@@ -85,7 +87,7 @@ Ppu :: { framebuffer : List(U16) }.{
 						)?
 						$i = $i + 1
 					}
-				} else if mode == 0 or mode == 3 {
+				} else if mode < 6 {
 					bgs = [bgs_text.bg0, bgs_text.bg1, bgs_text.bg2, bgs_text.bg3]
 					objs = prepare_obj_line(oam, dispcnt, row_num)?
 					mosaic_h = Bits.get_seg_of_u16_certain(mosaic, 0, 4).plus_wrap(1)
@@ -94,16 +96,27 @@ Ppu :: { framebuffer : List(U16) }.{
 					obj_mosaic_h = Bits.get_seg_of_u16_certain(mosaic, 8, 4).plus_wrap(1)
 					obj_mosaic_v = Bits.get_seg_of_u16_certain(mosaic, 12, 4).plus_wrap(1)
 					obj_mosaic_dy = row_num.mod_by(obj_mosaic_v.to_u64())
-					var $fixed_x : I32
-					var $fixed_y : I32
+					var $bg2_fixed_x : I32
+					var $bg2_fixed_y : I32
 					bg2_mosaic_on = Bits.get_ith_bit_u16_certain(bgs_text.bg2.cnt, 6)
 					if bg2_mosaic_on {
 						dy = row_num.to_i32_wrap().minus_wrap(mosaic_y.to_i32_wrap())
-						$fixed_x = bg2.x.minus_wrap(bg2.pb.times_wrap(dy))
-						$fixed_y = bg2.y.minus_wrap(bg2.pd.times_wrap(dy))
+						$bg2_fixed_x = bg2.x.minus_wrap(bg2.pb.times_wrap(dy))
+						$bg2_fixed_y = bg2.y.minus_wrap(bg2.pd.times_wrap(dy))
 					} else {
-						$fixed_x = bg2.x
-						$fixed_y = bg2.y
+						$bg2_fixed_x = bg2.x
+						$bg2_fixed_y = bg2.y
+					}
+					var $bg3_fixed_x : I32
+					var $bg3_fixed_y : I32
+					bg3_mosaic_on = Bits.get_ith_bit_u16_certain(bgs_text.bg3.cnt, 6)
+					if bg3_mosaic_on {
+						dy = row_num.to_i32_wrap().minus_wrap(mosaic_y.to_i32_wrap())
+						$bg3_fixed_x = bg3.x.minus_wrap(bg3.pb.times_wrap(dy))
+						$bg3_fixed_y = bg3.y.minus_wrap(bg3.pd.times_wrap(dy))
+					} else {
+						$bg3_fixed_x = bg3.x
+						$bg3_fixed_y = bg3.y
 					}
 					var $obj_latch = {
 						pixel: Transparent,
@@ -129,13 +142,28 @@ Ppu :: { framebuffer : List(U16) }.{
 						var $second = Transparent
 						var $second_priority = 4.U16
 						var $second_layer = 5.U8
-						if mode == 0 {
-							var $j = 0.U64
-							while $j < 4 {
+						dx = ($i - mosaic_x).to_i32_wrap()
+						(sample_bg2_fixed_x, sample_bg2_fixed_y) = if bg2_mosaic_on {
+							($bg2_fixed_x.minus_wrap(bg2.pa.times_wrap(dx)), $bg2_fixed_y.minus_wrap(bg2.pc.times_wrap(dx)))
+						} else {
+							($bg2_fixed_x, $bg2_fixed_y)
+						}
+						(sample_bg3_fixed_x, sample_bg3_fixed_y) = if bg3_mosaic_on {
+							($bg3_fixed_x.minus_wrap(bg3.pa.times_wrap(dx)), $bg3_fixed_y.minus_wrap(bg3.pc.times_wrap(dx)))
+						} else {
+							($bg3_fixed_x, $bg3_fixed_y)
+						}
+						if mode <= 2 {
+							var $j = if (mode == 2) 2.U64 else 0.U64 # Iterating BGs
+							while $j < (if (mode == 1) 3 else 4) {
 								if Bits.get_ith_bit_u16_certain(dispcnt, (8 + $j).to_u8_wrap())
 									and Bits.get_ith_bit_u16_certain(layer_mask, $j.to_u8_wrap()) {
 									bg = bgs.get($j)?
-									tmp = if Bits.get_ith_bit_u16_certain(bg.cnt, 6) {
+									tmp = if $j == 2 and (mode == 1 or mode == 2) {
+										sample_affine_bg(vram, paletteram, bg.cnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
+									} else if mode == 2 and $j == 3 {
+										sample_affine_bg(vram, paletteram, bg.cnt, sample_bg3_fixed_x, sample_bg3_fixed_y)?
+									} else if Bits.get_ith_bit_u16_certain(bg.cnt, 6) {
 										sample_text_bg(vram, paletteram, bg, mosaic_x, mosaic_y)?
 									} else {
 										sample_text_bg(vram, paletteram, bg, $i, row_num)?
@@ -158,13 +186,12 @@ Ppu :: { framebuffer : List(U16) }.{
 							}
 						} else {
 							if Bits.get_ith_bit_u16_certain(dispcnt, 10) and Bits.get_ith_bit_u16_certain(layer_mask, 2) {
-								(sample_fixed_x, sample_fixed_y) = if bg2_mosaic_on {
-									dx = ($i - mosaic_x).to_i32_wrap()
-									($fixed_x.minus_wrap(bg2.pa.times_wrap(dx)), $fixed_y.minus_wrap(bg2.pc.times_wrap(dx)))
-								} else {
-									($fixed_x, $fixed_y)
+								tmp = match mode {
+									3 => sample_mode3_bg(vram, sample_bg2_fixed_x, sample_bg2_fixed_y)?
+									4 => sample_mode4_bg(vram, paletteram, dispcnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
+									_ => sample_mode5_bg(vram, dispcnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
 								}
-								match sample_mode3_bg(vram, sample_fixed_x, sample_fixed_y)? {
+								match tmp {
 									Color(c) => {
 										$intermediate = Color(c)
 										$best_priority = Bits.get_seg_of_u16_certain(bgs_text.bg2.cnt, 0, 2)
@@ -217,9 +244,13 @@ Ppu :: { framebuffer : List(U16) }.{
 						} else {
 							$new_fb.set(starting_idx.plus_wrap($i), color)?
 						}
-						if mode == 3 {
-							$fixed_x = $fixed_x.plus_wrap(bg2.pa)
-							$fixed_y = $fixed_y.plus_wrap(bg2.pc)
+						if mode >= 1 and mode <= 5 {
+							$bg2_fixed_x = $bg2_fixed_x.plus_wrap(bg2.pa)
+							$bg2_fixed_y = $bg2_fixed_y.plus_wrap(bg2.pc)
+						}
+						if mode == 2 {
+							$bg3_fixed_x = $bg3_fixed_x.plus_wrap(bg3.pa)
+							$bg3_fixed_y = $bg3_fixed_y.plus_wrap(bg3.pc)
 						}
 						$i = $i + 1
 					}
@@ -663,6 +694,62 @@ sample_mode3_bg = |vram, fixed_x, fixed_y| {
 		(source_x, source_y) = (fixed_x // 256, fixed_y // 256)
 		offset = 2 * (source_y * 240 + source_x)
 		Ok(Color(read_rgb555(vram, offset.to_u64_wrap())?))
+	}
+}
+
+sample_mode4_bg : List(U8), List(U8), U16, I32, I32 -> Try([Transparent, Color(U16)], [OutOfBounds])
+sample_mode4_bg = |vram, paletteram, dispcnt, fixed_x, fixed_y| {
+	if fixed_x >= 240 * 256 or fixed_x < 0 or fixed_y >= 160 * 256 or fixed_y < 0 {
+		Ok(Transparent)
+	} else {
+		(source_x, source_y) = (fixed_x // 256, fixed_y // 256)
+		# 0xA000 is literally some value set by GBA hardware, ok I guess.
+		page_base = if (Bits.get_ith_bit_u16_certain(dispcnt, 4)) 0xA000.I32 else 0
+		offset = (page_base.plus_wrap(source_y.times_wrap(240)).plus_wrap(source_x)).to_u64_wrap()
+		idx = List.get(vram, offset)?.to_u64()
+		if idx == 0 {
+			Ok(Transparent)
+		} else {
+			Ok(Color(read_rgb555(paletteram, idx * 2)?))
+		}
+	}
+}
+
+sample_mode5_bg : List(U8), U16, I32, I32 -> Try([Transparent, Color(U16)], [OutOfBounds])
+sample_mode5_bg = |vram, dispcnt, fixed_x, fixed_y| {
+	if fixed_x >= 160 * 256 or fixed_x < 0 or fixed_y >= 128 * 256 or fixed_y < 0 {
+		Ok(Transparent)
+	} else {
+		(source_x, source_y) = (fixed_x // 256, fixed_y // 256)
+		# 0xA000 is literally some value set by GBA hardware, ok I guess.
+		page_base = if (Bits.get_ith_bit_u16_certain(dispcnt, 4)) 0xA000.I32 else 0
+		offset = page_base.plus_wrap(source_y.times_wrap(160).plus_wrap(source_x).times_wrap(2)).to_u64_wrap()
+		Ok(Color(read_rgb555(vram, offset)?))
+	}
+}
+
+sample_affine_bg : List(U8), List(U8), U16, I32, I32 -> Try([Transparent, Color(U16)], [OutOfBounds])
+sample_affine_bg = |vram, paletteram, cnt, fixed_x, fixed_y| {
+	tile_base = Bits.get_seg_of_u16_certain(cnt, 2, 2).times_wrap(0x4000).to_u64()
+	map_base = Bits.get_seg_of_u16_certain(cnt, 8, 5).times_wrap(0x800).to_u64()
+	size = (128.U32).shl_wrap(Bits.get_seg_of_u16_certain(cnt, 14, 2).to_u8_wrap())
+	fixed_size = size * 256
+	if !Bits.get_ith_bit_u16_certain(cnt, 13) and
+		(fixed_x >= fixed_size.to_i32_wrap() or fixed_y >= fixed_size.to_i32_wrap() or fixed_x < 0 or fixed_y < 0) {
+		Ok(Transparent)
+	} else {
+		source_x = (fixed_x.to_u32_wrap().bitwise_and(fixed_size - 1) // 256).to_u64()
+		source_y = (fixed_y.to_u32_wrap().bitwise_and(fixed_size - 1) // 256).to_u64()
+		tile_x = source_x // 8
+		tile_y = source_y // 8
+		pixel_x = source_x.mod_by(8)
+		pixel_y = source_y.mod_by(8)
+		entry_offset = map_base.plus_wrap(tile_y.times_wrap(size.to_u64() // 8)).plus_wrap(tile_x)
+		if (entry_offset >= 0x10000) return Err(OutOfBounds) # No more than 64KiB
+		tile_num = List.get(vram, entry_offset)?
+		pixel_offset = tile_base.plus_wrap(tile_num.to_u64() * 64).plus_wrap(pixel_y * 8).plus_wrap(pixel_x)
+		idx = List.get(vram, pixel_offset)?.to_u64()
+		if (idx == 0) Ok(Transparent) else Ok(Color(read_rgb555(paletteram, idx * 2)?))
 	}
 }
 

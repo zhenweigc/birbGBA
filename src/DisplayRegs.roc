@@ -37,6 +37,10 @@ DisplayRegs :: {
 	bg3xh : U16,
 	bg3yl : U16,
 	bg3yh : U16,
+	bg3_internal_x : I32,
+	bg3_internal_y : I32,
+	bg3_x_written_in_hblank : Bool,
+	bg3_y_written_in_hblank : Bool,
 	win0h : U16,
 	win1h : U16,
 	win0v : U16,
@@ -77,6 +81,10 @@ DisplayRegs :: {
 			bg2xh: 0,
 			bg2yl: 0,
 			bg2yh: 0,
+			bg2_internal_x: 0,
+			bg2_internal_y: 0,
+			bg2_x_written_in_hblank: False,
+			bg2_y_written_in_hblank: False,
 			bg3pa: 0x100,
 			bg3pb: 0,
 			bg3pc: 0,
@@ -85,10 +93,10 @@ DisplayRegs :: {
 			bg3xh: 0,
 			bg3yl: 0,
 			bg3yh: 0,
-			bg2_internal_x: 0,
-			bg2_internal_y: 0,
-			bg2_x_written_in_hblank: False,
-			bg2_y_written_in_hblank: False,
+			bg3_internal_x: 0,
+			bg3_internal_y: 0,
+			bg3_x_written_in_hblank: False,
+			bg3_y_written_in_hblank: False,
 			win0h: 0,
 			win1h: 0,
 			win0v: 0,
@@ -452,10 +460,26 @@ DisplayRegs :: {
 			0x32 => Ok({ ..rgs, bg3pb: val })
 			0x34 => Ok({ ..rgs, bg3pc: val })
 			0x36 => Ok({ ..rgs, bg3pd: val })
-			0x38 => Ok({ ..rgs, bg3xl: val })
-			0x3A => Ok({ ..rgs, bg3xh: val.bitwise_and(0x0FFF) })
-			0x3C => Ok({ ..rgs, bg3yl: val })
-			0x3E => Ok({ ..rgs, bg3yh: val.bitwise_and(0x0FFF) })
+			0x38 => {
+				new_rgs = { ..rgs, bg3xl: val }
+				i32s = get_bg3_affine(new_rgs)
+				Ok({ ..new_rgs, bg3_internal_x: i32s.x, bg3_x_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
+			0x3A => {
+				new_rgs = { ..rgs, bg3xh: val.bitwise_and(0x0FFF) }
+				i32s = get_bg3_affine(new_rgs)
+				Ok({ ..new_rgs, bg3_internal_x: i32s.x, bg3_x_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
+			0x3C => {
+				new_rgs = { ..rgs, bg3yl: val }
+				i32s = get_bg3_affine(new_rgs)
+				Ok({ ..new_rgs, bg3_internal_y: i32s.y, bg3_y_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
+			0x3E => {
+				new_rgs = { ..rgs, bg3yh: val.bitwise_and(0x0FFF) }
+				i32s = get_bg3_affine(new_rgs)
+				Ok({ ..new_rgs, bg3_internal_y: i32s.y, bg3_y_written_in_hblank: Bits.get_ith_bit_u16_certain(rgs.dispstat, 1) })
+			}
 			0x40 => Ok({ ..rgs, win0h: val })
 			0x42 => Ok({ ..rgs, win1h: val })
 			0x44 => Ok({ ..rgs, win0v: val })
@@ -513,12 +537,19 @@ DisplayRegs :: {
 		mode = Bits.get_seg_of_u16_certain(rgs.dispcnt, 0, 3)
 		mask = (if (advanced_vcount == 160 and Bits.get_ith_bit_u16_certain(rgs.dispstat, 3)) 1 else 0)
 			+ (if (bit2 == 1 and Bits.get_ith_bit_u16_certain(rgs.dispstat, 5)) 0b100 else 0)
-		stepped_rgs = if rgs.vcount < 160
+		stepped_bg2_rgs = if rgs.vcount < 160
 			and Bits.get_ith_bit_u16_certain(rgs.dispcnt, 10)
 			and (mode <= 5 and mode >= 1) {
 			advance_bg2_reference(rgs)
 		} else {
 			rgs
+		}
+		stepped_rgs = if stepped_bg2_rgs.vcount < 160
+			and mode == 2
+			and Bits.get_ith_bit_u16_certain(stepped_bg2_rgs.dispcnt, 11) {
+			advance_bg3_reference(stepped_bg2_rgs)
+		} else {
+			stepped_bg2_rgs
 		}
 		new_rgs = {
 			..stepped_rgs,
@@ -528,10 +559,14 @@ DisplayRegs :: {
 			bg2_internal_y: if (rgs.bg2_y_written_in_hblank) rgs.bg2_internal_y else stepped_rgs.bg2_internal_y,
 			bg2_x_written_in_hblank: False,
 			bg2_y_written_in_hblank: False,
+			bg3_internal_x: if (rgs.bg3_x_written_in_hblank) rgs.bg3_internal_x else stepped_rgs.bg3_internal_x,
+			bg3_internal_y: if (rgs.bg3_y_written_in_hblank) rgs.bg3_internal_y else stepped_rgs.bg3_internal_y,
+			bg3_x_written_in_hblank: False,
+			bg3_y_written_in_hblank: False,
 			win0_y_active: step_window_y(rgs.win0_y_active, rgs.win0v, advanced_vcount),
 			win1_y_active: step_window_y(rgs.win1_y_active, rgs.win1v, advanced_vcount),
 		}
-		(if (advanced_vcount == 0) reload_bg2_reference(new_rgs) else new_rgs, mask)
+		(if (advanced_vcount == 0) reload_bg3_reference(reload_bg2_reference(new_rgs)) else new_rgs, mask)
 	}
 
 	enter_hblank : DisplayRegs -> (DisplayRegs, U16)
@@ -635,6 +670,50 @@ DisplayRegs :: {
 	reload_bg2_reference = |rgs| {
 		i32s = get_bg2_affine(rgs)
 		{ ..rgs, bg2_internal_x: i32s.x, bg2_internal_y: i32s.y }
+	}
+
+	get_bg3_affine : DisplayRegs -> {
+		pa : I32,
+		pb : I32,
+		pc : I32,
+		pd : I32,
+		x : I32,
+		y : I32,
+	}
+	get_bg3_affine = |rgs| {
+		two_comp_transform_u16 : U16 -> I32
+		two_comp_transform_u16 = |x| if (Bits.get_ith_bit_u16_certain(x, 15)) x.to_i32().minus_wrap(65536) else x.to_i32()
+		two_comp_transform_u32 : U16, U16 -> I32
+		two_comp_transform_u32 = |lo, hi| {
+			if Bits.get_ith_bit_u16_certain(hi, 11) {
+				lo.to_i32() + hi.bitwise_and(0b1111_1111_1111).to_i32().shl_wrap(16) - 0x10000000
+			} else {
+				lo.to_i32() + hi.bitwise_and(0b1111_1111_1111).to_i32().shl_wrap(16)
+			}
+		}
+		{
+			pa: two_comp_transform_u16(rgs.bg3pa),
+			pb: two_comp_transform_u16(rgs.bg3pb),
+			pc: two_comp_transform_u16(rgs.bg3pc),
+			pd: two_comp_transform_u16(rgs.bg3pd),
+			x: two_comp_transform_u32(rgs.bg3xl, rgs.bg3xh),
+			y: two_comp_transform_u32(rgs.bg3yl, rgs.bg3yh),
+		}
+	}
+
+	get_bg3_internal_reference : DisplayRegs -> { x : I32, y : I32 }
+	get_bg3_internal_reference = |rgs| { x: rgs.bg3_internal_x, y: rgs.bg3_internal_y }
+
+	advance_bg3_reference : DisplayRegs -> DisplayRegs
+	advance_bg3_reference = |rgs| {
+		i32s = get_bg3_affine(rgs)
+		{ ..rgs, bg3_internal_x: rgs.bg3_internal_x.plus_wrap(i32s.pb), bg3_internal_y: rgs.bg3_internal_y.plus_wrap(i32s.pd) }
+	}
+
+	reload_bg3_reference : DisplayRegs -> DisplayRegs
+	reload_bg3_reference = |rgs| {
+		i32s = get_bg3_affine(rgs)
+		{ ..rgs, bg3_internal_x: i32s.x, bg3_internal_y: i32s.y }
 	}
 }
 
