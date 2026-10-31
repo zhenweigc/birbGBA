@@ -1,6 +1,8 @@
 .zig-cache/
 *.bin
 /runner
+/window
+/birbgba
 *.gba
 *.png
 *.lib

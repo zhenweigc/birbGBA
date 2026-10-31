@@ -3,12 +3,19 @@
 ## Goal
 Rn it will just being able to run some offical ROMs, without crashing during playthrough of course.
 
+## Some Progress here
+![Cult of GBA's BIOS running in birbGBA](docs/images/progress.png)
+
+With the minimal RocRay frontend, birbGBA can run this bios now.
+No sound/input supported rn though.
+
 ## Behavior references:
-- ARM DDI 0100I technical reference manual
+- ARM DDI 0100I Architecture Reference Manual
 - Nintendo Gba Manual V1.1
-- GBATek by Martin Korth, author of NoCashGBA
-- mGBA
-- NanoBoyAdvance
+- [GBATEK](https://mgba-emu.github.io/gbatek/gba.html) by Martin Korth, author of NoCashGBA
+- [mGBA](https://github.com/mgba-emu/mgba)
+- [NanoBoyAdvance](https://codeberg.org/nba-emu/NanoBoyAdvance)
+- [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
 - Many more tech blogs, will write them in later
 
 ## License

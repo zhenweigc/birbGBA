@@ -201,6 +201,27 @@ Machine :: {
 			{ ..m, bus: { ..m.bus, io_regs: updated } }
 		}
 	}
+
+	run_until : Machine,
+	U64,
+	U32 -> Try(
+		{
+			machine : Machine,
+			reason : [ReachedTarget, BudgetExhausted, Stopped],
+		},
+		_,
+	)
+	run_until = |m, target, num_of_actions| {
+		if m.now >= target {
+			Ok({ machine: m, reason: ReachedTarget })
+		} else if m.power_state == Stopped {
+			Ok({ machine: m, reason: Stopped })
+		} else if num_of_actions == 0 {
+			Ok({ machine: m, reason: BudgetExhausted })
+		} else {
+			run_until(run_with_budget(m, 1)?, target, num_of_actions - 1)
+		}
+	}
 }
 
 walk_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
