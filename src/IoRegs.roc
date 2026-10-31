@@ -112,7 +112,8 @@ IoRegs := {
 				Ok({ ..rgs, serials: SerialRegs.write8(rgs.serials, addr, val)? })
 			}
 			offset if offset >= 0x130 and offset < 0x134 => {
-				Ok({ ..rgs, keys: KeyRegs.write8(rgs.keys, addr, val)? })
+				updated = { ..rgs, keys: KeyRegs.write8(rgs.keys, addr, val)? }
+				if (offset == 0x132 or offset == 0x133) Ok(check_key_irq(updated)) else Ok(updated)
 			}
 			offset if offset >= 0x134 and offset < 0x200 => {
 				Ok({ ..rgs, serials: SerialRegs.write8(rgs.serials, addr, val)? })
@@ -143,7 +144,8 @@ IoRegs := {
 				Ok({ ..rgs, serials: SerialRegs.write16(rgs.serials, addr, val)? })
 			}
 			offset if offset >= 0x130 and offset < 0x134 => {
-				Ok({ ..rgs, keys: KeyRegs.write16(rgs.keys, addr, val)? })
+				updated = { ..rgs, keys: KeyRegs.write16(rgs.keys, addr, val)? }
+				if (offset == 0x132) Ok(check_key_irq(updated)) else Ok(updated)
 			}
 			offset if offset >= 0x134 and offset < 0x200 => {
 				Ok({ ..rgs, serials: SerialRegs.write16(rgs.serials, addr, val)? })
@@ -174,7 +176,8 @@ IoRegs := {
 				Ok({ ..rgs, serials: SerialRegs.write32(rgs.serials, addr, val)? })
 			}
 			offset if offset >= 0x130 and offset < 0x134 => {
-				Ok({ ..rgs, keys: KeyRegs.write32(rgs.keys, addr, val)? })
+				updated = { ..rgs, keys: KeyRegs.write32(rgs.keys, addr, val)? }
+				if (offset == 0x130) Ok(check_key_irq(updated)) else Ok(updated)
 			}
 			offset if offset >= 0x134 and offset < 0x200 => {
 				Ok({ ..rgs, serials: SerialRegs.write32(rgs.serials, addr, val)? })
@@ -185,6 +188,13 @@ IoRegs := {
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
+
+	set_pressed : IoRegs, U16 -> IoRegs
+	set_pressed = |rgs, pressed| {
+		new_keys = KeyRegs.set_pressed(rgs.keys, pressed)
+		updated = { ..rgs, keys: new_keys }
+		check_key_irq(updated)
+	}
 }
 
 catch_read_side_effect : IoRegs, [Unchanged, Updated(SerialRegs)] -> [Unchanged, Updated(IoRegs)]
@@ -193,4 +203,11 @@ catch_read_side_effect = |rgs, reg| {
 		Updated(new_reg) => Updated({ ..rgs, serials: new_reg })
 		_ => Unchanged
 	}
+}
+
+check_key_irq : IoRegs -> IoRegs
+check_key_irq = |rgs| {
+	(new_keys, should_request) = KeyRegs.poll_irq(rgs.keys)
+	updated = { ..rgs, keys: new_keys }
+	if (should_request) { ..updated, system: SystemRegs.hardware_request_interrupts(rgs.system, 0x1000) } else updated
 }

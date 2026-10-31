@@ -18,6 +18,9 @@ SystemRegs :: {
 		haltcnt: None(0),
 	}
 
+	get_interrupt_enables : SystemRegs -> U16
+	get_interrupt_enables = |rgs| rgs.interrupt_enables
+
 	read8 : SystemRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
 	read8 = |rgs, addr| {
 		match addr {

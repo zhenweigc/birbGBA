@@ -7,6 +7,8 @@ import DisplayRegs
 import TimerRegs
 import DmaRegs
 import SoundRegs
+import IoRegs
+import KeyRegs
 
 FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
@@ -183,6 +185,22 @@ Machine :: {
 			}
 		}
 	}
+
+	set_pressed : Machine, U16 -> Machine
+	set_pressed = |m, pressed| {
+		if m.power_state == Stopped {
+			new_keys = KeyRegs.set_pressed(m.bus.io_regs.keys, pressed)
+			if KeyRegs.can_key_irq(new_keys)
+				and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(m.bus.io_regs.system), 12) {
+				{ ..m, bus: { ..m.bus, io_regs: { ..m.bus.io_regs, keys: new_keys } }, power_state: Running }
+			} else {
+				{ ..m, bus: { ..m.bus, io_regs: { ..m.bus.io_regs, keys: new_keys } } }
+			}
+		} else {
+			updated = IoRegs.set_pressed(m.bus.io_regs, pressed)
+			{ ..m, bus: { ..m.bus, io_regs: updated } }
+		}
+	}
 }
 
 walk_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
@@ -245,7 +263,8 @@ walk_execution_state = |before_dma, state| {
 					Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
 						Halted
 					} else {
-						Stopped
+						if (KeyRegs.can_key_irq(new_ioregs.keys)
+							and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(new_ioregs.system), 12)) Running else Stopped
 					}
 				},
 			})
