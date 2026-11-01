@@ -6,3 +6,5 @@
 *.gba
 *.png
 *.lib
+*.rrstats
+*.data

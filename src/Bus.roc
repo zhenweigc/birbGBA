@@ -1,5 +1,6 @@
 import MemoryRegion
 import IoRegs
+import SystemRegs
 import Bits
 
 ReadResult(val_type, type) : {
@@ -450,7 +451,8 @@ Bus := {
 				_ => Ok(1)
 			}
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-				wait_cnt = IoRegs.read16(bus.io_regs, 0x204)?.val
+				# Just to save some memcpy I had to break the encapsulation :)
+				wait_cnt = SystemRegs.read16(bus.io_regs.system, 0x204)?
 				two_bits = match region {
 					GamePakROMWS0 => Bits.get_seg_of_u16_certain(wait_cnt, 2, 2)
 					GamePakROMWS1 => Bits.get_seg_of_u16_certain(wait_cnt, 5, 2)

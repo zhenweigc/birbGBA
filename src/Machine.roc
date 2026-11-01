@@ -124,30 +124,10 @@ Machine :: {
 
 	run_with_budget : Machine, U32 -> Try(Machine, _)
 	run_with_budget = |m, num_of_actions| {
-		if num_of_actions == 0 {
+		if num_of_actions == 0 or m.power_state == Stopped {
 			Ok(m)
 		} else {
-			match m.power_state {
-				Running => run_with_budget(step_forward(m)?, num_of_actions - 1)
-				Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => run_with_budget(step_forward(m)?, num_of_actions - 1)
-				Halted => {
-					after_dma = match deal_with_dma(m)? {
-						DMAHandled(done) => return run_with_budget(done, num_of_actions - 1)
-						NoDMA(available) => available
-					}
-					next_lcd_time = after_dma.next_lcd_at
-					next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
-					next_dma_time = DmaRegs.next_ready_at(after_dma.bus.io_regs.dmas)
-					closest_next = match (next_timer_time, next_dma_time) {
-						(None, None) => next_lcd_time
-						(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
-						(At(x), At(y)) => next_lcd_time.min(x).min(y)
-					}
-					new_m = Machine.advance_to(after_dma, closest_next)?
-					run_with_budget(new_m, num_of_actions - 1)
-				}
-				Stopped => Ok(m)
-			}
+			run_with_budget(run_one_action(m)?, num_of_actions - 1)
 		}
 	}
 
@@ -164,8 +144,10 @@ Machine :: {
 				At(t) => t.min(m.next_lcd_at)
 			}
 			if at <= target {
-				(new_machine, _) = process_event_at(m, at, timer_at)?
-				advance_to(new_machine, target)
+				# Well yes we can literally use recursion here
+				# But it seems like to downgrade the performance
+				# So this func will call a (almost identical) recursive version
+				advance_events_to(m, target)
 			} else {
 				Ok({
 					..m,
@@ -219,15 +201,25 @@ Machine :: {
 		} else if num_of_actions == 0 {
 			Ok({ machine: m, reason: BudgetExhausted })
 		} else {
-			run_until(run_with_budget(m, 1)?, target, num_of_actions - 1)
+			run_until(run_one_action(m)?, target, num_of_actions - 1)
 		}
 	}
 }
 
+# Have to cut of the OG big recursive func into several pieces
+# Just for better perf and less memcpy
 walk_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
-walk_execution_state = |before_dma, state| {
-	# Here comes DMA IO 'interruption', it can occupy the bus in the middle of IO
-	# under some scenarios
+walk_execution_state = |m, state| {
+	match state {
+		Complete(done) => complete_execution(m, done)
+		_ => walk_memory_execution_state(m, state)
+	}
+}
+
+walk_memory_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
+walk_memory_execution_state = |before_dma, state| {
+	# Here comes DMA IO 'interruption',
+	# It can occupy the bus in the middle of IO under some scenarios
 	can_yield : Cpu.Execution_state -> Bool
 	can_yield = |e_state| {
 		match e_state {
@@ -258,38 +250,7 @@ walk_execution_state = |before_dma, state| {
 		before_dma
 	}
 	match state {
-		Complete(done) => {
-			cycle_consumed_machine = Machine.advance_to(m, m.now + done.remaining_cycles)?
-			c = done.cpu
-			completed = if done.remaining_cycles > 0 {
-				mark_fetch_nonsequential({ ..cycle_consumed_machine, cpu: done.cpu })
-			} else {
-				{ ..cycle_consumed_machine, cpu: done.cpu }
-			}
-			pipeline_side_effect_considered = match done.pc_status {
-				PCSequential => completed
-				PCWritten => reload_pipeline(completed)?
-			}
-			# Luckily, for halt command which happens in the middle of a batch write in,
-			# we do not need to interrupt the opcode and immediately enter Cpu Pause mode.
-			(new_system, req) = SystemRegs.process_haltcnt(pipeline_side_effect_considered.bus.io_regs.system)
-			new_ioregs = { ..pipeline_side_effect_considered.bus.io_regs, system: new_system }
-			new_bus = { ..pipeline_side_effect_considered.bus, io_regs: new_ioregs }
-			Ok({
-				..pipeline_side_effect_considered,
-				cpu: c,
-				bus: new_bus,
-				power_state: match req {
-					NoReq => pipeline_side_effect_considered.power_state
-					Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
-						Halted
-					} else {
-						if (KeyRegs.can_key_irq(new_ioregs.keys)
-							and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(new_ioregs.system), 12)) Running else Stopped
-					}
-				},
-			})
-		}
+		Complete(done) => complete_execution(m, done)
 		R(box) => {
 			cycles = Bus.base_access_cycles(m.bus, box.width, box.addr, box.access_kind)?
 			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
@@ -314,7 +275,7 @@ walk_execution_state = |before_dma, state| {
 				raw_val,
 				box.continuation,
 			)?
-			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus }), cpu_continue)
+			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus }), cpu_continue)
 		}
 		W(box) => {
 			cur_addr = Cpu.getPC(m.cpu)
@@ -350,7 +311,7 @@ walk_execution_state = |before_dma, state| {
 				box.cpu,
 				box.continuation,
 			)?
-			walk_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), cpu_continue)
+			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), cpu_continue)
 		}
 	}
 }
@@ -690,9 +651,14 @@ reload_pipeline = |m| {
 # a new machine with the pipeline field refreshed
 # CPU and its PC are unchanged
 take_opcode : Machine -> Try((Machine, FetchedCode), _)
-take_opcode = |m| {
+take_opcode = |before| {
+	# Eliminate a un-necessary recursion as reload_pipeline() always gives Ready(_)
+	m = match before.pipeline {
+		Empty => reload_pipeline(before)?
+		Ready(_) => before
+	}
 	match m.pipeline {
-		Empty => take_opcode(reload_pipeline(m)?)
+		Empty => Err(WTFisThis)
 		Ready(x) => {
 			first = x.first
 			second = x.second
@@ -738,5 +704,100 @@ accept_pending_irq = |m| {
 		reload_pipeline({ ..advanced, cpu: irq_cpu })
 	} else {
 		Ok(m)
+	}
+}
+
+advance_events_to : Machine, U64 -> Try(Machine, _)
+advance_events_to = |m, target| {
+	if m.power_state == Stopped {
+		Ok(m)
+	} else if target < m.now {
+		Err(WrongEventTime)
+	} else {
+		timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+		at = match timer_at {
+			None => m.next_lcd_at
+			At(t) => t.min(m.next_lcd_at)
+		}
+		if at <= target {
+			(new_machine, _) = process_event_at(m, at, timer_at)?
+			advance_events_to(new_machine, target)
+		} else {
+			Ok({
+				..m,
+				bus: {
+					..m.bus,
+					io_regs: {
+						..m.bus.io_regs,
+						timers: TimerRegs.sync_idle_to_known_next(
+							m.bus.io_regs.timers,
+							target,
+							timer_at,
+						)?,
+					},
+				},
+				now: target,
+			})
+		}
+	}
+}
+
+complete_execution : Machine, Cpu.Execution_outcome -> Try(Machine, _)
+complete_execution = |m, done| {
+	# You might think this is retarded branching, but eh, this does save us from some useless memcpy :)
+	cycle_consumed_machine = if (done.remaining_cycles == 0) m else Machine.advance_to(m, m.now + done.remaining_cycles)?
+	c = done.cpu
+	completed = if done.remaining_cycles > 0 {
+		mark_fetch_nonsequential({ ..cycle_consumed_machine, cpu: done.cpu })
+	} else {
+		{ ..cycle_consumed_machine, cpu: done.cpu }
+	}
+	pipeline_side_effect_considered = match done.pc_status {
+		PCSequential => completed
+		PCWritten => reload_pipeline(completed)?
+	}
+	# Luckily, for halt command which happens in the middle of a batch write in,
+	# we do not need to interrupt the opcode and immediately enter Cpu Pause mode.
+	(new_system, req) = SystemRegs.process_haltcnt(pipeline_side_effect_considered.bus.io_regs.system)
+	new_ioregs = { ..pipeline_side_effect_considered.bus.io_regs, system: new_system }
+	new_bus = { ..pipeline_side_effect_considered.bus, io_regs: new_ioregs }
+	Ok({
+		..pipeline_side_effect_considered,
+		cpu: c,
+		bus: new_bus,
+		power_state: match req {
+			NoReq => pipeline_side_effect_considered.power_state
+			Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
+				Halted
+			} else {
+				if (KeyRegs.can_key_irq(new_ioregs.keys)
+					and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(new_ioregs.system), 12)) Running else Stopped
+			}
+		},
+	})
+}
+
+run_one_action : Machine -> Try(Machine, _)
+run_one_action = |m| {
+	match m.power_state {
+		Running => Machine.step_forward(m)
+		Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => Machine.step_forward(m)
+		Halted => {
+			after_dma = match deal_with_dma(m)? {
+				DMAHandled(done) => return Ok(done)
+				NoDMA(available) => available
+			}
+			next_lcd_time = after_dma.next_lcd_at
+			next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
+			next_dma_time = DmaRegs.next_ready_at(after_dma.bus.io_regs.dmas)
+			closest_next = match (next_timer_time, next_dma_time) {
+				(None, None) => next_lcd_time
+				(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
+				(At(x), At(y)) => next_lcd_time.min(x).min(y)
+			}
+			new_m = Machine.advance_to(after_dma, closest_next)?
+			Ok(new_m)
+		}
+		Stopped => Ok(m)
 	}
 }
