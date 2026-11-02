@@ -1,6 +1,19 @@
 import Bits
 
 KeyRegs :: { keyinput : U16, keycnt : U16, last_irq_pressed : [None, Some(U16)] }.{
+	key_masks = {
+		a: 0b1.U16,
+		b: 0b10.U16,
+		select: 0b100.U16,
+		start: 0b1000.U16,
+		right: 0b10000.U16,
+		left: 0b100000.U16,
+		up: 0b1000000.U16,
+		down: 0b10000000.U16,
+		r: 0b100000000.U16,
+		l: 0b1000000000.U16,
+	}
+
 	init : () -> KeyRegs
 	init = || {
 		keyinput: 0b11_1111_1111,
