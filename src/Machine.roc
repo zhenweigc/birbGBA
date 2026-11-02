@@ -17,7 +17,7 @@ Machine :: {
 	cpu : Cpu,
 	ppu : Ppu,
 	# Need to put unfinished Cpu IO status here when DMA hold the Bus
-	suspended_cpu : [None, Resume(Cpu.Execution_state)],
+	suspended_cpu : [None, Resume(Box(Cpu.Execution_state))],
 	power_state : [Running, Halted, Stopped],
 	# DMA Channels with lower priority are paused until channels with higher priority have completed.
 	dma_owner : [None, Channel(U8)],
@@ -76,7 +76,7 @@ Machine :: {
 				None => {}
 				Resume(e_state) => {
 					early_ret_m = { ..m, suspended_cpu: None }
-					return walk_execution_state(early_ret_m, e_state)
+					return walk_execution_state(early_ret_m, Box.unbox(e_state))
 				}
 			}
 			ready = accept_pending_irq(m)?
@@ -243,7 +243,7 @@ walk_memory_execution_state = |before_dma, state| {
 					Complete(_) => return Err(WTFisThis)
 				}
 				# Well DMA rush out first, so we gotta early return
-				return Ok({ ..done, suspended_cpu: Resume(resume_state) })
+				return Ok({ ..done, suspended_cpu: Resume(Box.box(resume_state)) })
 			}
 		}
 	} else {
@@ -268,7 +268,7 @@ walk_memory_execution_state = |before_dma, state| {
 			raw_val = intermediate.val
 			new_bus = match intermediate.state {
 				Unchanged => io_delay_applied_machine.bus
-				Updated(x) => x
+				Updated(x) => Box.unbox(x)
 			}
 			cpu_continue = Cpu.resume_read(
 				box.cpu,
@@ -476,7 +476,7 @@ timed_read = |m, width, addr, req_kind| {
 	}
 	new_bus = match intermediate.state {
 		Unchanged => advanced.bus
-		Updated(x) => x # Again, side effect of reading
+		Updated(x) => Box.unbox(x) # Again, side effect of reading
 	}
 	Ok(({ ..advanced, bus: new_bus }, intermediate.val))
 }

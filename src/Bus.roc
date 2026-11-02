@@ -5,7 +5,7 @@ import Bits
 
 ReadResult(val_type, type) : {
 	val : val_type,
-	state : [Unchanged, Updated(type)],
+	state : [Unchanged, Updated(Box(type))], # Put the bus struct on heap rather than stack
 }
 
 Bus := {
@@ -72,7 +72,7 @@ Bus := {
 					val: intermediate.val,
 					state: match intermediate.reg {
 						Unchanged => Unchanged
-						Updated(x) => Updated({ ..bus, io_regs: x })
+						Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
 					},
 				})
 			}
@@ -212,7 +212,7 @@ Bus := {
 						val: intermediate.val,
 						state: match intermediate.reg {
 							Unchanged => Unchanged
-							Updated(x) => Updated({ ..bus, io_regs: x })
+							Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
 						},
 					})
 				}
@@ -350,7 +350,7 @@ Bus := {
 						val: intermediate.val,
 						state: match intermediate.reg {
 							Unchanged => Unchanged
-							Updated(x) => Updated({ ..bus, io_regs: x })
+							Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
 						},
 					})
 				}
