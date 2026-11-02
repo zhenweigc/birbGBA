@@ -55,6 +55,7 @@ SoundRegs :: {
 	sound_cnth : U16,
 	sound_cntx : U16,
 	sound_bias : U16,
+	wave_ram : List(U8),
 	fifo_a : SoundFIFO,
 	fifo_b : SoundFIFO,
 }.{
@@ -70,6 +71,7 @@ SoundRegs :: {
 			sound_cnth: 0,
 			sound_cntx: 0,
 			sound_bias: 0x200,
+			wave_ram: List.repeat(0, 32),
 			fifo_a: sound_fifo_init(),
 			fifo_b: sound_fifo_init(),
 		}
@@ -106,7 +108,7 @@ SoundRegs :: {
 		}
 	}
 
-	read8 : SoundRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
+	read8 : SoundRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32), OutOfBounds])
 	read8 = |rgs, addr| {
 		match addr {
 			0x60 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111).to_u8_wrap())
@@ -228,11 +230,15 @@ SoundRegs :: {
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110).to_u8_wrap())
 			0x89 => Ok(rgs.sound_bias.shr_wrap(8).to_u8_wrap().bitwise_and(0b1100_0011))
 			0x8A | 0x8B => Ok(0)
+			offset if offset >= 0x90 and offset < 0xA0 => {
+				idx = wave_ram_index(rgs, offset)
+				rgs.wave_ram.get(idx)
+			}
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
-	read16 : SoundRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
+	read16 : SoundRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32), OutOfBounds])
 	read16 = |rgs, addr| {
 		match addr {
 			0x60 => Ok(rgs.sound1.sound1_cntl.bitwise_and(0b111_1111))
@@ -320,14 +326,19 @@ SoundRegs :: {
 			0x86 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110))
 			0x8A => Ok(0)
+			offset if offset >= 0x90 and offset < 0xA0 and offset.mod_by(2) == 0 => {
+				lo = read8(rgs, offset)?.to_u16()
+				hi = read8(rgs, offset + 1)?.to_u16()
+				Ok(lo.bitwise_or(hi.shl_wrap(8)))
+			}
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
-	read32 : SoundRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
+	read32 : SoundRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32), OutOfBounds])
 	read32 = |rgs, addr| {
 		match addr {
-			0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 | 0x78 | 0x7C | 0x80 | 0x84 | 0x88 => {
+			0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 | 0x78 | 0x7C | 0x80 | 0x84 | 0x88 | 0x90 | 0x94 | 0x98 | 0x9c => {
 				low = read16(rgs, addr)?.to_u32()
 				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
@@ -477,6 +488,10 @@ SoundRegs :: {
 				write16(rgs, 0x88, adjusted_val)
 			}
 			0x8A | 0x8B => Ok(rgs)
+			offset if offset >= 0x90 and offset < 0xA0 => {
+				idx = wave_ram_index(rgs, offset)
+				Ok({ ..rgs, wave_ram: rgs.wave_ram.set(idx, val)? })
+			}
 			0xA0 | 0xA1 | 0xA2 | 0xA3 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				Ok({ ..rgs, fifo_a: sound_fifo_push_byte(rgs.fifo_a, (addr - 0xA0).to_u8_wrap(), val)? })
 			} else Ok(rgs)
@@ -654,6 +669,9 @@ SoundRegs :: {
 			0x86 => Ok(rgs)
 			0x88 => Ok({ ..rgs, sound_bias: val.bitwise_and(0b1100_0011_1111_1110) })
 			0x8A => Ok(rgs)
+			offset if offset >= 0x90 and offset < 0xA0 and offset.mod_by(2) == 0 => {
+				write8(write8(rgs, offset, val.to_u8_wrap())?, offset + 1, val.shr_wrap(8).to_u8_wrap())
+			}
 			0xA0 | 0xA2 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				Ok({ ..rgs, fifo_a: sound_fifo_push_half(rgs.fifo_a, (addr - 0xA0).to_u8_wrap(), val)? })
 			} else Ok(rgs)
@@ -680,6 +698,7 @@ SoundRegs :: {
 			0x88 => write16(write16(rgs, 0x88, lo)?, 0x8A, 0)
 			0x68 => write16(write16(rgs, 0x68, lo)?, 0x6A, 0)
 			0x6C => write16(write16(rgs, 0x6C, lo)?, 0x6E, 0)
+			offset if offset >= 0x90 and offset < 0xA0 and offset.mod_by(4) == 0 => write16(write16(rgs, offset, lo)?, offset + 2, hi)
 			0xA0 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				Ok({ ..rgs, fifo_a: sound_fifo_push_word(rgs.fifo_a, val)? })
 			} else Ok(rgs)
@@ -844,4 +863,10 @@ sound_fifo_sample = |fifo| {
 sound_fifo_reset : SoundFIFO -> SoundFIFO
 sound_fifo_reset = |fifo| {
 	{ ..fifo, buffer: List.repeat(0, 7), read_pos: 0, count: 0 }
+}
+
+wave_ram_index : SoundRegs, U32 -> U64
+wave_ram_index = |rgs, offset| {
+	cpu_io_seg = Bits.get_seg_of_u16_certain(rgs.sound3.sound3_cntl, 6, 1).bitwise_xor(1).to_u64()
+	(cpu_io_seg * 16).plus_wrap(offset.minus(0x90).to_u64())
 }

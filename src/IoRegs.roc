@@ -33,7 +33,7 @@ IoRegs := {
 		}
 	}
 
-	read8 : IoRegs, U32 -> Try(ReadResult(U8, IoRegs), [UnsupportedIORegOffset(U32)])
+	read8 : IoRegs, U32 -> Try(ReadResult(U8, IoRegs), [UnsupportedIORegOffset(U32), OutOfBounds])
 	read8 = |rgs, addr| {
 		match addr {
 			offset if offset >= 0 and offset < 0x60 => Ok({ val: DisplayRegs.read8(rgs.display, addr)?, reg: Unchanged })
@@ -53,7 +53,7 @@ IoRegs := {
 		}
 	}
 
-	read16 : IoRegs, U32 -> Try(ReadResult(U16, IoRegs), [UnsupportedIORegOffset(U32)])
+	read16 : IoRegs, U32 -> Try(ReadResult(U16, IoRegs), [UnsupportedIORegOffset(U32), OutOfBounds])
 	read16 = |rgs, addr| {
 		match addr {
 			offset if offset >= 0 and offset < 0x60 => Ok({ val: DisplayRegs.read16(rgs.display, addr)?, reg: Unchanged })
@@ -73,7 +73,7 @@ IoRegs := {
 		}
 	}
 
-	read32 : IoRegs, U32 -> Try(ReadResult(U32, IoRegs), [UnsupportedIORegOffset(U32)])
+	read32 : IoRegs, U32 -> Try(ReadResult(U32, IoRegs), [UnsupportedIORegOffset(U32), OutOfBounds])
 	read32 = |rgs, addr| {
 		match addr {
 			offset if offset >= 0 and offset < 0x60 => Ok({ val: DisplayRegs.read32(rgs.display, addr)?, reg: Unchanged })
