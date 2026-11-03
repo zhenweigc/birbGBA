@@ -67,9 +67,10 @@ Machine :: {
 
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |before_dma| {
-		m = match deal_with_dma(before_dma)? {
-			DMAHandled(done) => return Ok(done)
-			NoDMA(available) => available
+		m = if no_dma(before_dma) {
+			before_dma
+		} else {
+			return deal_with_dma(before_dma)
 		}
 		if m.power_state == Running {
 			match m.suspended_cpu {
@@ -79,7 +80,15 @@ Machine :: {
 					return walk_execution_state(early_ret_m, Box.unbox(e_state))
 				}
 			}
-			ready = accept_pending_irq(m)?
+			# accept pending irq?
+			ready = if SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
+				and !Bits.get_ith_bit_u32_certain(m.cpu.cpsr, 7) { # Cpu can block IRQ
+				(advanced, _) = take_opcode(m)? 
+				irq_cpu = Cpu.handle_irq(advanced.cpu)?
+				reload_pipeline({ ..advanced, cpu: irq_cpu })?
+			} else {
+				m
+			}
 			(fetched, code) = take_opcode(ready)?
 			instruction = match code {
 				Opcode(op) => op
@@ -233,18 +242,18 @@ walk_memory_execution_state = |before_dma, state| {
 		}
 	}
 	m = if can_yield(state) {
-		match deal_with_dma(before_dma)? {
-			NoDMA(same) => same
-			DMAHandled(done) => {
-				resume_state = match state {
-					R(box) => R({ ..box, access_kind: NonSequential })
-					W(box) => W({ ..box, access_kind: NonSequential })
-					# No way we reach this after can_yield()?
-					Complete(_) => return Err(WTFisThis)
-				}
-				# Well DMA rush out first, so we gotta early return
-				return Ok({ ..done, suspended_cpu: Resume(Box.box(resume_state)) })
+		if no_dma(before_dma) {
+			before_dma
+		} else {
+			done = deal_with_dma(before_dma)?
+			resume_state = match state {
+				R(box) => R({ ..box, access_kind: NonSequential })
+				W(box) => W({ ..box, access_kind: NonSequential })
+				# No way we reach this after can_yield()?
+				Complete(_) => return Err(WTFisThis)
 			}
+			# Well DMA rush out first, so we gotta early return
+			return Ok({ ..done, suspended_cpu: Resume(Box.box(resume_state)) })
 		}
 	} else {
 		before_dma
@@ -474,11 +483,10 @@ timed_read = |m, width, addr, req_kind| {
 		}
 		W32 => Bus.read32(advanced.bus, addr)?
 	}
-	new_bus = match intermediate.state {
-		Unchanged => advanced.bus
-		Updated(x) => Box.unbox(x) # Again, side effect of reading
+	match intermediate.state {
+		Unchanged => Ok((advanced, intermediate.val))
+		Updated(x) => Ok(({ ..advanced, bus: Box.unbox(x) }, intermediate.val)) # Again, side effect of reading
 	}
-	Ok(({ ..advanced, bus: new_bus }, intermediate.val))
 }
 
 dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential] -> Try((Machine, U32), _)
@@ -581,37 +589,53 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 	}
 }
 
-deal_with_dma : Machine -> Try([NoDMA(Machine), DMAHandled(Machine)], _)
+# ⠀⣞⢽⢪⢣⢣⢣⢫⡺⡵⣝⡮⣗⢷⢽⢽⢽⣮⡷⡽⣜⣜⢮⢺⣜⢷⢽⢝⡽⣝
+# ⠸⡸⠜⠕⠕⠁⢁⢇⢏⢽⢺⣪⡳⡝⣎⣏⢯⢞⡿⣟⣷⣳⢯⡷⣽⢽⢯⣳⣫⠇
+#  ⢀⢀⢄⢬⢪⡪⡎⣆⡈⠚⠜⠕⠇⠗⠝⢕⢯⢫⣞⣯⣿⣻⡽⣏⢗⣗⠏
+# ⠪⡪⡪⣪⢪⢺⢸⢢⢓⢆⢤⢀⠀⠀⠀⠀⠈⢊⢞⡾⣿⡯⣏⢮⠷⠁
+#  ⠀⠈⠊⠆⡃⠕⢕⢇⢇⢇⢇⢇⢏⢎⢎⢆⢄⠀⢑⣽⣿⢝⠲⠉
+#  ⠀⠀⠀⠀ ⡿⠂⠠⠀⡇⢇⠕⢈⣀⠀⠁⠡⠣⡣⡫⣂⣿⠯⢪⠰⠂
+#  ⠀⠀⠀ ⡦⡙⡂⢀⢤⢣⠣⡈⣾⡃⠠⠄⠀⡄⢱⣌⣶⢏⢊⠂
+#  ⠀⠀⠀ ⢝⡲⣜⡮⡏⢎⢌⢂⠙⠢⠐⢀⢘⢵⣽⣿⡿⠁⠁
+#  ⠀⠀⠀⠀⠨⣺⡺⡕⡕⡱⡑⡆⡕⡅⡕⡜⡼⢽⡻⠏
+#       ⣼⣳⣫⣾⣵⣗⡵⡱⡡⢣⢑⢕⢜⢕⡝
+#      ⣴⣿⣾⣿⣿⣿⡿⡽⡑⢌⠪⡢⡣⣣⡟
+#      ⡟⡾⣿⢿⢿⢵⣽⣾⣼⣘⢸⢸⣞⡟
+#       ⠁⠇⠡⠩⡫⢿⣝⡻⡮⣒⢽⠋⠀⠀⠀⠀
+no_dma : Machine -> Bool
+no_dma = |m| {
+	if (m.power_state == Stopped or
+		(DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) == None
+			and m.dma_owner == None)) True else False
+}
+
+deal_with_dma : Machine -> Try(Machine, _)
 deal_with_dma = |m| {
 	release_dma : Machine -> Try(Machine, _)
 	release_dma = |m_in| Ok(mark_fetch_nonsequential({ ..Machine.advance_to(m_in, m_in.now + 1)?, dma_owner: None }))
-	if m.power_state == Stopped {
-		Ok(NoDMA(m))
-	} else {
-		match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
-			None => {
-				match m.dma_owner {
-					None => Ok(NoDMA(m))
-					Channel(_) => {
-						# No ready to IO DMA yet channel is filled -> Should be freed
-						Ok(DMAHandled(release_dma(m)?))
-					}
+	match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
+		None => {
+			match m.dma_owner {
+				None => Err(CallNoDMAFirstPlease) # Technically should not be triggered after no_dma
+				Channel(_) => {
+					# No ready to IO DMA yet channel is filled -> Should be freed
+					release_dma(m)
 				}
 			}
-			Transfer(selection, reg, _) => {
-				DmaRegs.validate_transfer(reg, selection, Starting)?
-				advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
-				match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
-					Transfer(next_selection, next_reg, next_width) => {
-						access_kind = if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
-						Ok(DMAHandled(dma_transfer_selected(advanced, next_selection, next_reg, next_width, access_kind, access_kind)?))
-					}
-					None => {
-						# Well this can occur now, like this:
-						# DMA3 pending -> vcount advance, DMA3 disabled because vcount == 162
-						# selection is None now, ooof
-						Ok(DMAHandled(release_dma(advanced)?))
-					}
+		}
+		Transfer(selection, reg, _) => {
+			DmaRegs.validate_transfer(reg, selection, Starting)?
+			advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
+			match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
+				Transfer(next_selection, next_reg, next_width) => {
+					access_kind = if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
+					dma_transfer_selected(advanced, next_selection, next_reg, next_width, access_kind, access_kind)
+				}
+				None => {
+					# Well this can occur now, like this:
+					# DMA3 pending -> vcount advance, DMA3 disabled because vcount == 162
+					# selection is None now, ooof
+					release_dma(advanced)
 				}
 			}
 		}
@@ -694,19 +718,6 @@ mark_fetch_nonsequential = |m| {
 	}
 }
 
-accept_pending_irq : Machine -> Try(Machine, _)
-accept_pending_irq = |m| {
-	# A IRQ will cause cpu to shift mode and update regs
-	if SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
-		and !Bits.get_ith_bit_u32_certain(m.cpu.cpsr, 7) { # Cpu can block IRQ
-		(advanced, _) = take_opcode(m)?
-		irq_cpu = Cpu.handle_irq(advanced.cpu)?
-		reload_pipeline({ ..advanced, cpu: irq_cpu })
-	} else {
-		Ok(m)
-	}
-}
-
 advance_events_to : Machine, U64 -> Try(Machine, _)
 advance_events_to = |m, target| {
 	if m.power_state == Stopped {
@@ -783,9 +794,10 @@ run_one_action = |m| {
 		Running => Machine.step_forward(m)
 		Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => Machine.step_forward(m)
 		Halted => {
-			after_dma = match deal_with_dma(m)? {
-				DMAHandled(done) => return Ok(done)
-				NoDMA(available) => available
+			after_dma = if no_dma(m) {
+				m
+			} else {
+				return deal_with_dma(m)
 			}
 			next_lcd_time = after_dma.next_lcd_at
 			next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
