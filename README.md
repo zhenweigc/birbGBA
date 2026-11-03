@@ -6,8 +6,8 @@ Rn it will just being able to run some offical ROMs, without crashing during pla
 ## Some Progress here
 ![Cult of GBA's BIOS running in birbGBA](docs/images/progress.png)
 
-With the minimal RocRay frontend, birbGBA can run this bios now.
-No sound/input supported rn though.
+With the minimal RocRay frontend, birbGBA can run cult-of-GBA BIOS, EmiBIOS and the official BIOS without explicit crashing.
+No sound/input supported rn though, and the performance is pretty horrible.
 
 ## Behavior references:
 - ARM DDI 0100I Architecture Reference Manual
@@ -16,6 +16,7 @@ No sound/input supported rn though.
 - [mGBA](https://github.com/mgba-emu/mgba)
 - [NanoBoyAdvance](https://codeberg.org/nba-emu/NanoBoyAdvance)
 - [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
+- [EmiBIOS](https://github.com/coolbho3k/emibios)
 - Many more tech blogs, will write them in later
 
 ## License

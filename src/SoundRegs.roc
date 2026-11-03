@@ -498,6 +498,7 @@ SoundRegs :: {
 			0xA4 | 0xA5 | 0xA6 | 0xA7 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				Ok({ ..rgs, fifo_b: sound_fifo_push_byte(rgs.fifo_b, (addr - 0xA4).to_u8_wrap(), val)? })
 			} else Ok(rgs)
+			offset if offset >= 0xA8 and offset < 0xB0 => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -678,6 +679,7 @@ SoundRegs :: {
 			0xA4 | 0xA6 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				Ok({ ..rgs, fifo_b: sound_fifo_push_half(rgs.fifo_b, (addr - 0xA4).to_u8_wrap(), val)? })
 			} else Ok(rgs)
+			0xA8 | 0xAA | 0xAC | 0xAE => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
@@ -705,6 +707,7 @@ SoundRegs :: {
 			0xA4 => if Bits.get_ith_bit_u16_certain(rgs.sound_cntx, 7) {
 				Ok({ ..rgs, fifo_b: sound_fifo_push_word(rgs.fifo_b, val)? })
 			} else Ok(rgs)
+			0xA8 | 0xAC => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}

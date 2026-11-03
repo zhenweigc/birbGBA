@@ -83,7 +83,7 @@ Machine :: {
 			# accept pending irq?
 			ready = if SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
 				and !Bits.get_ith_bit_u32_certain(m.cpu.cpsr, 7) { # Cpu can block IRQ
-				(advanced, _) = take_opcode(m)? 
+				(advanced, _) = take_opcode(m)?
 				irq_cpu = Cpu.handle_irq(advanced.cpu)?
 				reload_pipeline({ ..advanced, cpu: irq_cpu })?
 			} else {

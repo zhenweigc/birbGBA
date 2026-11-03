@@ -64,7 +64,16 @@ Bus := {
 				}
 			}
 			OAM => Ok({ val: (bus.oam).get(U32.to_u64(relative_addr))?, state: Unchanged })
-			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ val: (bus.gamepak_rom).get(U32.to_u64(relative_addr))?, state: Unchanged })
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				Ok({
+					val: if relative_addr.to_u64() + 1 <= bus.gamepak_rom.len() {
+						(bus.gamepak_rom).get(relative_addr.to_u64())?
+					} else {
+						addr.shr_wrap(1 + (if (addr.mod_by(2) == 0) 0 else 8)).to_u8_wrap()
+					},
+					state: Unchanged,
+				})
+			}
 			SystemROM => Ok({ val: (bus.bios).get(U32.to_u64(relative_addr))?, state: Unchanged })
 			IORegs => {
 				intermediate = IoRegs.read8(bus.io_regs, relative_addr)?
@@ -198,10 +207,19 @@ Bus := {
 					val: read_le16(bus.oam, relative_addr)?,
 					state: Unchanged,
 				})
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
-					val: read_le16(bus.gamepak_rom, relative_addr)?,
-					state: Unchanged,
-				})
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+					val = if relative_addr.to_u64() + 2 <= bus.gamepak_rom.len() {
+						read_le16(bus.gamepak_rom, relative_addr)?
+					} else {
+						# Out of bound addr -> ROM will not WB value
+						# So the CPU will just read the low 16 bits of Halfword addr back.
+						addr.shr_wrap(1).to_u16_wrap()
+					}
+					Ok({
+						val: val,
+						state: Unchanged,
+					})
+				}
 				SystemROM => Ok({
 					val: read_le16(bus.bios, relative_addr)?,
 					state: Unchanged,
@@ -336,10 +354,19 @@ Bus := {
 					val: read_le32(bus.oam, relative_addr)?,
 					state: Unchanged,
 				})
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({
-					val: read_le32(bus.gamepak_rom, relative_addr)?,
-					state: Unchanged,
-				})
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+					Ok({
+						val: if relative_addr.to_u64() + 4 <= bus.gamepak_rom.len() {
+							read_le32(bus.gamepak_rom, relative_addr)?
+						} else {
+							half = addr.shr_wrap(1)
+							lo = half.bitwise_and(0xFFFF)
+							hi = half.plus_wrap(1)
+							hi.shl_wrap(16).bitwise_or(lo)
+						},
+						state: Unchanged,
+					})
+				}
 				SystemROM => Ok({
 					val: read_le32(bus.bios, relative_addr)?,
 					state: Unchanged,
