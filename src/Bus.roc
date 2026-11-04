@@ -3,6 +3,7 @@ import IoRegs
 import SystemRegs
 import Bits
 import BusSignals
+import DisplayRegs
 
 ReadResult(val_type, type) : {
 	val : val_type,
@@ -62,8 +63,7 @@ Bus := {
 			CPUInternalRAM => ((bus.iwram).get(U32.to_u64(relative_addr))?, Unchanged)
 			PaletteRAM => ((bus.paletteram).get(U32.to_u64(relative_addr))?, Unchanged)
 			VRAM => {
-				dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
-				mode = dispcnt.bitwise_and(0b111)
+				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 				window_offset = (addr - 0x6000000).mod_by(0x20000)
 				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
 					(0, Unchanged)
@@ -136,8 +136,7 @@ Bus := {
 				})
 			}
 			VRAM => {
-				dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
-				mode = dispcnt.bitwise_and(0b111)
+				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 				window_offset = (addr - 0x06000000).mod_by(0x20000)
 				maximum_addr = if mode < 3 {
 					0x10000
@@ -196,8 +195,7 @@ Bus := {
 				CPUInternalRAM => (read_le16(bus.iwram, relative_addr)?, Unchanged)
 				PaletteRAM => (read_le16(bus.paletteram, relative_addr)?, Unchanged)
 				VRAM => {
-					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
-					mode = dispcnt.bitwise_and(0b111)
+					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 					window_offset = (addr - 0x6000000).mod_by(0x20000)
 					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
 						# If cond directly stolen from mGBA
@@ -274,8 +272,7 @@ Bus := {
 					signal: new_signal,
 				})
 				VRAM => {
-					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
-					mode = dispcnt.bitwise_and(0b111)
+					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 					window_offset = (addr - 0x6000000).mod_by(0x20000)
 					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
 						Ok({ ..bus, signal: new_signal })
@@ -333,8 +330,7 @@ Bus := {
 				CPUInternalRAM => (read_le32(bus.iwram, relative_addr)?, Unchanged)
 				PaletteRAM => (read_le32(bus.paletteram, relative_addr)?, Unchanged)
 				VRAM => {
-					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
-					mode = dispcnt.bitwise_and(0b111)
+					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 					window_offset = (addr - 0x6000000).mod_by(0x20000)
 					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
 						(0, Unchanged)
@@ -418,8 +414,7 @@ Bus := {
 					signal: new_signal,
 				})
 				VRAM => {
-					dispcnt = IoRegs.read16(bus.io_regs, 0)?.val
-					mode = dispcnt.bitwise_and(0b111)
+					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 					window_offset = (addr - 0x6000000).mod_by(0x20000)
 					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
 						Ok({ ..bus, signal: new_signal })

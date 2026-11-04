@@ -578,6 +578,9 @@ DisplayRegs :: {
 		)
 	}
 
+	get_bg_mode : DisplayRegs -> U16
+	get_bg_mode = |rgs| rgs.dispcnt.bitwise_and(0b111)
+
 	get_vcount : DisplayRegs -> U16
 	get_vcount = |rgs| rgs.vcount
 
@@ -715,6 +718,7 @@ DisplayRegs :: {
 		i32s = get_bg3_affine(rgs)
 		{ ..rgs, bg3_internal_x: i32s.x, bg3_internal_y: i32s.y }
 	}
+
 }
 
 step_window_y : Bool, U16, U16 -> Bool
