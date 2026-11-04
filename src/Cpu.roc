@@ -261,9 +261,7 @@ Cpu := {
 		],
 	)
 	resume_read = |c, raw_val, rc| {
-		nuker = |x, i| {
-			U32.bitwise_and(x, 4294967295 - U32.pow(2, i))
-		}
+		nuker = |x| x.bitwise_and(x.minus_wrap(1))
 		match rc {
 			SetRegAndFinish(x) => {
 				post_memory_op_arm_thumb_dispatcher(
@@ -285,7 +283,7 @@ Cpu := {
 			}
 			LoadMultiple(x) => {
 				pop_reg = U32.count_trailing_zero_bits(x.mask)
-				new_mask = nuker(x.mask, pop_reg.to_u32())
+				new_mask = nuker(x.mask)
 				gpr = gpr_from_idx(pop_reg)?
 				if gpr == R15 {
 					match x.kind {
@@ -388,14 +386,11 @@ Cpu := {
 		],
 	)
 	resume_write = |c, wc| {
-		nuker = |x, i| {
-			U32.bitwise_and(x, 4294967295 - U32.pow(2, i))
-		}
+		nuker = |x| x.bitwise_and(x.minus_wrap(1))
 		match wc {
 			StoreAndFinish(x) => post_memory_op_arm_thumb_dispatcher(c, x.wba, PCSequential, x.isThumb, 0)
 			WriteMultiple(x) => {
-				pop_reg = U32.count_trailing_zero_bits(x.mask)
-				new_mask = nuker(x.mask, pop_reg.to_u32())
+				new_mask = nuker(x.mask)
 				if new_mask == 0 {
 					post_memory_op_arm_thumb_dispatcher(
 						c,
@@ -485,11 +480,7 @@ pc_inc = |r15, val| U32.plus_wrap(r15, val)
 rotate_right_u32 : U32, U8 -> U32
 rotate_right_u32 = |i, j| {
 	tmp = j % 32
-	if tmp == 0 {
-		i
-	} else {
-		rotate_right_u32(i // 2 + 2147483648 * (i % 2), tmp - 1)
-	}
+	if (tmp == 0) i else i.shr_wrap(tmp).bitwise_or(i.shl_wrap(U8.minus_wrap(32, tmp)))
 }
 
 signed_extend_u32 : U32, U8 -> U32
@@ -519,13 +510,10 @@ arithmetic_shift_right : U32, U8 -> U32
 arithmetic_shift_right = |i, j| {
 	if j == 0 or i == 0 or i == 4294967295 {
 		i
+	} else if j >= 32 {
+		U32.minus_wrap(0, i.shr_wrap(31))
 	} else {
-		tmp = Bits.get_ith_bit_u32_certain(i, 31)
-		if tmp {
-			arithmetic_shift_right(2147483648 + i // 2, j - 1)
-		} else {
-			arithmetic_shift_right(i // 2, j - 1)
-		}
+		i.shr_wrap(j).bitwise_or(U32.minus_wrap(0, i.shr_wrap(31)).shl_wrap(U8.minus_wrap(32, j)))
 	}
 }
 

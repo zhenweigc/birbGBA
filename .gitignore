@@ -3,6 +3,9 @@
 /runner
 /window
 /birbgba
+/runner.exe
+/window.exe
+/birbgba.exe
 *.gba
 *.png
 *.lib

@@ -266,18 +266,18 @@ walk_memory_execution_state = |before_dma, state| {
 			intermediate = match box.width {
 				W8 => {
 					inner = io_delay_applied_machine.bus.read8(box.addr)?
-					{ val: inner.val.to_u32(), state: inner.state }
+					{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 				}
 				W16 => {
-					inner = io_delay_applied_machine.bus.read16(box.addr)?
-					{ val: inner.val.to_u32(), state: inner.state }
+					inner = io_delay_applied_machine.bus.read16(box.addr, CpuData)?
+					{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 				}
-				W32 => io_delay_applied_machine.bus.read32(box.addr)?
+				W32 => io_delay_applied_machine.bus.read32(box.addr, CpuData)?
 			}
 			raw_val = intermediate.val
 			new_bus = match intermediate.state {
-				Unchanged => io_delay_applied_machine.bus
-				Updated(x) => Box.unbox(x)
+				Unchanged => { ..io_delay_applied_machine.bus, signal: intermediate.signal }
+				Updated(x) => { ..Box.unbox(x), signal: intermediate.signal }
 			}
 			cpu_continue = Cpu.resume_read(
 				box.cpu,
@@ -303,14 +303,14 @@ walk_memory_execution_state = |before_dma, state| {
 					if req_bios and cur_addr > 0x3FFF {
 						io_delay_applied_machine.bus
 					} else {
-						io_delay_applied_machine.bus.write16(box.addr, box.val.to_u16_wrap())?
+						io_delay_applied_machine.bus.write16(box.addr, box.val.to_u16_wrap(), CpuData)?
 					}
 				}
 				W32 => {
 					if req_bios and cur_addr > 0x3FFF {
 						io_delay_applied_machine.bus
 					} else {
-						io_delay_applied_machine.bus.write32(box.addr, box.val)?
+						io_delay_applied_machine.bus.write32(box.addr, box.val, CpuData)?
 					}
 				}
 			}
@@ -469,49 +469,49 @@ process_lcd_event = |m, at| {
 }
 
 to_bus_width : [W16, W32] -> [W8, W16, W32] # All these just to calm down the compiler
-to_bus_width = |w| if (w == W16) W16 else W32
+to_bus_width = |w| w
 
-timed_read : Machine, [W16, W32], U32, [NonSequential, Sequential] -> Try((Machine, U32), _)
-timed_read = |m, width, addr, req_kind| {
+timed_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
+timed_read = |m, width, addr, req_kind, purpose| {
 	bus_width = to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	intermediate = match width {
 		W16 => {
-			inner = Bus.read16(advanced.bus, addr)?
-			{ val: inner.val.to_u32(), state: inner.state }
+			inner = Bus.read16(advanced.bus, addr, purpose)?
+			{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 		}
-		W32 => Bus.read32(advanced.bus, addr)?
+		W32 => Bus.read32(advanced.bus, addr, purpose)?
 	}
 	match intermediate.state {
-		Unchanged => Ok((advanced, intermediate.val))
-		Updated(x) => Ok(({ ..advanced, bus: Box.unbox(x) }, intermediate.val)) # Again, side effect of reading
+		Unchanged => Ok(({ ..advanced, bus: { ..advanced.bus, signal: intermediate.signal } }, intermediate.val))
+		Updated(x) => Ok(({ ..advanced, bus: { ..Box.unbox(x), signal: intermediate.signal } }, intermediate.val)) # Again, side effect of reading
 	}
 }
 
-dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential] -> Try((Machine, U32), _)
-dma_read = |m, width, addr, req_kind| {
+dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
+dma_read = |m, width, addr, req_kind, purpose| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
-	timed_read(m, width, aligned_addr, req_kind) # Machine + read val
+	timed_read(m, width, aligned_addr, req_kind, purpose) # Machine + read val
 }
 
-timed_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential] -> Try(Machine, _)
-timed_write = |m, width, addr, val, req_kind| {
+timed_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], Bus.WritePurpose -> Try(Machine, _)
+timed_write = |m, width, addr, val, req_kind, purpose| {
 	bus_width = to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	new_bus = match width {
-		W16 => Bus.write16(advanced.bus, addr, val.to_u16_wrap())?
-		W32 => Bus.write32(advanced.bus, addr, val)?
+		W16 => Bus.write16(advanced.bus, addr, val.to_u16_wrap(), purpose)?
+		W32 => Bus.write32(advanced.bus, addr, val, purpose)?
 	}
 	new_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
 	Ok({ ..advanced, bus: { ..new_bus, io_regs: { ..new_bus.io_regs, dmas: new_dma_rgs } } })
 }
 
-dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential] -> Try(Machine, _)
-dma_write = |m, width, addr, val, req_kind| {
+dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], Bus.WritePurpose -> Try(Machine, _)
+dma_write = |m, width, addr, val, req_kind, purpose| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
-	timed_write(m, width, aligned_addr, val, req_kind)
+	timed_write(m, width, aligned_addr, val, req_kind, purpose)
 }
 
 dma_transfer_selected : Machine, U8, DmaRegs.Reg, [W16, W32], [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
@@ -533,7 +533,7 @@ dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind
 		}
 		(advanced, latch_val)
 	} else {
-		(intermediate_m, before_latch_val) = dma_read(m, width, reg.source_addr, req_read_kind)?
+		(intermediate_m, before_latch_val) = dma_read(m, width, reg.source_addr, req_read_kind, Dma(selection))?
 		val_with_width_considered = if (width == W32) before_latch_val else (before_latch_val.shl_wrap(16) + before_latch_val)
 		(
 			{
@@ -553,7 +553,7 @@ dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind
 			val_with_width_considered,
 		)
 	}
-	after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind)?
+	after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind, Dma(selection))?
 	(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(after_write_m.bus.io_regs.dmas, selection)?
 	new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)
 	Ok({
@@ -651,7 +651,7 @@ fetch_opcode = |m, addr, width, req_kind| {
 		advanced = Machine.advance_to(m, m.now + 1)?
 		Ok((advanced, Unmapped(addr)))
 	} else {
-		(resultant_machine, returned_code) = timed_read(m, width, addr, req_kind)?
+		(resultant_machine, returned_code) = timed_read(m, width, addr, req_kind, Fetch)?
 		# Machine + opcode
 		Ok((resultant_machine, Opcode(returned_code)))
 	}
