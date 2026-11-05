@@ -256,6 +256,111 @@ TimerRegs :: {
 			))
 		}
 	}
+
+	# Try to fast forward timer reg ticks together for better perf
+	# The entire point of this function is, fast forward if all enabled timer regs
+	# has no overflow, pending write, or startup event.
+	try_batch_ticks_to_known_next : TimerRegs, U64, U64 -> [NoBatch, Batched({ timers : TimerRegs, last_at : U64 })]
+	try_batch_ticks_to_known_next = |rgs, limit, first_at| {
+		moment_needs_process : TimerReg, TimerSelection -> [None, At(U64)]
+		moment_needs_process = |reg, selection| {
+			tick_boundary = match reg.next_tick_at {
+				None => None
+				At(t) => match clock_period(reg, selection) {
+					NoClock => At(t)
+					Period(p) => {
+						# Overflow occurs on tick (65536 - counter)
+						delta = U64.minus_wrap(65535, reg.counter.to_u64()).times_wrap(p)
+						if (delta > U64.highest - t) At(t) else At(t + delta)
+					}
+				}
+			}
+			reload_at = match reg.pending_reload {
+				None => None
+				Pending(x) => At(x.at)
+			}
+			control_at = match reg.pending_control {
+				None => None
+				Pending(x) => At(x.at)
+			}
+			earlier_event(
+				earlier_event(tick_boundary, reg.startup_reload_at),
+				earlier_event(reload_at, control_at),
+			)
+		}
+		batch_one : TimerReg, TimerSelection, U64 -> { counter : U16, next_tick_at : [None, At(U64)], last_at : [None, At(U64)] }
+		batch_one = |reg, selection, batch_limit| {
+			match reg.next_tick_at {
+				None => { counter: reg.counter, next_tick_at: reg.next_tick_at, last_at: None }
+				At(t) if t > batch_limit => { counter: reg.counter, next_tick_at: reg.next_tick_at, last_at: None }
+				At(t) => {
+					match clock_period(reg, selection) {
+						NoClock => { counter: reg.counter, next_tick_at: reg.next_tick_at, last_at: None }
+						Period(p) => {
+							num_of_timer_tick_until_batch_limit = 1 + (batch_limit - t) // p
+							# batch_limit is before overflow, so counter + tick count fits in U16.
+							new_counter = reg.counter + num_of_timer_tick_until_batch_limit.to_u16_wrap()
+							next_tick_time = t + num_of_timer_tick_until_batch_limit * p
+							new_tick_at = At(next_tick_time)
+							last_at = At(next_tick_time - p)
+							{ counter: new_counter, next_tick_at: new_tick_at, last_at: last_at }
+						}
+					}
+				}
+			}
+		}
+		if (first_at <= rgs.synced_at) return NoBatch
+		timer0_moment = moment_needs_process(rgs.timer0, Timer0)
+		match timer0_moment {
+			At(t) if t <= first_at => return NoBatch
+			_ => {}
+		}
+		timer1_moment = moment_needs_process(rgs.timer1, Timer1)
+		match timer1_moment {
+			At(t) if t <= first_at => return NoBatch
+			_ => {}
+		}
+		timer2_moment = moment_needs_process(rgs.timer2, Timer2)
+		match timer2_moment {
+			At(t) if t <= first_at => return NoBatch
+			_ => {}
+		}
+		timer3_moment = moment_needs_process(rgs.timer3, Timer3)
+		winner = earlier_event(
+			earlier_event(timer0_moment, timer1_moment),
+			earlier_event(timer2_moment, timer3_moment),
+		)
+		batch_limit = match winner {
+			None => limit
+			At(t) => {
+				if (t == 0) return NoBatch
+				limit.min(t - 1)
+			}
+		}
+		if (first_at > batch_limit) return NoBatch
+		r0 = batch_one(rgs.timer0, Timer0, batch_limit)
+		r1 = batch_one(rgs.timer1, Timer1, batch_limit)
+		r2 = batch_one(rgs.timer2, Timer2, batch_limit)
+		r3 = batch_one(rgs.timer3, Timer3, batch_limit)
+		last = later_event(
+			later_event(r0.last_at, r1.last_at),
+			later_event(r2.last_at, r3.last_at),
+		)
+		last_at = match last {
+			At(t) if first_at < t => t
+			_ => return NoBatch
+		}
+		Batched({
+			timers: {
+				timer0: { ..rgs.timer0, counter: r0.counter, next_tick_at: r0.next_tick_at },
+				timer1: { ..rgs.timer1, counter: r1.counter, next_tick_at: r1.next_tick_at },
+				timer2: { ..rgs.timer2, counter: r2.counter, next_tick_at: r2.next_tick_at },
+				timer3: { ..rgs.timer3, counter: r3.counter, next_tick_at: r3.next_tick_at },
+				synced_at: last_at,
+			},
+			last_at: last_at,
+		})
+	}
 }
 
 process_tick_at : TimerRegs,
@@ -485,6 +590,15 @@ earlier_event = |t1, t2| {
 		(None, None) => None
 		(None, At(t)) | (At(t), None) => At(t)
 		(At(x), At(y)) => At(x.min(y))
+	}
+}
+
+later_event : [None, At(U64)], [None, At(U64)] -> [None, At(U64)]
+later_event = |t1, t2| {
+	match (t1, t2) {
+		(None, None) => None
+		(None, At(t)) | (At(t), None) => At(t)
+		(At(x), At(y)) => At(x.max(y))
 	}
 }
 

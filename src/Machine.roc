@@ -714,6 +714,30 @@ mark_fetch_nonsequential = |m| {
 
 advance_events_to : Machine, U64 -> Try(Machine, _)
 advance_events_to = |m, target| {
+	process_event_or_batch : Machine, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
+	process_event_or_batch = |given_m, given_target, given_at, given_timer_at| {
+		if given_at > given_m.now and given_at < given_m.next_lcd_at {
+			limit = given_target.min(given_m.next_lcd_at - 1)
+			if given_at < limit {
+				match TimerRegs.try_batch_ticks_to_known_next(given_m.bus.io_regs.timers, limit, given_at) {
+					NoBatch => {}
+					Batched(x) => {
+						io_rgs = {
+							..given_m.bus.io_regs,
+							timers: x.timers,
+							# non-overflow ticks CAN schedule pending DMA.
+							dmas: DmaRegs.schedule_pending(given_m.bus.io_regs.dmas, given_at),
+						}
+						return Ok((
+							{ ..given_m, bus: { ..given_m.bus, io_regs: io_rgs }, now: x.last_at },
+							0.U8, # 0 here is useless
+						))
+					}
+				}
+			}
+		}
+		process_event_at(given_m, given_at, given_timer_at)
+	}
 	if (m.power_state == Stopped) return Ok(m)
 	if (target < m.now) return Err(WrongEventTime)
 	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
@@ -722,8 +746,8 @@ advance_events_to = |m, target| {
 		At(t) => t.min(m.next_lcd_at)
 	}
 	if at <= target {
-		(new_machine, _) = process_event_at(m, at, timer_at)?
-		return advance_events_to(new_machine, target)
+		(processed, _) = process_event_or_batch(m, target, at, timer_at)?
+		return advance_events_to(processed, target)
 	}
 	Ok({
 		..m,
