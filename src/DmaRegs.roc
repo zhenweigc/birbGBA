@@ -115,6 +115,22 @@ DmaRegs :: {
 		}
 	}
 
+	has_ready : DmaRegs, U64 -> Bool
+	has_ready = |rgs, given_now| {
+		single_reg_has_ready : [Disabled, Waiting, Pending], [None, At(U64)] -> Bool
+		single_reg_has_ready = |phase, ready_at| {
+			if phase == Pending and ready_at != None {
+				match ready_at {
+					At(t) if t <= given_now => return True
+					_ => return False
+				}
+			}
+			False
+		}
+		single_reg_has_ready(rgs.dma0.phase, rgs.dma0.ready_at) or single_reg_has_ready(rgs.dma1.phase, rgs.dma1.ready_at) or
+			single_reg_has_ready(rgs.dma2.phase, rgs.dma2.ready_at) or single_reg_has_ready(rgs.dma3.phase, rgs.dma3.ready_at)
+	}
+
 	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
 	get_reg_ready_to_io = |rgs, given_now| {
 		var $num = 0.U8

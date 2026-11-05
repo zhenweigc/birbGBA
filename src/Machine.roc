@@ -599,7 +599,7 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 no_dma : Machine -> Bool
 no_dma = |m| {
 	if (m.power_state == Stopped or
-		(DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) == None
+		(!DmaRegs.has_ready(m.bus.io_regs.dmas, m.now)
 			and m.dma_owner == None)) True else False
 }
 
@@ -820,8 +820,7 @@ run_one_action = |m| {
 				(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
 				(At(x), At(y)) => next_lcd_time.min(x).min(y)
 			}
-			new_m = Machine.advance_to(after_dma, closest_next)?
-			Ok(new_m)
+			Machine.advance_to(after_dma, closest_next)
 		}
 		Stopped => Ok(m)
 	}
