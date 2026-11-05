@@ -718,7 +718,6 @@ DisplayRegs :: {
 		i32s = get_bg3_affine(rgs)
 		{ ..rgs, bg3_internal_x: i32s.x, bg3_internal_y: i32s.y }
 	}
-
 }
 
 step_window_y : Bool, U16, U16 -> Bool

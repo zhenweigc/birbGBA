@@ -233,53 +233,63 @@ TimerRegs :: {
 		],
 	)
 	process_at = |rgs, at| {
-		# Mutable vars in FP? Stone toss this guy!
-		var $current = rgs
-		var $overflow_mask = 0
-		var $irq_mask = 0
 		if at < rgs.synced_at or next_event_at(rgs) != At(at) {
 			Err(WrongEventTime)
 		} else {
-			for selection in [Timer0, Timer1, Timer2, Timer3] {
-				reg = pick_reg($current, selection)
-				if reg.startup_reload_at == At(at) {
-					return Err(StartupReloadNotImplemented)
-				} else {
-					match reg.next_tick_at {
-						None => {} # guess what ROC does not have continue yet.
-						At(x) if x > at => {}
-						At(x) if x == at => {
-							match clock_period(reg, selection) {
-								NoClock => return Err(NoClock)
-								Period(p) => {
-									# when at is triggered it should just be Clock mode
-									(rgs_after_tick, masks) = tick($current, selection, Clock)
-									reg_after_tick = pick_reg(rgs_after_tick, selection)
-									reg_with_next = { ..reg_after_tick, next_tick_at: At(at + p) }
-									$current = put_reg(rgs_after_tick, selection, reg_with_next)
-									$overflow_mask = $overflow_mask.bitwise_or(masks.overflow_mask)
-									$irq_mask = $irq_mask.bitwise_or(masks.irq_mask)
-								}
-							}
-						}
-						_ => return Err(WrongEventTime)
+			(r0, masks0) = process_tick_at(rgs, Timer0, at)?
+			(r1, masks1) = process_tick_at(r0, Timer1, at)?
+			(r2, masks2) = process_tick_at(r1, Timer2, at)?
+			(current, masks3) = process_tick_at(r2, Timer3, at)?
+			overflow_mask = masks0.overflow_mask.bitwise_or(masks1.overflow_mask).bitwise_or(masks2.overflow_mask).bitwise_or(masks3.overflow_mask)
+			irq_mask = masks0.irq_mask.bitwise_or(masks1.irq_mask).bitwise_or(masks2.irq_mask).bitwise_or(masks3.irq_mask)
+			t0_reloaded = apply_pending_reload(current.timer0, at)
+			t1_reloaded = apply_pending_reload(current.timer1, at)
+			t2_reloaded = apply_pending_reload(current.timer2, at)
+			t3_reloaded = apply_pending_reload(current.timer3, at)
+			t0_final = apply_pending_control(t0_reloaded, at, Timer0)?
+			t1_final = apply_pending_control(t1_reloaded, at, Timer1)?
+			t2_final = apply_pending_control(t2_reloaded, at, Timer2)?
+			t3_final = apply_pending_control(t3_reloaded, at, Timer3)?
+			Ok((
+				{ timer0: t0_final, timer1: t1_final, timer2: t2_final, timer3: t3_final, synced_at: at },
+				{ overflow_mask: overflow_mask, irq_mask: irq_mask },
+			))
+		}
+	}
+}
+
+process_tick_at : TimerRegs,
+TimerSelection,
+U64 -> Try(
+	(TimerRegs, { overflow_mask : U8, irq_mask : U16 }),
+	[
+		StartupReloadNotImplemented,
+		WrongEventTime,
+		NoClock,
+	],
+)
+process_tick_at = |rgs, selection, at| {
+	reg = pick_reg(rgs, selection)
+	if reg.startup_reload_at == At(at) {
+		Err(StartupReloadNotImplemented)
+	} else {
+		match reg.next_tick_at {
+			None => Ok((rgs, { overflow_mask: 0, irq_mask: 0 }))
+			At(x) if x > at => Ok((rgs, { overflow_mask: 0, irq_mask: 0 }))
+			At(x) if x == at => {
+				match clock_period(reg, selection) {
+					NoClock => Err(NoClock)
+					Period(p) => {
+						# when at is triggered it should just be Clock mode
+						(rgs_after_tick, masks) = tick(rgs, selection, Clock)
+						reg_after_tick = pick_reg(rgs_after_tick, selection)
+						reg_with_next = { ..reg_after_tick, next_tick_at: At(at + p) }
+						current = put_reg(rgs_after_tick, selection, reg_with_next)
+						Ok((current, masks))
 					}
 				}
 			}
-			for selection in [Timer0, Timer1, Timer2, Timer3] {
-				reg = pick_reg($current, selection)
-				updated_reg = apply_pending_reload(reg, at)
-				$current = put_reg($current, selection, updated_reg)
-			}
-			for selection in [Timer0, Timer1, Timer2, Timer3] {
-				reg = pick_reg($current, selection)
-				updated_reg = apply_pending_control(reg, at, selection)?
-				$current = put_reg($current, selection, updated_reg)
-			}
-			Ok((
-				{ ..$current, synced_at: at },
-				{ overflow_mask: $overflow_mask, irq_mask: $irq_mask },
-			))
+			_ => Err(WrongEventTime)
 		}
 	}
 }

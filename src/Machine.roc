@@ -142,39 +142,33 @@ Machine :: {
 
 	advance_to : Machine, U64 -> Try(Machine, _)
 	advance_to = |m, target| {
-		if m.power_state == Stopped {
-			Ok(m)
-		} else if target < m.now {
-			Err(WrongEventTime)
-		} else {
-			timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-			at = match timer_at {
-				None => m.next_lcd_at
-				At(t) => t.min(m.next_lcd_at)
-			}
-			if at <= target {
-				# Well yes we can literally use recursion here
-				# But it seems like to downgrade the performance
-				# So this func will call a (almost identical) recursive version
-				advance_events_to(m, target)
-			} else {
-				Ok({
-					..m,
-					bus: {
-						..m.bus,
-						io_regs: {
-							..m.bus.io_regs,
-							timers: TimerRegs.sync_idle_to_known_next(
-								m.bus.io_regs.timers,
-								target,
-								timer_at,
-							)?,
-						},
-					},
-					now: target,
-				})
-			}
+		# Eliminate big if-else clause for one less in memcpy
+		if (m.power_state == Stopped) return Ok(m)
+		if (target < m.now) return Err(WrongEventTime)
+		timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+		at = match timer_at {
+			None => m.next_lcd_at
+			At(t) => t.min(m.next_lcd_at)
 		}
+		# Well yes we can literally use recursion here
+		# But it seems like to downgrade the performance
+		# So this func will call a (almost identical) recursive version
+		if (at <= target) return advance_events_to(m, target)
+		Ok({
+			..m,
+			bus: {
+				..m.bus,
+				io_regs: {
+					..m.bus.io_regs,
+					timers: TimerRegs.sync_idle_to_known_next(
+						m.bus.io_regs.timers,
+						target,
+						timer_at,
+					)?,
+				},
+			},
+			now: target,
+		})
 	}
 
 	set_pressed : Machine, U16 -> Machine
@@ -720,37 +714,32 @@ mark_fetch_nonsequential = |m| {
 
 advance_events_to : Machine, U64 -> Try(Machine, _)
 advance_events_to = |m, target| {
-	if m.power_state == Stopped {
-		Ok(m)
-	} else if target < m.now {
-		Err(WrongEventTime)
-	} else {
-		timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-		at = match timer_at {
-			None => m.next_lcd_at
-			At(t) => t.min(m.next_lcd_at)
-		}
-		if at <= target {
-			(new_machine, _) = process_event_at(m, at, timer_at)?
-			advance_events_to(new_machine, target)
-		} else {
-			Ok({
-				..m,
-				bus: {
-					..m.bus,
-					io_regs: {
-						..m.bus.io_regs,
-						timers: TimerRegs.sync_idle_to_known_next(
-							m.bus.io_regs.timers,
-							target,
-							timer_at,
-						)?,
-					},
-				},
-				now: target,
-			})
-		}
+	if (m.power_state == Stopped) return Ok(m)
+	if (target < m.now) return Err(WrongEventTime)
+	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+	at = match timer_at {
+		None => m.next_lcd_at
+		At(t) => t.min(m.next_lcd_at)
 	}
+	if at <= target {
+		(new_machine, _) = process_event_at(m, at, timer_at)?
+		return advance_events_to(new_machine, target)
+	}
+	Ok({
+		..m,
+		bus: {
+			..m.bus,
+			io_regs: {
+				..m.bus.io_regs,
+				timers: TimerRegs.sync_idle_to_known_next(
+					m.bus.io_regs.timers,
+					target,
+					timer_at,
+				)?,
+			},
+		},
+		now: target,
+	})
 }
 
 complete_execution : Machine, Cpu.Execution_outcome -> Try(Machine, _)
