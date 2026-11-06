@@ -361,6 +361,47 @@ TimerRegs :: {
 			last_at: last_at,
 		})
 	}
+
+	halt_batch_span : TimerRegs, U64, U32 -> [NoBatch, Batch({ last_at : U64, actions : U32 })]
+	halt_batch_span = |rgs, limit, budget| {
+		fully_disabled : TimerReg -> Bool
+		fully_disabled = |reg| {
+			!Bits.get_ith_bit_u16_certain(reg.control, 7)
+				and reg.next_tick_at == None and reg.pending_reload == None
+				and reg.pending_control == None and reg.startup_reload_at == None
+		}
+		if (budget < 2) return NoBatch
+		if fully_disabled(rgs.timer1)
+			and fully_disabled(rgs.timer2) and fully_disabled(rgs.timer3) {
+			timer0 = rgs.timer0
+			if timer0.pending_reload == None and timer0.pending_control == None and timer0.startup_reload_at == None {
+				match clock_period(timer0, Timer0) {
+					NoClock => return NoBatch
+					Period(p) => {
+						match timer0.next_tick_at {
+							At(t) if t > rgs.synced_at => {
+								# Leave room to schedule the tick following the batch.
+								safe_limit = limit.min(U64.highest.minus_wrap(p))
+								if (t > safe_limit) return NoBatch
+								# Exclude the overflow tick; it must take the normal event path.
+								batch_tick_count = (1 + (safe_limit - t) // p)
+									.min(65535 - timer0.counter.to_u64())
+									.min(budget.to_u64())
+								if (batch_tick_count < 2) return NoBatch
+								# Each batched ordinary tick replaces one original Halt action.
+								return Batch({
+									last_at: t + (batch_tick_count - 1).times_wrap(p),
+									actions: batch_tick_count.to_u32_wrap(),
+								})
+							}
+							_ => return NoBatch
+						}
+					}
+				}
+			}
+		}
+		NoBatch
+	}
 }
 
 process_tick_at : TimerRegs,

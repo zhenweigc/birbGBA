@@ -203,8 +203,47 @@ Machine :: {
 			Ok({ machine: m, reason: Stopped })
 		} else if num_of_actions == 0 {
 			Ok({ machine: m, reason: BudgetExhausted })
+		} else if m.power_state == Halted {
+			run_halted_until(m, target, num_of_actions)
 		} else {
 			run_until(run_one_action(m)?, target, num_of_actions - 1)
+		}
+	}
+
+	run_halted_until : Machine,
+	U64,
+	U32 -> Try(
+		{
+			machine : Machine,
+			reason : [ReachedTarget, BudgetExhausted, Stopped],
+		},
+		_,
+	)
+	run_halted_until = |m, target, num_of_actions| {
+		if (m.power_state != Halted or m.now >= target or num_of_actions == 0) return run_until(m, target, num_of_actions)
+		if (num_of_actions < 2 or m.dma_owner != None or SystemRegs.enable_pending(m.bus.io_regs.system) != 0) return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+		first = match TimerRegs.next_event_at(m.bus.io_regs.timers) {
+			None => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+			At(t) => t
+		}
+		if (first <= m.now or first >= m.next_lcd_at or first > target or first > U64.highest - 2) return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+		# Ordinary ticks schedule pending DMA at the FIRST tick.
+		# Query that deadline here; advance_to performs the actual update.
+		scheduled = DmaRegs.schedule_pending(m.bus.io_regs.dmas, first)
+		lcd_limit = target.min(m.next_lcd_at - 1)
+		limit = match DmaRegs.next_ready_at(scheduled) {
+			# No DMA -> Just focus on lcd
+			None => lcd_limit
+			# DMA is a thing but later than timer events
+			At(dma_at) if dma_at > first => lcd_limit.min(dma_at - 1)
+			_ => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+		}
+		match TimerRegs.halt_batch_span(m.bus.io_regs.timers, limit, num_of_actions) {
+			NoBatch => run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+			Batch(span) => {
+				advanced = advance_to(m, span.last_at)?
+				run_halted_until(advanced, target, num_of_actions - span.actions)
+			}
 		}
 	}
 }
