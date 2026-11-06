@@ -1007,23 +1007,21 @@ arm_data_processing_execute : U32, Cpu -> Try(Execution_outcome, [InvalidMode, W
 arm_data_processing_execute = |op, c| {
 	alu_op = arm_data_processing_decode(op)
 	res = arm_data_processing_calculate(op, c, alu_op)?
-	shift_cycles = if !Bits.get_ith_bit_u32_certain(op, 25)
-		and Bits.get_ith_bit_u32_certain(op, 4) {
-		1
-	} else {
-		0
-	}
+	shift_cycles = if (!Bits.get_ith_bit_u32_certain(op, 25)
+		and Bits.get_ith_bit_u32_certain(op, 4)) 1 else 0
 	if data_processing_writes_rd(alu_op) {
 		rd = get_gpr_12_15(op)?
 		match rd {
 			R15 => if arm_s_flag(op) {
+				# Rd=PC + S=1 => CPSR loads from SPSR
+				# PC must be aligned then, ARM clears 2 LSBs; Thumb clears 1 LSB.
 				Ok({
 					cpu: {
 						..{
 							if cpsr_getT(cpu_getSPSR(c)?) {
 								cpu_setReg(rd, c, res.val.bitwise_and(0xFFFFFFFE))?
 							} else {
-								cpu_setReg(rd, c, res.val)?
+								cpu_setReg(rd, c, res.val.bitwise_and(0xFFFFFFFC))?
 							}
 						},
 						cpsr: cpu_getSPSR(c)?,
@@ -1032,7 +1030,11 @@ arm_data_processing_execute = |op, c| {
 					remaining_cycles: shift_cycles,
 				})
 			} else {
-				Ok({ cpu: cpu_setReg(rd, c, res.val)?, pc_status: PCWritten, remaining_cycles: shift_cycles })
+				Ok({
+					cpu: cpu_setReg(rd, c, res.val.bitwise_and(0xFFFFFFFC))?,
+					pc_status: PCWritten,
+					remaining_cycles: shift_cycles,
+				})
 			}
 			_ => if arm_s_flag(op) {
 				Ok({
