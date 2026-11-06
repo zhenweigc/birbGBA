@@ -449,21 +449,14 @@ Cpu := {
 	execute_thumb_opcode = |c, op| thumb_instructions_execute(op, c)
 
 	# A2.6.8, P62
-	handle_irq : Cpu -> Try(Cpu, [InvalidMode, NoSPSR])
+	handle_irq : Cpu -> Cpu
 	handle_irq = |c| {
-		if cpsr_getI(c.cpsr) {
-			Ok(c)
-		} else {
-			Ok({
-				..c,
-				regs: {
-					..c.regs,
-					r14_irq: c.regs.r15.plus_wrap(4),
-					r15: 0x18,
-				},
-				spsr_irq: c.cpsr,
-				cpsr: cpsr_setMode(IRQ, cpsr_setT(cpsr_setI(c.cpsr, True), False)),
-			})
+		if (cpsr_getI(c.cpsr)) return c
+		{
+			..c,
+			regs: { ..c.regs, r14_irq: c.regs.r15.plus_wrap(4), r15: 0x18 },
+			spsr_irq: c.cpsr,
+			cpsr: cpsr_setMode(IRQ, cpsr_setT(cpsr_setI(c.cpsr, True), False)),
 		}
 	}
 }
@@ -485,15 +478,9 @@ rotate_right_u32 = |i, j| {
 
 signed_extend_u32 : U32, U8 -> U32
 signed_extend_u32 = |val, e| {
-	if e == 0 or e >= 32 {
-		val
-	} else {
-		if Bits.get_ith_bit_u32_certain(val, e - 1) {
-			U32.bitwise_or(4294967295 - U32.pow(2, e.to_u32()) + 1, val)
-		} else {
-			val
-		}
-	}
+	if (e == 0 or e >= 32) return val
+	if (Bits.get_ith_bit_u32_certain(val, e - 1)) return val.bitwise_or(U32.highest.shl_wrap(e))
+	val
 }
 
 rotate : Rotation, U32 -> U32
@@ -536,27 +523,8 @@ add_with_carry = |i, j, b| {
 	}
 }
 
-# LSB is 0th bit, not 1!
-get_ith_bit_u32 : U32, U8 -> Try(Bool, [WTFisThis])
-get_ith_bit_u32 = |i, j| {
-	if j >= 32 {
-		Err(WTFisThis)
-	} else {
-		Ok(Bits.get_ith_bit_u32_certain(i, j))
-	}
-}
-
 arm_s_flag : U32 -> Bool
 arm_s_flag = |i| Bits.get_ith_bit_u32_certain(i, 20)
-
-get_seg_of_u32 : U32, U8, U8 -> Try(U32, [WTFisThis])
-get_seg_of_u32 = |i, lsb, len| {
-	if lsb > 31 or len < 1 or len > 32 - lsb {
-		Err(WTFisThis)
-	} else {
-		Ok(Bits.get_seg_of_u32_certain(i, lsb, len))
-	}
-}
 
 gpr_from_idx : U8 -> Try(GPR, [WTFisThis])
 gpr_from_idx = |i| {
@@ -2522,7 +2490,6 @@ thumb_push_pop_execute : U16,
 Cpu -> Try(
 	Execution_state,
 	[
-		UNPREDICTABLE,
 		InvalidMode,
 		WTFisThis,
 	],
@@ -2612,7 +2579,6 @@ thumb_block_data_transfer_execute : U16,
 Cpu -> Try(
 	Execution_state,
 	[
-		UNPREDICTABLE,
 		InvalidMode,
 		WTFisThis,
 	],
@@ -2725,7 +2691,6 @@ Cpu -> Try(
 	[
 		InvalidMode,
 		Branch_Type_Unknown,
-		Huh,
 		ReservedinArm7,
 		WTFisThis,
 		UNPREDICTABLE,
@@ -3263,7 +3228,6 @@ Cpu -> Try(
 	[
 		WTFisThis,
 		InvalidMode,
-		ImpossibleFormatOpCombination(Thumb_LoadStoreOpCode),
 		UNPREDICTABLE,
 	],
 )
@@ -3872,7 +3836,7 @@ cpu_setReg = |r, cpu, i| {
 	Ok({ ..cpu, regs: regs_set(r, m, cpu.regs, i) })
 }
 
-arm_opcode_parse_cond : U32 -> Try(Conds, [ReservedinArm7, Huh])
+arm_opcode_parse_cond : U32 -> Try(Conds, [ReservedinArm7])
 arm_opcode_parse_cond = |i| {
 	tmp = U32.shr_wrap(i, 28)
 	match tmp {
@@ -3891,8 +3855,7 @@ arm_opcode_parse_cond = |i| {
 		12 => Ok(GT)
 		13 => Ok(LE)
 		14 => Ok(AL)
-		15 => Err(ReservedinArm7)
-		_ => Err(Huh)
+		_ => Err(ReservedinArm7)
 	}
 }
 

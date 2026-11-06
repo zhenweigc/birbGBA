@@ -54,7 +54,6 @@ Ppu :: { framebuffer : List(U16) }.{
 		[
 			InvalidScanline(U64),
 			OutOfBounds,
-			TempNotSupportedMode({ dispcnt : U16, row_num : U64 }),
 			ProhibitedCode,
 			TempNotSupportedObj,
 		],
@@ -78,9 +77,9 @@ Ppu :: { framebuffer : List(U16) }.{
 		} else {
 			var $new_fb = ppu.framebuffer
 			starting_idx = 240 * row_num
+			var $i = 0.U64
 			if Bits.get_ith_bit_u16_certain(dispcnt, 7) {
 				# I cannot believe ROC does not have sublist replacing.
-				var $i = 0.U64
 				while $i < 240 {
 					$new_fb = $new_fb.set(starting_idx.plus_wrap($i), 0x7FFF)?
 					$i = $i + 1
@@ -89,11 +88,30 @@ Ppu :: { framebuffer : List(U16) }.{
 				mode = Bits.get_seg_of_u16_certain(dispcnt, 0, 3)
 				backdrop_color = read_rgb555(paletteram, 0)
 				effect_mode = Bits.get_seg_of_u16_certain(effects.bldcnt, 6, 2)
-				if Bits.get_seg_of_u16_certain(dispcnt, 8, 5) == 0
-					and mode < 6 {
+				valid_bg_mask = match mode {
+					0 => 0b1111.U16
+					1 => 0b111
+					2 => 0b1100
+					3 | 4 | 5 => 0b100
+					_ => 0
+				}
+				active_bg_mask = Bits.get_seg_of_u16_certain(dispcnt, 8, 4).bitwise_and(valid_bg_mask)
+				fast_single_bg = if effect_mode == 0
+					and dispcnt.bitwise_and(0xF000) == 0 {
+					match active_bg_mask {
+						1 => !Bits.get_ith_bit_u16_certain(bg_regs.bg0.cnt, 6)
+						2 => !Bits.get_ith_bit_u16_certain(bg_regs.bg1.cnt, 6)
+						4 => !Bits.get_ith_bit_u16_certain(bg_regs.bg2.cnt, 6)
+						8 => !Bits.get_ith_bit_u16_certain(bg_regs.bg3.cnt, 6)
+						_ => False
+					}
+				} else {
+					False
+				}
+				if Bits.get_seg_of_u16_certain(dispcnt, 8, 5) == 0 {
 					# Backdrop mode
-					# Color 0 of BG Palette 0 is used as backdrop color.
-					var $i = 0.U64
+					# Color 0 of BG Palette 0 is used as backdrop color
+					# Allows mode 6/7 now to mimic mGBA & NBA, mode 6/7 does not really exist in a valid ROM
 					adjusted_backdrop_color = brightness_rgb555(backdrop_color?, effects.bldy, effect_mode == 2)
 					while $i < 240 {
 						layer_mask = select_windows_mask(dispcnt, windows, $i, False)
@@ -104,7 +122,50 @@ Ppu :: { framebuffer : List(U16) }.{
 						)?
 						$i = $i + 1
 					}
-				} else if mode < 6 {
+				} else if fast_single_bg {
+					selected_bg = match active_bg_mask {
+						1 => bg_regs.bg0
+						2 => bg_regs.bg1
+						4 => bg_regs.bg2
+						_ => bg_regs.bg3
+					}
+					is_text = mode == 0
+						or (mode == 1 and (active_bg_mask == 1 or active_bg_mask == 2))
+					if is_text {
+						while $i < 240 {
+							pixel = sample_text_bg(vram, paletteram, selected_bg, $i, row_num)?
+							color = match pixel {
+								Color(c) => c
+								Transparent => backdrop_color?
+							}
+							$new_fb = $new_fb.set(starting_idx.plus_wrap($i), color)?
+							$i = $i + 1
+						}
+					} else {
+						selected_affine = if (active_bg_mask == 8) bg3 else bg2
+						var $x = selected_affine.x
+						var $y = selected_affine.y
+						while $i < 240 {
+							pixel = if mode <= 2 {
+								sample_affine_bg(vram, paletteram, selected_bg.cnt, $x, $y)?
+							} else {
+								match mode {
+									3 => sample_mode3_bg(vram, $x, $y)?
+									4 => sample_mode4_bg(vram, paletteram, dispcnt, $x, $y)?
+									_ => sample_mode5_bg(vram, dispcnt, $x, $y)?
+								}
+							}
+							color = match pixel {
+								Color(c) => c
+								Transparent => backdrop_color?
+							}
+							$new_fb = $new_fb.set(starting_idx.plus_wrap($i), color)?
+							$x = $x.plus_wrap(selected_affine.pa)
+							$y = $y.plus_wrap(selected_affine.pc)
+							$i = $i + 1
+						}
+					}
+				} else {
 					bgs = [bg_regs.bg0, bg_regs.bg1, bg_regs.bg2, bg_regs.bg3]
 					objs = prepare_obj_line(oam, dispcnt, row_num)?
 					mosaic_h = Bits.get_seg_of_u16_certain(mosaic, 0, 4).plus_wrap(1)
@@ -129,7 +190,6 @@ Ppu :: { framebuffer : List(U16) }.{
 						obj_window: False,
 						semi_transparent: False,
 					}
-					var $i = 0.U64
 					while $i < 240 {
 						mosaic_x = $i.minus_wrap($i.mod_by(mosaic_h.to_u64()))
 						obj_layer = sample_obj_layer(vram, paletteram, dispcnt, objs, $i, row_num, obj_mosaic_dy)?
@@ -170,7 +230,7 @@ Ppu :: { framebuffer : List(U16) }.{
 								}
 								$j = $j + 1
 							}
-						} else {
+						} else if mode < 6 {
 							if Bits.get_ith_bit_u16_certain(dispcnt, 10) and Bits.get_ith_bit_u16_certain(layer_mask, 2) {
 								bg_pixel = match mode {
 									3 => sample_mode3_bg(vram, sample_bg2_fixed_x, sample_bg2_fixed_y)?
@@ -220,21 +280,19 @@ Ppu :: { framebuffer : List(U16) }.{
 						}
 						$i = $i + 1
 					}
-				} else {
-					return Err(TempNotSupportedMode({ dispcnt: dispcnt, row_num: row_num }))
 				}
 			}
 			if Bits.get_ith_bit_u16_certain(effects.green_swap, 0) {
-				var $idx = 0.U64
+				$i = 0
 				green_mask = 0b0000_0011_1110_0000
 				rb_mask = 0b0111_1100_0001_1111
-				while $idx <= 238 {
-					a = $new_fb.get(starting_idx + $idx)?
-					b = $new_fb.get(starting_idx + $idx + 1)?
+				while $i <= 238 {
+					a = $new_fb.get(starting_idx + $i)?
+					b = $new_fb.get(starting_idx + $i + 1)?
 					new_a = a.bitwise_and(rb_mask).bitwise_or(b.bitwise_and(green_mask))
 					new_b = b.bitwise_and(rb_mask).bitwise_or(a.bitwise_and(green_mask))
-					$new_fb = $new_fb.set(starting_idx + $idx, new_a)?.set(starting_idx + $idx + 1, new_b)?
-					$idx = $idx + 2
+					$new_fb = $new_fb.set(starting_idx + $i, new_a)?.set(starting_idx + $i + 1, new_b)?
+					$i = $i + 2
 				}
 			}
 			Ok({ ..ppu, framebuffer: $new_fb })

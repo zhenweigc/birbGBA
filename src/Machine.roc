@@ -117,7 +117,7 @@ Machine :: {
 		} else if m.power_state == Halted {
 			run_halted_until(m, target, num_of_actions)
 		} else {
-			run_until(run_one_action(m)?, target, num_of_actions - 1)
+			run_until(step_forward(m)?, target, num_of_actions - 1) # no point of calling run_one_action as its definitely running
 		}
 	}
 
@@ -146,7 +146,7 @@ Machine :: {
 			ready = if SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
 				and !Bits.get_ith_bit_u32_certain(m.cpu.cpsr, 7) { # Cpu can block IRQ
 				(advanced, _) = take_opcode(m)?
-				irq_cpu = Cpu.handle_irq(advanced.cpu)?
+				irq_cpu = Cpu.handle_irq(advanced.cpu)
 				reload_pipeline({ ..advanced, cpu: irq_cpu })?
 			} else {
 				m
@@ -170,7 +170,7 @@ Machine :: {
 				Err(CpuHalted)
 			}
 		} else {
-			Err(TempStopNotImplemented)
+			Err(CpuStopped)
 		}
 	}
 
@@ -819,35 +819,43 @@ reload_pipeline = |m| {
 # a new machine with the pipeline field refreshed
 # CPU and its PC are unchanged
 take_opcode : Machine -> Try((Machine, FetchedCode), _)
-take_opcode = |before| {
-	# Eliminate a un-necessary recursion as reload_pipeline() always gives Ready(_)
-	m = match before.pipeline {
-		Empty => reload_pipeline(before)?
-		Ready(_) => before
+take_opcode = |m| {
+	take_ready_opcode : Machine,
+	{
+		first : FetchedCode,
+		second : FetchedCode,
+		access_kind : [NonSequential, Sequential],
+	} -> Try((Machine, FetchedCode), _)
+	take_ready_opcode = |give_machine, x| {
+		first = x.first
+		second = x.second
+		(next_addr, width) = if give_machine.cpu.is_thumb() {
+			(Cpu.getPC(give_machine.cpu).plus_wrap(4), W16)
+		} else {
+			(Cpu.getPC(give_machine.cpu).plus_wrap(8), W32)
+		}
+		(advanced, third) = fetch_opcode(give_machine, next_addr, width, x.access_kind)?
+		Ok((
+			{
+				..advanced,
+				pipeline: Ready({
+					first: second,
+					second: third,
+					access_kind: Sequential,
+				}),
+			},
+			first,
+		))
 	}
 	match m.pipeline {
-		Empty => Err(WTFisThis)
-		Ready(x) => {
-			first = x.first
-			second = x.second
-			(next_addr, width) = if m.cpu.is_thumb() {
-				(Cpu.getPC(m.cpu).plus_wrap(4), W16)
-			} else {
-				(Cpu.getPC(m.cpu).plus_wrap(8), W32)
+		Empty => {
+			loaded = reload_pipeline(m)?
+			match loaded.pipeline {
+				Empty => Err(WTFisThis)
+				Ready(x) => take_ready_opcode(loaded, x)
 			}
-			(advanced, third) = fetch_opcode(m, next_addr, width, x.access_kind)?
-			Ok((
-				{
-					..advanced,
-					pipeline: Ready({
-						first: second,
-						second: third,
-						access_kind: Sequential,
-					}),
-				},
-				first,
-			))
 		}
+		Ready(x) => take_ready_opcode(m, x)
 	}
 }
 

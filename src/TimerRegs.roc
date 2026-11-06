@@ -246,10 +246,10 @@ TimerRegs :: {
 			t1_reloaded = apply_pending_reload(current.timer1, at)
 			t2_reloaded = apply_pending_reload(current.timer2, at)
 			t3_reloaded = apply_pending_reload(current.timer3, at)
-			t0_final = apply_pending_control(t0_reloaded, at, Timer0)?
-			t1_final = apply_pending_control(t1_reloaded, at, Timer1)?
-			t2_final = apply_pending_control(t2_reloaded, at, Timer2)?
-			t3_final = apply_pending_control(t3_reloaded, at, Timer3)?
+			t0_final = apply_pending_control(t0_reloaded, at, Timer0)
+			t1_final = apply_pending_control(t1_reloaded, at, Timer1)
+			t2_final = apply_pending_control(t2_reloaded, at, Timer2)
+			t3_final = apply_pending_control(t3_reloaded, at, Timer3)
 			Ok((
 				{ timer0: t0_final, timer1: t1_final, timer2: t2_final, timer3: t3_final, synced_at: at },
 				{ overflow_mask: overflow_mask, irq_mask: irq_mask },
@@ -526,33 +526,33 @@ apply_pending_reload = |reg, now| {
 	}
 }
 
-apply_pending_control : TimerReg, U64, TimerSelection -> Try(TimerReg, [NoClock])
+apply_pending_control : TimerReg, U64, TimerSelection -> TimerReg
 apply_pending_control = |reg, now, selection| {
 	match reg.pending_control {
-		None => Ok(reg)
+		None => reg
 		Pending(x) => {
 			if now < x.at {
-				Ok(reg)
+				reg
 			} else {
 				old_enabled = Bits.get_ith_bit_u16_certain(reg.control, 7)
 				new_enabled = Bits.get_ith_bit_u16_certain(x.value, 7)
 				if !new_enabled {
-					Ok({
+					{
 						..reg,
 						control: x.value,
 						pending_control: None,
 						next_tick_at: None,
 						startup_reload_at: None,
-					})
+					}
 				} else if old_enabled {
 					intermediate_reg = { ..reg, control: x.value, pending_control: None }
 					period = clock_period(intermediate_reg, selection)
 					match period {
-						Period(p) => Ok({
+						Period(p) => {
 							..intermediate_reg,
 							next_tick_at: At(x.at + (p - x.at.mod_by(p))),
-						})
-						NoClock => Ok({ ..intermediate_reg, next_tick_at: None }) # Already enabled here, so NoClock -> cascade.
+						}
+						NoClock => { ..intermediate_reg, next_tick_at: None } # Already enabled here, so NoClock -> cascade.
 					}
 				} else {
 					intermediate_reg = {
@@ -561,7 +561,7 @@ apply_pending_control = |reg, now, selection| {
 						pending_control: None,
 					}
 					match clock_period(intermediate_reg, selection) {
-						NoClock => Ok({ ..intermediate_reg, counter: reg.reload, next_tick_at: None })
+						NoClock => { ..intermediate_reg, counter: reg.reload, next_tick_at: None }
 						Period(p) => {
 							remainder = x.at.mod_by(p)
 							next_multiple = x.at + (p - remainder)
@@ -569,17 +569,17 @@ apply_pending_control = |reg, now, selection| {
 							# TLDR, When a timer is re-enabled with counter == 0xFFFF, it may overflow
 							# before the startup reload takes effect, requesting an IRQ if enabled.
 							if remainder == 0 and reg.counter == 0xFFFF {
-								Ok({
+								{
 									..intermediate_reg,
 									next_tick_at: At(next_multiple),
 									startup_reload_at: None,
-								})
+								}
 							} else {
-								Ok({
+								{
 									..intermediate_reg,
 									next_tick_at: At(next_multiple + 1),
 									counter: reg.reload,
-								})
+								}
 							}
 						}
 					}
