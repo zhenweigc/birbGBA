@@ -257,6 +257,47 @@ TimerRegs :: {
 		}
 	}
 
+	halt_batch_span : TimerRegs, U64, U32 -> [NoBatch, Batch({ last_at : U64, actions : U32 })]
+	halt_batch_span = |rgs, limit, budget| {
+		fully_disabled : TimerReg -> Bool
+		fully_disabled = |reg| {
+			!Bits.get_ith_bit_u16_certain(reg.control, 7)
+				and reg.next_tick_at == None and reg.pending_reload == None
+				and reg.pending_control == None and reg.startup_reload_at == None
+		}
+		if (budget < 2) return NoBatch
+		if fully_disabled(rgs.timer1)
+			and fully_disabled(rgs.timer2) and fully_disabled(rgs.timer3) {
+			timer0 = rgs.timer0
+			if timer0.pending_reload == None and timer0.pending_control == None and timer0.startup_reload_at == None {
+				match clock_period(timer0, Timer0) {
+					NoClock => return NoBatch
+					Period(p) => {
+						match timer0.next_tick_at {
+							At(t) if t > rgs.synced_at => {
+								# Leave room to schedule the tick following the batch.
+								safe_limit = limit.min(U64.highest.minus_wrap(p))
+								if (t > safe_limit) return NoBatch
+								# Exclude the overflow tick; it must take the normal event path.
+								batch_tick_count = (1 + (safe_limit - t) // p)
+									.min(65535 - timer0.counter.to_u64())
+									.min(budget.to_u64())
+								if (batch_tick_count < 2) return NoBatch
+								# Each batched ordinary tick replaces one original Halt action.
+								return Batch({
+									last_at: t + (batch_tick_count - 1).times_wrap(p),
+									actions: batch_tick_count.to_u32_wrap(),
+								})
+							}
+							_ => return NoBatch
+						}
+					}
+				}
+			}
+		}
+		NoBatch
+	}
+
 	# Try to fast forward timer reg ticks together for better perf
 	# The entire point of this function is, fast forward if all enabled timer regs
 	# has no overflow, pending write, or startup event.
@@ -361,46 +402,18 @@ TimerRegs :: {
 			last_at: last_at,
 		})
 	}
+}
 
-	halt_batch_span : TimerRegs, U64, U32 -> [NoBatch, Batch({ last_at : U64, actions : U32 })]
-	halt_batch_span = |rgs, limit, budget| {
-		fully_disabled : TimerReg -> Bool
-		fully_disabled = |reg| {
-			!Bits.get_ith_bit_u16_certain(reg.control, 7)
-				and reg.next_tick_at == None and reg.pending_reload == None
-				and reg.pending_control == None and reg.startup_reload_at == None
-		}
-		if (budget < 2) return NoBatch
-		if fully_disabled(rgs.timer1)
-			and fully_disabled(rgs.timer2) and fully_disabled(rgs.timer3) {
-			timer0 = rgs.timer0
-			if timer0.pending_reload == None and timer0.pending_control == None and timer0.startup_reload_at == None {
-				match clock_period(timer0, Timer0) {
-					NoClock => return NoBatch
-					Period(p) => {
-						match timer0.next_tick_at {
-							At(t) if t > rgs.synced_at => {
-								# Leave room to schedule the tick following the batch.
-								safe_limit = limit.min(U64.highest.minus_wrap(p))
-								if (t > safe_limit) return NoBatch
-								# Exclude the overflow tick; it must take the normal event path.
-								batch_tick_count = (1 + (safe_limit - t) // p)
-									.min(65535 - timer0.counter.to_u64())
-									.min(budget.to_u64())
-								if (batch_tick_count < 2) return NoBatch
-								# Each batched ordinary tick replaces one original Halt action.
-								return Batch({
-									last_at: t + (batch_tick_count - 1).times_wrap(p),
-									actions: batch_tick_count.to_u32_wrap(),
-								})
-							}
-							_ => return NoBatch
-						}
-					}
-				}
-			}
-		}
-		NoBatch
+timer_init : () -> TimerReg
+timer_init = || {
+	{
+		reload: 0,
+		counter: 0,
+		control: 0,
+		pending_reload: None,
+		pending_control: None,
+		startup_reload_at: None,
+		next_tick_at: None,
 	}
 }
 
@@ -440,32 +453,51 @@ process_tick_at = |rgs, selection, at| {
 	}
 }
 
-clock_period : TimerReg, TimerSelection -> [NoClock, Period(U64)]
-clock_period = |reg, selection| {
-	if !Bits.get_ith_bit_u16_certain(reg.control, 7) {
-		NoClock
-	} else if selection != Timer0 and Bits.get_ith_bit_u16_certain(reg.control, 2) {
-		NoClock
-	} else {
-		match reg.control.bitwise_and(0b11) {
-			0 => Period(1)
-			0b1 => Period(64)
-			0b10 => Period(256)
-			_ => Period(1024)
-		}
+# Process one supplied counting pulse without advancing system time.
+# An overflow reloads the counter and propagates a Cascade pulse to the next timer reg, no wrap around!
+tick : TimerRegs, TimerSelection, [Clock, Cascade] -> (TimerRegs, { overflow_mask : U8, irq_mask : U16 })
+tick = |rgs, selection, source| {
+	reg_to_tick = pick_reg(rgs, selection)
+	source_mismatch = match source {
+		Clock => selection != Timer0 and Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
+		Cascade => selection == Timer0 or !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
 	}
-}
-
-timer_init : () -> TimerReg
-timer_init = || {
-	{
-		reload: 0,
-		counter: 0,
-		control: 0,
-		pending_reload: None,
-		pending_control: None,
-		startup_reload_at: None,
-		next_tick_at: None,
+	if !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 7) {
+		(rgs, { overflow_mask: 0, irq_mask: 0 })
+	} else if source_mismatch {
+		(rgs, { overflow_mask: 0, irq_mask: 0 })
+	} else {
+		(reg, overflow) = timer_tick(reg_to_tick)
+		(updated_timer_rgs, overflow_mask, irq_mask, nxt) = match selection {
+			Timer0 => ({ ..rgs, timer0: reg }, 0b1, 0b1000, Timer1)
+			Timer1 => ({ ..rgs, timer1: reg }, 0b10, 0b1_0000, Timer2)
+			Timer2 => ({ ..rgs, timer2: reg }, 0b100, 0b10_0000, Timer3)
+			# Well there is no wrap around for cascade, so treat it as a None
+			Timer3 => ({ ..rgs, timer3: reg }, 0b1000, 0b100_0000, Timer0)
+		}
+		if !overflow {
+			(updated_timer_rgs, { overflow_mask: 0, irq_mask: 0 })
+		} else {
+			interrupt_masking = if (Bits.get_ith_bit_u16_certain(reg.control, 6)) irq_mask else 0
+			if nxt == Timer0 {
+				(
+					updated_timer_rgs,
+					{
+						overflow_mask: overflow_mask,
+						irq_mask: interrupt_masking,
+					},
+				)
+			} else {
+				(t, b) = tick(updated_timer_rgs, nxt, Cascade)
+				(
+					t,
+					{
+						overflow_mask: b.overflow_mask.bitwise_or(overflow_mask),
+						irq_mask: b.irq_mask.bitwise_or(interrupt_masking),
+					},
+				)
+			}
+		}
 	}
 }
 
@@ -477,26 +509,6 @@ timer_tick = |reg| {
 	} else {
 		# Incrementing a counter at 0xFFFF causes overflow.
 		({ ..reg, counter: reg.reload }, True)
-	}
-}
-
-pick_reg : TimerRegs, TimerSelection -> TimerReg
-pick_reg = |rgs, selection| {
-	match selection {
-		Timer0 => rgs.timer0
-		Timer1 => rgs.timer1
-		Timer2 => rgs.timer2
-		Timer3 => rgs.timer3
-	}
-}
-
-put_reg : TimerRegs, TimerSelection, TimerReg -> TimerRegs
-put_reg = |rgs, selection, reg| {
-	match selection {
-		Timer0 => { ..rgs, timer0: reg }
-		Timer1 => { ..rgs, timer1: reg }
-		Timer2 => { ..rgs, timer2: reg }
-		Timer3 => { ..rgs, timer3: reg }
 	}
 }
 
@@ -577,50 +589,38 @@ apply_pending_control = |reg, now, selection| {
 	}
 }
 
-# Process one supplied counting pulse without advancing system time.
-# An overflow reloads the counter and propagates a Cascade pulse to the next timer reg, no wrap around!
-tick : TimerRegs, TimerSelection, [Clock, Cascade] -> (TimerRegs, { overflow_mask : U8, irq_mask : U16 })
-tick = |rgs, selection, source| {
-	reg_to_tick = pick_reg(rgs, selection)
-	source_mismatch = match source {
-		Clock => selection != Timer0 and Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
-		Cascade => selection == Timer0 or !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 2)
+pick_reg : TimerRegs, TimerSelection -> TimerReg
+pick_reg = |rgs, selection| {
+	match selection {
+		Timer0 => rgs.timer0
+		Timer1 => rgs.timer1
+		Timer2 => rgs.timer2
+		Timer3 => rgs.timer3
 	}
-	if !Bits.get_ith_bit_u16_certain(reg_to_tick.control, 7) {
-		(rgs, { overflow_mask: 0, irq_mask: 0 })
-	} else if source_mismatch {
-		(rgs, { overflow_mask: 0, irq_mask: 0 })
+}
+
+put_reg : TimerRegs, TimerSelection, TimerReg -> TimerRegs
+put_reg = |rgs, selection, reg| {
+	match selection {
+		Timer0 => { ..rgs, timer0: reg }
+		Timer1 => { ..rgs, timer1: reg }
+		Timer2 => { ..rgs, timer2: reg }
+		Timer3 => { ..rgs, timer3: reg }
+	}
+}
+
+clock_period : TimerReg, TimerSelection -> [NoClock, Period(U64)]
+clock_period = |reg, selection| {
+	if !Bits.get_ith_bit_u16_certain(reg.control, 7) {
+		NoClock
+	} else if selection != Timer0 and Bits.get_ith_bit_u16_certain(reg.control, 2) {
+		NoClock
 	} else {
-		(reg, overflow) = timer_tick(reg_to_tick)
-		(updated_timer_rgs, overflow_mask, irq_mask, nxt) = match selection {
-			Timer0 => ({ ..rgs, timer0: reg }, 0b1, 0b1000, Timer1)
-			Timer1 => ({ ..rgs, timer1: reg }, 0b10, 0b1_0000, Timer2)
-			Timer2 => ({ ..rgs, timer2: reg }, 0b100, 0b10_0000, Timer3)
-			# Well there is no wrap around for cascade, so treat it as a None
-			Timer3 => ({ ..rgs, timer3: reg }, 0b1000, 0b100_0000, Timer0)
-		}
-		if !overflow {
-			(updated_timer_rgs, { overflow_mask: 0, irq_mask: 0 })
-		} else {
-			interrupt_masking = if (Bits.get_ith_bit_u16_certain(reg.control, 6)) irq_mask else 0
-			if nxt == Timer0 {
-				(
-					updated_timer_rgs,
-					{
-						overflow_mask: overflow_mask,
-						irq_mask: interrupt_masking,
-					},
-				)
-			} else {
-				(t, b) = tick(updated_timer_rgs, nxt, Cascade)
-				(
-					t,
-					{
-						overflow_mask: b.overflow_mask.bitwise_or(overflow_mask),
-						irq_mask: b.irq_mask.bitwise_or(interrupt_masking),
-					},
-				)
-			}
+		match reg.control.bitwise_and(0b11) {
+			0 => Period(1)
+			0b1 => Period(64)
+			0b10 => Period(256)
+			_ => Period(1024)
 		}
 	}
 }

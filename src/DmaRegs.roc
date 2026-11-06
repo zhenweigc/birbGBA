@@ -26,262 +26,7 @@ DmaRegs :: {
 	Reg : DMAReg
 
 	init : () -> DmaRegs
-	init = || {
-		{
-			dma0: dma_init(),
-			dma1: dma_init(),
-			dma2: dma_init(),
-			dma3: dma_init(),
-		}
-	}
-
-	# Follow NBA: FIFO A requests DMA1; FIFO B requests DMA2,
-	# Since they modified to this behavior more recently
-	# and called it a fix
-	trigger_fifo : DmaRegs, { fifo_a : Bool, fifo_b : Bool } -> DmaRegs
-	trigger_fifo = |rgs, requests| {
-		process : DMAReg -> DMAReg
-		process = |reg| {
-			if Bits.get_ith_bit_u16_certain(reg.cnt_h, 15)
-				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3
-				and reg.phase == Waiting {
-				{ ..reg, phase: Pending, ready_at: None, remaining: 4 }
-			} else {
-				reg
-			}
-		}
-		{
-			..rgs,
-			dma1: if (requests.fifo_a) process(rgs.dma1) else rgs.dma1,
-			dma2: if (requests.fifo_b) process(rgs.dma2) else rgs.dma2,
-		}
-	}
-
-	has_video_dma : DmaRegs -> Bool
-	has_video_dma = |rgs| Bits.get_ith_bit_u16_certain(rgs.dma3.cnt_h, 15) and Bits.get_seg_of_u16_certain(rgs.dma3.cnt_h, 12, 2) == 3
-
-	trigger_video : DmaRegs -> DmaRegs
-	trigger_video = |rgs| {
-		{
-			..rgs,
-			dma3: if has_video_dma(rgs) and rgs.dma3.phase == Waiting {
-				{ ..rgs.dma3, phase: Pending, ready_at: None }
-			} else {
-				rgs.dma3
-			},
-		}
-	}
-
-	stop_video_dma : DmaRegs -> DmaRegs
-	stop_video_dma = |rgs| { ..rgs, dma3: { ..rgs.dma3, phase: Disabled, ready_at: None, cnt_h: rgs.dma3.cnt_h.bitwise_and(0b111_1111_1111_1111) } }
-
-	# HBlank & VBlank all triggered by here
-	trigger_blank : DmaRegs, [VBlank, HBlank] -> DmaRegs
-	trigger_blank = |rgs, selection| {
-		val_to_match = if (selection == VBlank) 1 else 2
-		process = |reg| {
-			if Bits.get_ith_bit_u16_certain(reg.cnt_h, 15)
-				and reg.phase == Waiting
-				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == val_to_match {
-				{ ..reg, phase: Pending, ready_at: None }
-			} else {
-				reg
-			}
-		}
-		{
-			dma0: process(rgs.dma0),
-			dma1: process(rgs.dma1),
-			dma2: process(rgs.dma2),
-			dma3: process(rgs.dma3),
-		}
-	}
-
-	schedule_pending : DmaRegs, U64 -> DmaRegs
-	schedule_pending = |rgs, given_now| {
-		# turns out there are CYCLE diff between pending initiated
-		# and acutal IOing for DMA
-		process = |reg| {
-			if reg.phase == Pending and reg.ready_at == None {
-				{ ..reg, ready_at: At(given_now + 2) }
-			} else {
-				reg
-			}
-		}
-		{
-			dma0: process(rgs.dma0),
-			dma1: process(rgs.dma1),
-			dma2: process(rgs.dma2),
-			dma3: process(rgs.dma3),
-		}
-	}
-
-	has_ready : DmaRegs, U64 -> Bool
-	has_ready = |rgs, given_now| {
-		single_reg_has_ready : [Disabled, Waiting, Pending], [None, At(U64)] -> Bool
-		single_reg_has_ready = |phase, ready_at| {
-			if phase == Pending and ready_at != None {
-				match ready_at {
-					At(t) if t <= given_now => return True
-					_ => return False
-				}
-			}
-			False
-		}
-		single_reg_has_ready(rgs.dma0.phase, rgs.dma0.ready_at) or single_reg_has_ready(rgs.dma1.phase, rgs.dma1.ready_at) or
-			single_reg_has_ready(rgs.dma2.phase, rgs.dma2.ready_at) or single_reg_has_ready(rgs.dma3.phase, rgs.dma3.ready_at)
-	}
-
-	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
-	get_reg_ready_to_io = |rgs, given_now| {
-		var $num = 0.U8
-		while $num < 4 {
-			reg = match $num {
-				0 => rgs.dma0
-				1 => rgs.dma1
-				2 => rgs.dma2
-				_ => rgs.dma3
-			}
-			if reg.phase == Pending and reg.ready_at != None {
-				match reg.ready_at {
-					At(t) if t <= given_now => {
-						return Transfer(
-							$num,
-							reg,
-							if (is_fifo_dma(reg, $num) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) W32 else W16,
-						)
-					}
-					_ => {}
-				}
-			}
-			$num = $num + 1
-		}
-		None
-	}
-
-	next_ready_at : DmaRegs -> [None, At(U64)]
-	next_ready_at = |rgs| {
-		var $res = None
-		var $idx = 0
-		while $idx < 4 {
-			reg = match $idx {
-				0 => rgs.dma0
-				1 => rgs.dma1
-				2 => rgs.dma2
-				_ => rgs.dma3
-			}
-			match reg.ready_at {
-				At(t) if reg.phase == Pending => {
-					$res = match $res {
-						None => At(t)
-						At(x) => if (t < x) At(t) else At(x)
-					}
-				}
-				_ => {}
-			}
-			$idx = $idx + 1
-		}
-		$res
-	}
-
-	complete_unit : DmaRegs,
-	U8 -> Try(
-		(DmaRegs, U16),
-		[
-			DMAInvalidSelection,
-			DMAImpossibleStepMode,
-			DMARemainingAlreadyZero,
-			DMANotInPending,
-			GamePakDRQUnsupported,
-			DMAWrongMode,
-		],
-	)
-	complete_unit = |rgs, selection| {
-		put_back : DMAReg -> DmaRegs
-		put_back = |reg_to_put| {
-			match selection {
-				0 => { ..rgs, dma0: reg_to_put }
-				1 => { ..rgs, dma1: reg_to_put }
-				2 => { ..rgs, dma2: reg_to_put }
-				_ => { ..rgs, dma3: reg_to_put }
-			}
-		}
-		reg = match selection {
-			0 => rgs.dma0
-			1 => rgs.dma1
-			2 => rgs.dma2
-			3 => rgs.dma3
-			_ => return Err(DMAInvalidSelection)
-		}
-		# Guess what? If a DMA IO starts and then disabled
-		# This unit of IO has to be completed, so stage var is needed
-		# To avoid throwing errors
-		validate_transfer(reg, selection, Completing)?
-		width = if (is_fifo_dma(reg, selection) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) 4 else 2.U32
-		new_source = match Bits.get_seg_of_u16_certain(reg.cnt_h, 7, 2) {
-			0 => reg.source_addr.plus_wrap(width)
-			1 => reg.source_addr.minus_wrap(width)
-			2 => reg.source_addr
-			_ => return Err(DMAImpossibleStepMode)
-		}
-		new_dest = match Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) {
-			_ if is_fifo_dma(reg, selection) => reg.dest_addr
-			0 => reg.dest_addr.plus_wrap(width)
-			1 => reg.dest_addr.minus_wrap(width)
-			2 => reg.dest_addr
-			_ => reg.dest_addr.plus_wrap(width)
-		}
-		new_remaining = if (reg.remaining > 0) reg.remaining - 1 else return Err(DMARemainingAlreadyZero)
-		if new_remaining > 0 {
-			new_reg = {
-				..reg,
-				source_addr: new_source,
-				dest_addr: new_dest,
-				remaining: new_remaining,
-			}
-			Ok((put_back(new_reg), 0))
-		} else {
-			new_reg = if Bits.get_ith_bit_u16_certain(reg.cnt_h, 9)
-				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) > 0
-				and reg.phase == Pending { # Keep Disabled instead of returning to Waiting for repeat.
-				# Not immediate and here comes repeat for vblank/hblank
-				{
-					..reg,
-					source_addr: new_source,
-					dest_addr: if Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) != 3
-						or is_fifo_dma(reg, selection) {
-						new_dest
-					} else {
-						reg.dad_h.to_u32().shl_wrap(16)
-							+ reg.dad_l.to_u32().bitwise_and(if (width == 4) 0xFFFFFFFC else 0xFFFFFFFE)
-					},
-					remaining: if is_fifo_dma(reg, selection) {
-						4
-					} else if reg.cnt_l != 0 {
-						reg.cnt_l.to_u32()
-					} else {
-						if (selection == 3) 0x10000 else 0x4000
-					},
-					phase: Waiting,
-					ready_at: None,
-				}
-			} else {
-				{
-					..reg,
-					source_addr: new_source,
-					dest_addr: new_dest,
-					remaining: new_remaining,
-					cnt_h: reg.cnt_h.bitwise_and(0b111_1111_1111_1111),
-					phase: Disabled,
-					ready_at: None,
-				}
-			}
-			Ok((
-				put_back(new_reg),
-				# Return a new mask will be applied to Interrupt Request Flags(IF)
-				if (Bits.get_ith_bit_u16_certain(new_reg.cnt_h, 14)) (1.U16).shl_wrap(8 + selection) else 0,
-			))
-		}
-	}
+	init = || { dma0: dma_init(), dma1: dma_init(), dma2: dma_init(), dma3: dma_init() }
 
 	read8 : DmaRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
 	read8 = |rgs, addr| {
@@ -502,6 +247,249 @@ DmaRegs :: {
 			0x0DC => write16(write16(rgs, 0x0DC, lo)?, 0x0DE, hi)
 			offset if offset >= 0x0E0 and offset <= 0x0FC and offset.mod_by(4) == 0 => Ok(rgs)
 			_ => Err(UnsupportedIORegOffset(addr))
+		}
+	}
+
+	# Follow NBA: FIFO A requests DMA1; FIFO B requests DMA2,
+	# Since they modified to this behavior more recently
+	# and called it a fix
+	trigger_fifo : DmaRegs, { fifo_a : Bool, fifo_b : Bool } -> DmaRegs
+	trigger_fifo = |rgs, requests| {
+		process : DMAReg -> DMAReg
+		process = |reg| {
+			if Bits.get_ith_bit_u16_certain(reg.cnt_h, 15)
+				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3
+				and reg.phase == Waiting {
+				{ ..reg, phase: Pending, ready_at: None, remaining: 4 }
+			} else {
+				reg
+			}
+		}
+		{
+			..rgs,
+			dma1: if (requests.fifo_a) process(rgs.dma1) else rgs.dma1,
+			dma2: if (requests.fifo_b) process(rgs.dma2) else rgs.dma2,
+		}
+	}
+
+	has_video_dma : DmaRegs -> Bool
+	has_video_dma = |rgs| Bits.get_ith_bit_u16_certain(rgs.dma3.cnt_h, 15) and Bits.get_seg_of_u16_certain(rgs.dma3.cnt_h, 12, 2) == 3
+
+	trigger_video : DmaRegs -> DmaRegs
+	trigger_video = |rgs| {
+		{
+			..rgs,
+			dma3: if has_video_dma(rgs) and rgs.dma3.phase == Waiting {
+				{ ..rgs.dma3, phase: Pending, ready_at: None }
+			} else {
+				rgs.dma3
+			},
+		}
+	}
+
+	stop_video_dma : DmaRegs -> DmaRegs
+	stop_video_dma = |rgs| { ..rgs, dma3: { ..rgs.dma3, phase: Disabled, ready_at: None, cnt_h: rgs.dma3.cnt_h.bitwise_and(0b111_1111_1111_1111) } }
+
+	# HBlank & VBlank all triggered by here
+	trigger_blank : DmaRegs, [VBlank, HBlank] -> DmaRegs
+	trigger_blank = |rgs, selection| {
+		val_to_match = if (selection == VBlank) 1 else 2
+		process = |reg| {
+			if Bits.get_ith_bit_u16_certain(reg.cnt_h, 15)
+				and reg.phase == Waiting
+				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == val_to_match {
+				{ ..reg, phase: Pending, ready_at: None }
+			} else {
+				reg
+			}
+		}
+		{ dma0: process(rgs.dma0), dma1: process(rgs.dma1), dma2: process(rgs.dma2), dma3: process(rgs.dma3) }
+	}
+
+	schedule_pending : DmaRegs, U64 -> DmaRegs
+	schedule_pending = |rgs, given_now| {
+		# turns out there are CYCLE diff between pending initiated
+		# and acutal IOing for DMA
+		process = |reg| {
+			if reg.phase == Pending and reg.ready_at == None {
+				{ ..reg, ready_at: At(given_now + 2) }
+			} else {
+				reg
+			}
+		}
+		{
+			dma0: process(rgs.dma0),
+			dma1: process(rgs.dma1),
+			dma2: process(rgs.dma2),
+			dma3: process(rgs.dma3),
+		}
+	}
+
+	next_ready_at : DmaRegs -> [None, At(U64)]
+	next_ready_at = |rgs| {
+		var $res = None
+		var $idx = 0
+		while $idx < 4 {
+			reg = match $idx {
+				0 => rgs.dma0
+				1 => rgs.dma1
+				2 => rgs.dma2
+				_ => rgs.dma3
+			}
+			match reg.ready_at {
+				At(t) if reg.phase == Pending => {
+					$res = match $res {
+						None => At(t)
+						At(x) => if (t < x) At(t) else At(x)
+					}
+				}
+				_ => {}
+			}
+			$idx = $idx + 1
+		}
+		$res
+	}
+
+	has_ready : DmaRegs, U64 -> Bool
+	has_ready = |rgs, given_now| {
+		single_reg_has_ready : [Disabled, Waiting, Pending], [None, At(U64)] -> Bool
+		single_reg_has_ready = |phase, ready_at| {
+			if phase == Pending and ready_at != None {
+				match ready_at {
+					At(t) if t <= given_now => return True
+					_ => return False
+				}
+			}
+			False
+		}
+		single_reg_has_ready(rgs.dma0.phase, rgs.dma0.ready_at) or single_reg_has_ready(rgs.dma1.phase, rgs.dma1.ready_at) or
+			single_reg_has_ready(rgs.dma2.phase, rgs.dma2.ready_at) or single_reg_has_ready(rgs.dma3.phase, rgs.dma3.ready_at)
+	}
+
+	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
+	get_reg_ready_to_io = |rgs, given_now| {
+		var $num = 0.U8
+		while $num < 4 {
+			reg = match $num {
+				0 => rgs.dma0
+				1 => rgs.dma1
+				2 => rgs.dma2
+				_ => rgs.dma3
+			}
+			if reg.phase == Pending and reg.ready_at != None {
+				match reg.ready_at {
+					At(t) if t <= given_now => {
+						return Transfer(
+							$num,
+							reg,
+							if (is_fifo_dma(reg, $num) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) W32 else W16,
+						)
+					}
+					_ => {}
+				}
+			}
+			$num = $num + 1
+		}
+		None
+	}
+
+	complete_unit : DmaRegs,
+	U8 -> Try(
+		(DmaRegs, U16),
+		[
+			DMAInvalidSelection,
+			DMAImpossibleStepMode,
+			DMARemainingAlreadyZero,
+			DMANotInPending,
+			GamePakDRQUnsupported,
+			DMAWrongMode,
+		],
+	)
+	complete_unit = |rgs, selection| {
+		put_back : DMAReg -> DmaRegs
+		put_back = |reg_to_put| {
+			match selection {
+				0 => { ..rgs, dma0: reg_to_put }
+				1 => { ..rgs, dma1: reg_to_put }
+				2 => { ..rgs, dma2: reg_to_put }
+				_ => { ..rgs, dma3: reg_to_put }
+			}
+		}
+		reg = match selection {
+			0 => rgs.dma0
+			1 => rgs.dma1
+			2 => rgs.dma2
+			3 => rgs.dma3
+			_ => return Err(DMAInvalidSelection)
+		}
+		# Guess what? If a DMA IO starts and then disabled
+		# This unit of IO has to be completed, so stage var is needed
+		# To avoid throwing errors
+		validate_transfer(reg, selection, Completing)?
+		width = if (is_fifo_dma(reg, selection) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) 4 else 2.U32
+		new_source = match Bits.get_seg_of_u16_certain(reg.cnt_h, 7, 2) {
+			0 => reg.source_addr.plus_wrap(width)
+			1 => reg.source_addr.minus_wrap(width)
+			2 => reg.source_addr
+			_ => return Err(DMAImpossibleStepMode)
+		}
+		new_dest = match Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) {
+			_ if is_fifo_dma(reg, selection) => reg.dest_addr
+			0 => reg.dest_addr.plus_wrap(width)
+			1 => reg.dest_addr.minus_wrap(width)
+			2 => reg.dest_addr
+			_ => reg.dest_addr.plus_wrap(width)
+		}
+		new_remaining = if (reg.remaining > 0) reg.remaining - 1 else return Err(DMARemainingAlreadyZero)
+		if new_remaining > 0 {
+			new_reg = {
+				..reg,
+				source_addr: new_source,
+				dest_addr: new_dest,
+				remaining: new_remaining,
+			}
+			Ok((put_back(new_reg), 0))
+		} else {
+			new_reg = if Bits.get_ith_bit_u16_certain(reg.cnt_h, 9)
+				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) > 0
+				and reg.phase == Pending { # Keep Disabled instead of returning to Waiting for repeat.
+				# Not immediate and here comes repeat for vblank/hblank
+				{
+					..reg,
+					source_addr: new_source,
+					dest_addr: if Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) != 3
+						or is_fifo_dma(reg, selection) {
+						new_dest
+					} else {
+						reg.dad_h.to_u32().shl_wrap(16)
+							+ reg.dad_l.to_u32().bitwise_and(if (width == 4) 0xFFFFFFFC else 0xFFFFFFFE)
+					},
+					remaining: if is_fifo_dma(reg, selection) {
+						4
+					} else if reg.cnt_l != 0 {
+						reg.cnt_l.to_u32()
+					} else {
+						if (selection == 3) 0x10000 else 0x4000
+					},
+					phase: Waiting,
+					ready_at: None,
+				}
+			} else {
+				{
+					..reg,
+					source_addr: new_source,
+					dest_addr: new_dest,
+					remaining: new_remaining,
+					cnt_h: reg.cnt_h.bitwise_and(0b111_1111_1111_1111),
+					phase: Disabled,
+					ready_at: None,
+				}
+			}
+			Ok((
+				put_back(new_reg),
+				# Return a new mask will be applied to Interrupt Request Flags(IF)
+				if (Bits.get_ith_bit_u16_certain(new_reg.cnt_h, 14)) (1.U16).shl_wrap(8 + selection) else 0,
+			))
 		}
 	}
 

@@ -65,6 +65,68 @@ Machine :: {
 	get_time : Machine -> U64 # slop method
 	get_time = |m| m.now
 
+	get_cpu : Machine -> Cpu
+	get_cpu = |m| m.cpu
+
+	process_next_event : Machine -> Try((Machine, U8), _)
+	process_next_event = |m| {
+		if m.power_state == Stopped {
+			Ok((m, 0))
+		} else {
+			timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+			at = match timer_at {
+				None => m.next_lcd_at
+				At(t) => t.min(m.next_lcd_at)
+			}
+			process_event_at(m, at, timer_at)
+		}
+	}
+
+	set_pressed : Machine, U16 -> Machine
+	set_pressed = |m, pressed| {
+		if m.power_state == Stopped {
+			new_keys = KeyRegs.set_pressed(m.bus.io_regs.keys, pressed)
+			if KeyRegs.can_key_irq(new_keys)
+				and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(m.bus.io_regs.system), 12) {
+				{ ..m, bus: { ..m.bus, io_regs: { ..m.bus.io_regs, keys: new_keys } }, power_state: Running }
+			} else {
+				{ ..m, bus: { ..m.bus, io_regs: { ..m.bus.io_regs, keys: new_keys } } }
+			}
+		} else {
+			updated = IoRegs.set_pressed(m.bus.io_regs, pressed)
+			{ ..m, bus: { ..m.bus, io_regs: updated } }
+		}
+	}
+
+	run_until : Machine,
+	U64,
+	U32 -> Try(
+		{
+			machine : Machine,
+			reason : [ReachedTarget, BudgetExhausted, Stopped],
+		},
+		_,
+	)
+	run_until = |m, target, num_of_actions| {
+		if m.now >= target {
+			Ok({ machine: m, reason: ReachedTarget })
+		} else if m.power_state == Stopped {
+			Ok({ machine: m, reason: Stopped })
+		} else if num_of_actions == 0 {
+			Ok({ machine: m, reason: BudgetExhausted })
+		} else if m.power_state == Halted {
+			run_halted_until(m, target, num_of_actions)
+		} else {
+			run_until(run_one_action(m)?, target, num_of_actions - 1)
+		}
+	}
+
+	run_with_budget : Machine, U32 -> Try(Machine, _)
+	run_with_budget = |m, num_of_actions| {
+		if (num_of_actions == 0 or m.power_state == Stopped) return Ok(m)
+		run_with_budget(run_one_action(m)?, num_of_actions - 1)
+	}
+
 	step_forward : Machine -> Try(Machine, _)
 	step_forward = |before_dma| {
 		m = if no_dma(before_dma) {
@@ -112,34 +174,6 @@ Machine :: {
 		}
 	}
 
-	get_cpu : Machine -> Cpu
-	get_cpu = |m| {
-		m.cpu
-	}
-
-	process_next_event : Machine -> Try((Machine, U8), _)
-	process_next_event = |m| {
-		if m.power_state == Stopped {
-			Ok((m, 0))
-		} else {
-			timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-			at = match timer_at {
-				None => m.next_lcd_at
-				At(t) => t.min(m.next_lcd_at)
-			}
-			process_event_at(m, at, timer_at)
-		}
-	}
-
-	run_with_budget : Machine, U32 -> Try(Machine, _)
-	run_with_budget = |m, num_of_actions| {
-		if num_of_actions == 0 or m.power_state == Stopped {
-			Ok(m)
-		} else {
-			run_with_budget(run_one_action(m)?, num_of_actions - 1)
-		}
-	}
-
 	advance_to : Machine, U64 -> Try(Machine, _)
 	advance_to = |m, target| {
 		# Eliminate big if-else clause for one less in memcpy
@@ -170,81 +204,69 @@ Machine :: {
 			now: target,
 		})
 	}
+}
 
-	set_pressed : Machine, U16 -> Machine
-	set_pressed = |m, pressed| {
-		if m.power_state == Stopped {
-			new_keys = KeyRegs.set_pressed(m.bus.io_regs.keys, pressed)
-			if KeyRegs.can_key_irq(new_keys)
-				and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(m.bus.io_regs.system), 12) {
-				{ ..m, bus: { ..m.bus, io_regs: { ..m.bus.io_regs, keys: new_keys } }, power_state: Running }
+run_halted_until : Machine,
+U64,
+U32 -> Try(
+	{
+		machine : Machine,
+		reason : [ReachedTarget, BudgetExhausted, Stopped],
+	},
+	_,
+)
+run_halted_until = |m, target, num_of_actions| {
+	if (m.power_state != Halted or m.now >= target or num_of_actions == 0) return Machine.run_until(m, target, num_of_actions)
+	if num_of_actions < 2 or m.dma_owner != None or SystemRegs.enable_pending(m.bus.io_regs.system) != 0 {
+		return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+	}
+	first = match TimerRegs.next_event_at(m.bus.io_regs.timers) {
+		None => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+		At(t) => t
+	}
+	if (first <= m.now or first >= m.next_lcd_at or first > target or first > U64.highest - 2) return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+	# Ordinary ticks schedule pending DMA at the FIRST tick.
+	# Query that deadline here; advance_to performs the actual update.
+	scheduled = DmaRegs.schedule_pending(m.bus.io_regs.dmas, first)
+	lcd_limit = target.min(m.next_lcd_at - 1)
+	limit = match DmaRegs.next_ready_at(scheduled) {
+		# No DMA -> Just focus on lcd
+		None => lcd_limit
+		# DMA is a thing but later than timer events
+		At(dma_at) if dma_at > first => lcd_limit.min(dma_at - 1)
+		_ => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+	}
+	match TimerRegs.halt_batch_span(m.bus.io_regs.timers, limit, num_of_actions) {
+		NoBatch => run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+		Batch(span) => {
+			advanced = Machine.advance_to(m, span.last_at)?
+			run_halted_until(advanced, target, num_of_actions - span.actions)
+		}
+	}
+}
+
+run_one_action : Machine -> Try(Machine, _)
+run_one_action = |m| {
+	match m.power_state {
+		Running => Machine.step_forward(m)
+		Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => Machine.step_forward(m)
+		Halted => {
+			after_dma = if no_dma(m) {
+				m
 			} else {
-				{ ..m, bus: { ..m.bus, io_regs: { ..m.bus.io_regs, keys: new_keys } } }
+				return deal_with_dma(m)
 			}
-		} else {
-			updated = IoRegs.set_pressed(m.bus.io_regs, pressed)
-			{ ..m, bus: { ..m.bus, io_regs: updated } }
-		}
-	}
-
-	run_until : Machine,
-	U64,
-	U32 -> Try(
-		{
-			machine : Machine,
-			reason : [ReachedTarget, BudgetExhausted, Stopped],
-		},
-		_,
-	)
-	run_until = |m, target, num_of_actions| {
-		if m.now >= target {
-			Ok({ machine: m, reason: ReachedTarget })
-		} else if m.power_state == Stopped {
-			Ok({ machine: m, reason: Stopped })
-		} else if num_of_actions == 0 {
-			Ok({ machine: m, reason: BudgetExhausted })
-		} else if m.power_state == Halted {
-			run_halted_until(m, target, num_of_actions)
-		} else {
-			run_until(run_one_action(m)?, target, num_of_actions - 1)
-		}
-	}
-
-	run_halted_until : Machine,
-	U64,
-	U32 -> Try(
-		{
-			machine : Machine,
-			reason : [ReachedTarget, BudgetExhausted, Stopped],
-		},
-		_,
-	)
-	run_halted_until = |m, target, num_of_actions| {
-		if (m.power_state != Halted or m.now >= target or num_of_actions == 0) return run_until(m, target, num_of_actions)
-		if (num_of_actions < 2 or m.dma_owner != None or SystemRegs.enable_pending(m.bus.io_regs.system) != 0) return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
-		first = match TimerRegs.next_event_at(m.bus.io_regs.timers) {
-			None => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
-			At(t) => t
-		}
-		if (first <= m.now or first >= m.next_lcd_at or first > target or first > U64.highest - 2) return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
-		# Ordinary ticks schedule pending DMA at the FIRST tick.
-		# Query that deadline here; advance_to performs the actual update.
-		scheduled = DmaRegs.schedule_pending(m.bus.io_regs.dmas, first)
-		lcd_limit = target.min(m.next_lcd_at - 1)
-		limit = match DmaRegs.next_ready_at(scheduled) {
-			# No DMA -> Just focus on lcd
-			None => lcd_limit
-			# DMA is a thing but later than timer events
-			At(dma_at) if dma_at > first => lcd_limit.min(dma_at - 1)
-			_ => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
-		}
-		match TimerRegs.halt_batch_span(m.bus.io_regs.timers, limit, num_of_actions) {
-			NoBatch => run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
-			Batch(span) => {
-				advanced = advance_to(m, span.last_at)?
-				run_halted_until(advanced, target, num_of_actions - span.actions)
+			next_lcd_time = after_dma.next_lcd_at
+			next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
+			next_dma_time = DmaRegs.next_ready_at(after_dma.bus.io_regs.dmas)
+			closest_next = match (next_timer_time, next_dma_time) {
+				(None, None) => next_lcd_time
+				(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
+				(At(x), At(y)) => next_lcd_time.min(x).min(y)
 			}
+			Machine.advance_to(after_dma, closest_next)
 		}
+		Stopped => Ok(m)
 	}
 }
 
@@ -356,6 +378,95 @@ walk_memory_execution_state = |before_dma, state| {
 			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), cpu_continue)
 		}
 	}
+}
+
+complete_execution : Machine, Cpu.Execution_outcome -> Try(Machine, _)
+complete_execution = |m, done| {
+	# You might think this is retarded branching, but eh, this does save us from some useless memcpy :)
+	cycle_consumed_machine = if (done.remaining_cycles == 0) m else Machine.advance_to(m, m.now + done.remaining_cycles)?
+	c = done.cpu
+	completed = if done.remaining_cycles > 0 {
+		mark_fetch_nonsequential({ ..cycle_consumed_machine, cpu: done.cpu })
+	} else {
+		{ ..cycle_consumed_machine, cpu: done.cpu }
+	}
+	pipeline_side_effect_considered = match done.pc_status {
+		PCSequential => completed
+		PCWritten => reload_pipeline(completed)?
+	}
+	# Luckily, for halt command which happens in the middle of a batch write in,
+	# we do not need to interrupt the opcode and immediately enter Cpu Pause mode.
+	(new_system, req) = SystemRegs.process_haltcnt(pipeline_side_effect_considered.bus.io_regs.system)
+	new_ioregs = { ..pipeline_side_effect_considered.bus.io_regs, system: new_system }
+	new_bus = { ..pipeline_side_effect_considered.bus, io_regs: new_ioregs }
+	Ok({
+		..pipeline_side_effect_considered,
+		cpu: c,
+		bus: new_bus,
+		power_state: match req {
+			NoReq => pipeline_side_effect_considered.power_state
+			Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
+				Halted
+			} else {
+				if (KeyRegs.can_key_irq(new_ioregs.keys)
+					and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(new_ioregs.system), 12)) Running else Stopped
+			}
+		},
+	})
+}
+
+advance_events_to : Machine, U64 -> Try(Machine, _)
+advance_events_to = |m, target| {
+	process_event_or_batch : Machine, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
+	process_event_or_batch = |given_m, given_target, given_at, given_timer_at| {
+		if given_at > given_m.now and given_at < given_m.next_lcd_at {
+			limit = given_target.min(given_m.next_lcd_at - 1)
+			if given_at < limit {
+				match TimerRegs.try_batch_ticks_to_known_next(given_m.bus.io_regs.timers, limit, given_at) {
+					NoBatch => {}
+					Batched(x) => {
+						io_rgs = {
+							..given_m.bus.io_regs,
+							timers: x.timers,
+							# non-overflow ticks CAN schedule pending DMA.
+							dmas: DmaRegs.schedule_pending(given_m.bus.io_regs.dmas, given_at),
+						}
+						return Ok((
+							{ ..given_m, bus: { ..given_m.bus, io_regs: io_rgs }, now: x.last_at },
+							0.U8, # 0 here is useless
+						))
+					}
+				}
+			}
+		}
+		process_event_at(given_m, given_at, given_timer_at)
+	}
+	if (m.power_state == Stopped) return Ok(m)
+	if (target < m.now) return Err(WrongEventTime)
+	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+	at = match timer_at {
+		None => m.next_lcd_at
+		At(t) => t.min(m.next_lcd_at)
+	}
+	if at <= target {
+		(processed, _) = process_event_or_batch(m, target, at, timer_at)?
+		return advance_events_to(processed, target)
+	}
+	Ok({
+		..m,
+		bus: {
+			..m.bus,
+			io_regs: {
+				..m.bus.io_regs,
+				timers: TimerRegs.sync_idle_to_known_next(
+					m.bus.io_regs.timers,
+					target,
+					timer_at,
+				)?,
+			},
+		},
+		now: target,
+	})
 }
 
 process_event_at : Machine, U64, [None, At(U64)] -> Try((Machine, U8), _)
@@ -748,119 +859,5 @@ mark_fetch_nonsequential = |m| {
 			..m,
 			pipeline: Ready({ ..x, access_kind: NonSequential }),
 		}
-	}
-}
-
-advance_events_to : Machine, U64 -> Try(Machine, _)
-advance_events_to = |m, target| {
-	process_event_or_batch : Machine, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
-	process_event_or_batch = |given_m, given_target, given_at, given_timer_at| {
-		if given_at > given_m.now and given_at < given_m.next_lcd_at {
-			limit = given_target.min(given_m.next_lcd_at - 1)
-			if given_at < limit {
-				match TimerRegs.try_batch_ticks_to_known_next(given_m.bus.io_regs.timers, limit, given_at) {
-					NoBatch => {}
-					Batched(x) => {
-						io_rgs = {
-							..given_m.bus.io_regs,
-							timers: x.timers,
-							# non-overflow ticks CAN schedule pending DMA.
-							dmas: DmaRegs.schedule_pending(given_m.bus.io_regs.dmas, given_at),
-						}
-						return Ok((
-							{ ..given_m, bus: { ..given_m.bus, io_regs: io_rgs }, now: x.last_at },
-							0.U8, # 0 here is useless
-						))
-					}
-				}
-			}
-		}
-		process_event_at(given_m, given_at, given_timer_at)
-	}
-	if (m.power_state == Stopped) return Ok(m)
-	if (target < m.now) return Err(WrongEventTime)
-	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-	at = match timer_at {
-		None => m.next_lcd_at
-		At(t) => t.min(m.next_lcd_at)
-	}
-	if at <= target {
-		(processed, _) = process_event_or_batch(m, target, at, timer_at)?
-		return advance_events_to(processed, target)
-	}
-	Ok({
-		..m,
-		bus: {
-			..m.bus,
-			io_regs: {
-				..m.bus.io_regs,
-				timers: TimerRegs.sync_idle_to_known_next(
-					m.bus.io_regs.timers,
-					target,
-					timer_at,
-				)?,
-			},
-		},
-		now: target,
-	})
-}
-
-complete_execution : Machine, Cpu.Execution_outcome -> Try(Machine, _)
-complete_execution = |m, done| {
-	# You might think this is retarded branching, but eh, this does save us from some useless memcpy :)
-	cycle_consumed_machine = if (done.remaining_cycles == 0) m else Machine.advance_to(m, m.now + done.remaining_cycles)?
-	c = done.cpu
-	completed = if done.remaining_cycles > 0 {
-		mark_fetch_nonsequential({ ..cycle_consumed_machine, cpu: done.cpu })
-	} else {
-		{ ..cycle_consumed_machine, cpu: done.cpu }
-	}
-	pipeline_side_effect_considered = match done.pc_status {
-		PCSequential => completed
-		PCWritten => reload_pipeline(completed)?
-	}
-	# Luckily, for halt command which happens in the middle of a batch write in,
-	# we do not need to interrupt the opcode and immediately enter Cpu Pause mode.
-	(new_system, req) = SystemRegs.process_haltcnt(pipeline_side_effect_considered.bus.io_regs.system)
-	new_ioregs = { ..pipeline_side_effect_considered.bus.io_regs, system: new_system }
-	new_bus = { ..pipeline_side_effect_considered.bus, io_regs: new_ioregs }
-	Ok({
-		..pipeline_side_effect_considered,
-		cpu: c,
-		bus: new_bus,
-		power_state: match req {
-			NoReq => pipeline_side_effect_considered.power_state
-			Request(x) => if x.bitwise_and(0b1000_0000) == 0 {
-				Halted
-			} else {
-				if (KeyRegs.can_key_irq(new_ioregs.keys)
-					and Bits.get_ith_bit_u16_certain(SystemRegs.get_interrupt_enables(new_ioregs.system), 12)) Running else Stopped
-			}
-		},
-	})
-}
-
-run_one_action : Machine -> Try(Machine, _)
-run_one_action = |m| {
-	match m.power_state {
-		Running => Machine.step_forward(m)
-		Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => Machine.step_forward(m)
-		Halted => {
-			after_dma = if no_dma(m) {
-				m
-			} else {
-				return deal_with_dma(m)
-			}
-			next_lcd_time = after_dma.next_lcd_at
-			next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
-			next_dma_time = DmaRegs.next_ready_at(after_dma.bus.io_regs.dmas)
-			closest_next = match (next_timer_time, next_dma_time) {
-				(None, None) => next_lcd_time
-				(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
-				(At(x), At(y)) => next_lcd_time.min(x).min(y)
-			}
-			Machine.advance_to(after_dma, closest_next)
-		}
-		Stopped => Ok(m)
 	}
 }
