@@ -1,6 +1,8 @@
 import Bits
 import Bus
 import Cpu
+import CpuTypes
+import ARM7TDMI
 import Ppu
 import SystemRegs
 import DisplayRegs
@@ -10,14 +12,11 @@ import SoundRegs
 import IoRegs
 import KeyRegs
 
-FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
-
 Machine :: {
 	bus : Bus,
 	cpu : Cpu,
 	ppu : Ppu,
 	# Need to put unfinished Cpu IO status here when DMA hold the Bus
-	suspended_cpu : [None, Resume(Box(Cpu.Execution_state))],
 	power_state : [Running, Halted, Stopped],
 	# DMA Channels with lower priority are paused until channels with higher priority have completed.
 	dma_owner : [None, Channel(U8)],
@@ -25,16 +24,6 @@ Machine :: {
 	next_lcd_at : U64,
 	next_lcd_event : [EnterHBlank, NextScanline, VideoDMARequest],
 	video_dma_running : Bool,
-	pipeline : [
-		Empty,
-		Ready(
-			{
-				first : FetchedCode,
-				second : FetchedCode,
-				access_kind : [NonSequential, Sequential],
-			},
-		),
-	],
 }.{
 	init : List(U8), List(U8) -> Try(Machine, _)
 	init = |bios, rom| {
@@ -42,14 +31,12 @@ Machine :: {
 			bus: Bus.init(bios, rom)?,
 			cpu: Cpu.init(),
 			ppu: Ppu.init(),
-			suspended_cpu: None,
 			power_state: Running,
 			dma_owner: None,
 			now: 0,
 			next_lcd_at: 1007,
 			next_lcd_event: EnterHBlank,
 			video_dma_running: False,
-			pipeline: Empty,
 		})
 	}
 
@@ -135,19 +122,19 @@ Machine :: {
 			return deal_with_dma(before_dma)
 		}
 		if m.power_state == Running {
-			match m.suspended_cpu {
+			match m.cpu.suspended {
 				None => {}
 				Resume(e_state) => {
-					early_ret_m = { ..m, suspended_cpu: None }
+					early_ret_m = { ..m, cpu: { ..m.cpu, suspended: None } }
 					return walk_execution_state(early_ret_m, Box.unbox(e_state))
 				}
 			}
 			# accept pending irq?
 			ready = if SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
-				and !Bits.get_ith_bit_u32_certain(m.cpu.cpsr, 7) { # Cpu can block IRQ
+				and !Bits.get_ith_bit_u32_certain(m.cpu.hot.core.cpsr, 7) { # Cpu can block IRQ
 				(advanced, _) = take_opcode(m)?
-				irq_cpu = Cpu.handle_irq(advanced.cpu)
-				reload_pipeline({ ..advanced, cpu: irq_cpu })?
+				irq_core = ARM7TDMI.handle_irq(advanced.cpu.hot.core)
+				reload_pipeline({ ..advanced, cpu: { ..advanced.cpu, hot: { ..advanced.cpu.hot, core: irq_core } } })?
 			} else {
 				m
 			}
@@ -156,10 +143,10 @@ Machine :: {
 				Opcode(op) => op
 				Unmapped(addr) => return Err(UnmappedInstructionFetch(addr))
 			}
-			execution_state = if fetched.cpu.is_thumb() {
-				Cpu.execute_thumb_opcode(fetched.cpu, instruction.to_u16_wrap())?
+			execution_state = if fetched.cpu.hot.core.is_thumb() {
+				ARM7TDMI.execute_thumb_opcode(fetched.cpu.hot.core, instruction.to_u16_wrap())?
 			} else {
-				Cpu.execute_arm_opcode(fetched.cpu, instruction)?
+				ARM7TDMI.execute_arm_opcode(fetched.cpu.hot.core, instruction)?
 			}
 			walk_execution_state(fetched, execution_state)
 		} else if m.power_state == Halted {
@@ -272,23 +259,23 @@ run_one_action = |m| {
 
 # Have to cut of the OG big recursive func into several pieces
 # Just for better perf and less memcpy
-walk_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
+walk_execution_state : Machine, ARM7TDMI.Execution_state -> Try(Machine, _)
 walk_execution_state = |m, state| {
 	match state {
-		Complete(done) => complete_execution(m, done)
+		Complete(outcome) => complete_execution(m, outcome)
 		_ => walk_memory_execution_state(m, state)
 	}
 }
 
-walk_memory_execution_state : Machine, Cpu.Execution_state -> Try(Machine, _)
+walk_memory_execution_state : Machine, ARM7TDMI.Execution_state -> Try(Machine, _)
 walk_memory_execution_state = |before_dma, state| {
 	# Here comes DMA IO 'interruption',
 	# It can occupy the bus in the middle of IO under some scenarios
-	can_yield : Cpu.Execution_state -> Bool
+	can_yield : ARM7TDMI.Execution_state -> Bool
 	can_yield = |e_state| {
 		match e_state {
 			R(_) => True # Well IO hasnt start so yes
-			W(box) => match box.continuation {
+			W(request) => match request.continuation {
 				StoreAndFinish(_) => True
 				WriteMultiple(_) => True
 				SetRegAndFinish(_) => False # SWP/SWPB, should be atomic
@@ -300,97 +287,111 @@ walk_memory_execution_state = |before_dma, state| {
 		if no_dma(before_dma) {
 			before_dma
 		} else {
-			done = deal_with_dma(before_dma)?
+			after_dma = deal_with_dma(before_dma)?
 			resume_state = match state {
-				R(box) => R({ ..box, access_kind: NonSequential })
-				W(box) => W({ ..box, access_kind: NonSequential })
+				R(request) => R({ ..request, access_kind: NonSequential })
+				W(request) => W({ ..request, access_kind: NonSequential })
 				# No way we reach this after can_yield()?
 				Complete(_) => return Err(WTFisThis)
 			}
 			# Well DMA rush out first, so we gotta early return
-			return Ok({ ..done, suspended_cpu: Resume(Box.box(resume_state)) })
+			return Ok({
+				..after_dma,
+				cpu: { ..after_dma.cpu, suspended: Resume(Box.box(resume_state)) },
+			})
 		}
 	} else {
 		before_dma
 	}
 	match state {
-		Complete(done) => complete_execution(m, done)
-		R(box) => {
-			cycles = Bus.base_access_cycles(m.bus, box.width, box.addr, box.access_kind)?
+		Complete(outcome) => complete_execution(m, outcome)
+		R(request) => {
+			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)?
 			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
-			intermediate = match box.width {
+			intermediate = match request.width {
 				W8 => {
-					inner = io_delay_applied_machine.bus.read8(box.addr)?
+					inner = io_delay_applied_machine.bus.read8(request.addr)?
 					{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 				}
 				W16 => {
-					inner = io_delay_applied_machine.bus.read16(box.addr, CpuData)?
+					inner = io_delay_applied_machine.bus.read16(request.addr, CpuData)?
 					{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 				}
-				W32 => io_delay_applied_machine.bus.read32(box.addr, CpuData)?
+				W32 => io_delay_applied_machine.bus.read32(request.addr, CpuData)?
 			}
 			raw_val = intermediate.val
 			new_bus = match intermediate.state {
 				Unchanged => { ..io_delay_applied_machine.bus, signal: intermediate.signal }
 				Updated(x) => { ..Box.unbox(x), signal: intermediate.signal }
 			}
-			cpu_continue = Cpu.resume_read(
-				box.cpu,
+			next_execution = ARM7TDMI.resume_read(
+				request.core,
 				raw_val,
-				box.continuation,
+				request.continuation,
 			)?
-			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus }), cpu_continue)
+			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus }), next_execution)
 		}
-		W(box) => {
-			cur_addr = Cpu.getPC(m.cpu)
-			req_bios = Bus.requires_bios(box.width, box.addr)
-			cycles = Bus.base_access_cycles(m.bus, box.width, box.addr, box.access_kind)?
+		W(request) => {
+			cur_addr = ARM7TDMI.getPC(m.cpu.hot.core)
+			req_bios = Bus.requires_bios(request.width, request.addr)
+			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)?
 			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
-			post_write_bus = match box.width {
+			post_write_bus = match request.width {
 				W8 => {
 					if req_bios and cur_addr > 0x3FFF {
 						io_delay_applied_machine.bus
 					} else {
-						io_delay_applied_machine.bus.write8(box.addr, box.val.to_u8_wrap())?
+						io_delay_applied_machine.bus.write8(request.addr, request.val.to_u8_wrap())?
 					}
 				}
 				W16 => {
 					if req_bios and cur_addr > 0x3FFF {
 						io_delay_applied_machine.bus
 					} else {
-						io_delay_applied_machine.bus.write16(box.addr, box.val.to_u16_wrap(), CpuData)?
+						io_delay_applied_machine.bus.write16(request.addr, request.val.to_u16_wrap(), CpuData)?
 					}
 				}
 				W32 => {
 					if req_bios and cur_addr > 0x3FFF {
 						io_delay_applied_machine.bus
 					} else {
-						io_delay_applied_machine.bus.write32(box.addr, box.val, CpuData)?
+						io_delay_applied_machine.bus.write32(request.addr, request.val, CpuData)?
 					}
 				}
 			}
 			scheduled_dma_rgs = DmaRegs.schedule_pending(post_write_bus.io_regs.dmas, io_delay_applied_machine.now)
 			final_bus = { ..post_write_bus, io_regs: { ..post_write_bus.io_regs, dmas: scheduled_dma_rgs } }
-			cpu_continue = Cpu.resume_write(
-				box.cpu,
-				box.continuation,
+			next_execution = ARM7TDMI.resume_write(
+				request.core,
+				request.continuation,
 			)?
-			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), cpu_continue)
+			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), next_execution)
 		}
 	}
 }
 
-complete_execution : Machine, Cpu.Execution_outcome -> Try(Machine, _)
-complete_execution = |m, done| {
+complete_execution : Machine, ARM7TDMI.Execution_outcome -> Try(Machine, _)
+complete_execution = |m, outcome| {
 	# You might think this is retarded branching, but eh, this does save us from some useless memcpy :)
-	cycle_consumed_machine = if (done.remaining_cycles == 0) m else Machine.advance_to(m, m.now + done.remaining_cycles)?
-	c = done.cpu
-	completed = if done.remaining_cycles > 0 {
-		mark_fetch_nonsequential({ ..cycle_consumed_machine, cpu: done.cpu })
+	cycle_consumed_machine = if (outcome.remaining_cycles == 0) m else Machine.advance_to(m, m.now + outcome.remaining_cycles)?
+	completed = if outcome.remaining_cycles > 0 {
+		mark_fetch_nonsequential({
+			..cycle_consumed_machine,
+			cpu: {
+				..cycle_consumed_machine.cpu,
+				hot: { ..cycle_consumed_machine.cpu.hot, core: outcome.core },
+			},
+		})
 	} else {
-		{ ..cycle_consumed_machine, cpu: done.cpu }
+		{
+			..cycle_consumed_machine,
+			cpu: {
+				..cycle_consumed_machine.cpu,
+				hot: { ..cycle_consumed_machine.cpu.hot, core: outcome.core },
+			},
+		}
 	}
-	pipeline_side_effect_considered = match done.pc_status {
+	pipeline_side_effect_considered = match outcome.pc_status {
 		PCSequential => completed
 		PCWritten => reload_pipeline(completed)?
 	}
@@ -401,7 +402,6 @@ complete_execution = |m, done| {
 	new_bus = { ..pipeline_side_effect_considered.bus, io_regs: new_ioregs }
 	Ok({
 		..pipeline_side_effect_considered,
-		cpu: c,
 		bus: new_bus,
 		power_state: match req {
 			NoReq => pipeline_side_effect_considered.power_state
@@ -787,7 +787,7 @@ deal_with_dma = |m| {
 }
 
 # Turns out ARM 7 of GBA is a 3 level pipeline
-fetch_opcode : Machine, U32, [W16, W32], [NonSequential, Sequential] -> Try((Machine, FetchedCode), _)
+fetch_opcode : Machine, U32, [W16, W32], [NonSequential, Sequential] -> Try((Machine, CpuTypes.FetchedCode), _)
 fetch_opcode = |m, addr, width, req_kind| {
 	if addr >= 0x4000 and addr < 0x100_0000 { # Unmapped reigon right after BIOS
 		alignment = if (width == W16) 2 else 4
@@ -805,52 +805,64 @@ fetch_opcode = |m, addr, width, req_kind| {
 # As they are all Cpu pipelines....
 reload_pipeline : Machine -> Try(Machine, _)
 reload_pipeline = |m| {
-	cur_pc = Cpu.getPC(m.cpu)
-	(width, steps) = if (m.cpu.is_thumb()) (W16, 2.U32) else (W32, 4)
+	cur_pc = ARM7TDMI.getPC(m.cpu.hot.core)
+	(width, steps) = if (m.cpu.hot.core.is_thumb()) (W16, 2.U32) else (W32, 4)
 	(m_1stop_done, first) = fetch_opcode(m, cur_pc, width, NonSequential)?
 	(m_2ndop_done, second) = fetch_opcode(m_1stop_done, cur_pc.plus_wrap(steps), width, Sequential)?
 	Ok({
 		..m_2ndop_done,
-		pipeline: Ready({ first: first, second: second, access_kind: Sequential }),
+		cpu: {
+			..m_2ndop_done.cpu,
+			hot: {
+				..m_2ndop_done.cpu.hot,
+				pipeline: Ready({ first: first, second: second, access_kind: Sequential }),
+			},
+		},
 	})
 }
 
 # Returns the opcode pointed by current PC &
 # a new machine with the pipeline field refreshed
 # CPU and its PC are unchanged
-take_opcode : Machine -> Try((Machine, FetchedCode), _)
+take_opcode : Machine -> Try((Machine, CpuTypes.FetchedCode), _)
 take_opcode = |m| {
 	take_ready_opcode : Machine,
 	{
-		first : FetchedCode,
-		second : FetchedCode,
+		first : CpuTypes.FetchedCode,
+		second : CpuTypes.FetchedCode,
 		access_kind : [NonSequential, Sequential],
-	} -> Try((Machine, FetchedCode), _)
+	} -> Try((Machine, CpuTypes.FetchedCode), _)
 	take_ready_opcode = |give_machine, x| {
 		first = x.first
 		second = x.second
-		(next_addr, width) = if give_machine.cpu.is_thumb() {
-			(Cpu.getPC(give_machine.cpu).plus_wrap(4), W16)
+		(next_addr, width) = if give_machine.cpu.hot.core.is_thumb() {
+			(ARM7TDMI.getPC(give_machine.cpu.hot.core).plus_wrap(4), W16)
 		} else {
-			(Cpu.getPC(give_machine.cpu).plus_wrap(8), W32)
+			(ARM7TDMI.getPC(give_machine.cpu.hot.core).plus_wrap(8), W32)
 		}
 		(advanced, third) = fetch_opcode(give_machine, next_addr, width, x.access_kind)?
 		Ok((
 			{
 				..advanced,
-				pipeline: Ready({
-					first: second,
-					second: third,
-					access_kind: Sequential,
-				}),
+				cpu: {
+					..advanced.cpu,
+					hot: {
+						..advanced.cpu.hot,
+						pipeline: Ready({
+							first: second,
+							second: third,
+							access_kind: Sequential,
+						}),
+					},
+				},
 			},
 			first,
 		))
 	}
-	match m.pipeline {
+	match m.cpu.hot.pipeline {
 		Empty => {
 			loaded = reload_pipeline(m)?
-			match loaded.pipeline {
+			match loaded.cpu.hot.pipeline {
 				Empty => Err(WTFisThis)
 				Ready(x) => take_ready_opcode(loaded, x)
 			}
@@ -861,11 +873,17 @@ take_opcode = |m| {
 
 mark_fetch_nonsequential : Machine -> Machine
 mark_fetch_nonsequential = |m| {
-	match m.pipeline {
+	match m.cpu.hot.pipeline {
 		Empty => m
 		Ready(x) => {
 			..m,
-			pipeline: Ready({ ..x, access_kind: NonSequential }),
+			cpu: {
+				..m.cpu,
+				hot: {
+					..m.cpu.hot,
+					pipeline: Ready({ ..x, access_kind: NonSequential }),
+				},
+			},
 		}
 	}
 }

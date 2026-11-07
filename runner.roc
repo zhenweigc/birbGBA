@@ -5,6 +5,7 @@ import pf.Stdout
 import pf.OsStr
 import src/Machine
 import src/Cpu
+import src/ARM7TDMI
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
@@ -23,6 +24,6 @@ main! = |args| {
 	done = Machine.run_with_budget(m, num_of_actions)?
 	c = Machine.get_cpu(done)
 
-	Stdout.line!("PC: ${Cpu.getPC(c).to_str()}, cycles: ${Machine.get_time(done).to_str()}")?
+	Stdout.line!("PC: ${ARM7TDMI.getPC(Cpu.get_core(c)).to_str()}, cycles: ${Machine.get_time(done).to_str()}")?
 	Ok({})
 }
