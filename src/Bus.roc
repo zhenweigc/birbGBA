@@ -13,6 +13,18 @@ ReadResult(val_type, type) : {
 
 ReadPurpose : [Fetch, CpuData, Dma(U8)]
 
+ReadView : {
+	ewram : List(U8),
+	iwram : List(U8),
+	paletteram : List(U8),
+	vram : List(U8),
+	oam : List(U8),
+	gamepak_rom : List(U8),
+	bios : List(U8),
+	display : DisplayRegs,
+	wait_cnt : U16,
+}
+
 WritePurpose : [CpuData, Dma(U8)]
 
 Bus := {
@@ -44,6 +56,21 @@ Bus := {
 				io_regs: IoRegs.init(),
 				signal: BusSignals.init(),
 			})
+		}
+	}
+
+	get_read_view : Bus -> ReadView
+	get_read_view = |bus| {
+		{
+			ewram: bus.ewram,
+			iwram: bus.iwram,
+			paletteram: bus.paletteram,
+			vram: bus.vram,
+			oam: bus.oam,
+			gamepak_rom: bus.gamepak_rom,
+			bios: bus.bios,
+			display: bus.io_regs.display,
+			wait_cnt: SystemRegs.get_waitcnt(bus.io_regs.system),
 		}
 	}
 
@@ -454,22 +481,21 @@ Bus := {
 	# Stolen from mGBA and NoCashGBA author's tech manual
 	# https://mgba-emu.github.io/gbatek/gba.html#gbamemorymap
 	# https://mgba-emu.github.io/gbatek/gba.html#gbasystemcontrol
-	base_access_cycles : Bus, [W8, W16, W32], U32, [NonSequential, Sequential] -> Try(U64, _)
-	base_access_cycles = |bus, width, addr, kind| {
+	access_cycles : U16, [W8, W16, W32], U32, [NonSequential, Sequential] -> U64
+	access_cycles = |wait_cnt, width, addr, kind| {
 		region = MemoryRegion.memory_map_decode(addr).region
 		match region {
-			SystemROM | CPUInternalRAM | IORegs | OAM => Ok(1)
+			SystemROM | CPUInternalRAM | IORegs | OAM => 1
 			CPUExternalRAM => match width {
-				W32 => Ok(6)
-				_ => Ok(3)
+				W32 => 6
+				_ => 3
 			}
 			PaletteRAM | VRAM => match width {
-				W32 => Ok(2)
-				_ => Ok(1)
+				W32 => 2
+				_ => 1
 			}
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
 				# Just to save some memcpy I had to break the encapsulation :)
-				wait_cnt = SystemRegs.read16(bus.io_regs.system, 0x204)?
 				two_bits = match region {
 					GamePakROMWS0 => Bits.get_seg_of_u16_certain(wait_cnt, 2, 2)
 					GamePakROMWS1 => Bits.get_seg_of_u16_certain(wait_cnt, 5, 2)
@@ -488,10 +514,22 @@ Bus := {
 					_ => if (Bits.get_ith_bit_u16_certain(wait_cnt, 10)) 2 else 9
 				}
 				first_cycles = if (kind == NonSequential or addr.mod_by(0x20000) == 0) n_cycles else s_cycles
-				if (width == W32) Ok(first_cycles + s_cycles) else Ok(first_cycles)
+				if (width == W32) first_cycles + s_cycles else first_cycles
 			}
-			GamePakRAM | Unused => Err(UnsupportedRegion(region))
+			GamePakRAM => match wait_cnt.bitwise_and(3) {
+				0 => 5
+				1 => 4
+				2 => 3
+				_ => 9
+			}
+			Unused => 1
 		}
+	}
+
+	base_access_cycles : Bus, [W8, W16, W32], U32, [NonSequential, Sequential] -> U64
+	base_access_cycles = |bus, width, addr, kind| {
+		wait_cnt = SystemRegs.get_waitcnt(bus.io_regs.system)
+		access_cycles(wait_cnt, width, addr, kind)
 	}
 }
 

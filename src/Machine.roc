@@ -306,7 +306,7 @@ walk_memory_execution_state = |before_dma, state| {
 	match state {
 		Complete(outcome) => complete_execution(m, outcome)
 		R(request) => {
-			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)?
+			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)
 			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
 			intermediate = match request.width {
 				W8 => {
@@ -334,7 +334,7 @@ walk_memory_execution_state = |before_dma, state| {
 		W(request) => {
 			cur_addr = ARM7TDMI.getPC(m.cpu.hot.core)
 			req_bios = Bus.requires_bios(request.width, request.addr)
-			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)?
+			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)
 			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
 			post_write_bus = match request.width {
 				W8 => {
@@ -618,7 +618,7 @@ to_bus_width = |w| w
 timed_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
 timed_read = |m, width, addr, req_kind, purpose| {
 	bus_width = to_bus_width(width)
-	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
+	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	intermediate = match width {
 		W16 => {
@@ -642,7 +642,7 @@ dma_read = |m, width, addr, req_kind, purpose| {
 timed_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], Bus.WritePurpose -> Try(Machine, _)
 timed_write = |m, width, addr, val, req_kind, purpose| {
 	bus_width = to_bus_width(width)
-	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)?
+	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	new_bus = match width {
 		W16 => Bus.write16(advanced.bus, addr, val.to_u16_wrap(), purpose)?
