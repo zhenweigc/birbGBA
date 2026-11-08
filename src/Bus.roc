@@ -125,6 +125,40 @@ Bus := {
 		Ok({ val: val, state: state, signal: BusSignals.record_read8(bus.signal, addr, val) })
 	}
 
+	read_view8 : ReadView, U32 -> Try([Value(U8), NeedsSlow], _)
+	read_view8 = |rv, addr| {
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		match region {
+			CPUExternalRAM => Ok(Value((rv.ewram).get(U32.to_u64(relative_addr))?))
+			CPUInternalRAM => Ok(Value(((rv.iwram).get(U32.to_u64(relative_addr))?)))
+			PaletteRAM => Ok(Value((rv.paletteram).get(U32.to_u64(relative_addr))?))
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(rv.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					Ok(Value((0)))
+				} else {
+					Ok(Value(((rv.vram).get(U32.to_u64(relative_addr))?)))
+				}
+			}
+			OAM => Ok(Value((rv.oam).get(U32.to_u64(relative_addr))?))
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				Ok(
+					Value(
+						if relative_addr.to_u64() + 1 <= rv.gamepak_rom.len() {
+							(rv.gamepak_rom).get(relative_addr.to_u64())?
+						} else {
+							addr.shr_wrap(1 + (if (addr.mod_by(2) == 0) 0 else 8)).to_u8_wrap()
+						},
+					),
+				)
+			}
+			SystemROM => Ok(Value((rv.bios).get(U32.to_u64(relative_addr))?))
+			IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read8(rv.display, relative_addr)?)) else Ok(NeedsSlow)
+			_ => Err(UnsupportedRegion(region))
+		}
+	}
+
 	write8 : Bus,
 	U32,
 	U8 -> Try(
@@ -210,12 +244,6 @@ Bus := {
 		if addr.mod_by(2) == 1 {
 			Err(MisalignedAddress(addr))
 		} else {
-			read_le16 : List(U8), U32 -> Try(U16, [OutOfBounds])
-			read_le16 = |lst, relative_addr| {
-				i = lst.get(relative_addr.plus(1).to_u64())?
-				j = lst.get(relative_addr.to_u64())?
-				Ok(i.to_u16().shl_wrap(8) + j.to_u16())
-			}
 			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 			(val, state) = match region {
 				CPUExternalRAM => (read_le16(bus.ewram, relative_addr)?, Unchanged)
@@ -256,6 +284,45 @@ Bus := {
 				_ => return Err(UnsupportedRegion(region))
 			}
 			Ok({ val: val, state: state, signal: BusSignals.record_read16(bus.signal, purpose, addr, val) })
+		}
+	}
+
+	read_view16 : ReadView, U32 -> Try([Value(U16), NeedsSlow], _)
+	read_view16 = |rv, addr| {
+		if addr.mod_by(2) == 1 {
+			Err(MisalignedAddress(addr))
+		} else {
+			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+			match region {
+				CPUExternalRAM => Ok(Value(read_le16(rv.ewram, relative_addr)?))
+				CPUInternalRAM => Ok(Value(read_le16(rv.iwram, relative_addr)?))
+				PaletteRAM => Ok(Value(read_le16(rv.paletteram, relative_addr)?))
+				VRAM => {
+					mode = DisplayRegs.get_bg_mode(rv.display)
+					window_offset = (addr - 0x6000000).mod_by(0x20000)
+					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+						# If cond directly stolen from mGBA
+						Ok(Value(0))
+					} else {
+						Ok(Value(read_le16(rv.vram, relative_addr)?))
+					}
+				}
+				OAM => Ok(Value(read_le16(rv.oam, relative_addr)?))
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+					if relative_addr.to_u64() + 2 <= rv.gamepak_rom.len() {
+						Ok(Value(read_le16(rv.gamepak_rom, relative_addr)?))
+					} else {
+						# Out of bound addr -> ROM will not WB value
+						# So the CPU will just read the low 16 bits of Halfword addr back.
+						Ok(Value(addr.shr_wrap(1).to_u16_wrap()))
+					}
+				}
+				SystemROM => Ok(Value(read_le16(rv.bios, relative_addr)?))
+				IORegs => {
+					if (relative_addr < 0x60) Ok(Value(DisplayRegs.read16(rv.display, relative_addr)?)) else Ok(NeedsSlow)
+				}
+				_ => Err(UnsupportedRegion(region))
+			}
 		}
 	}
 
@@ -343,14 +410,6 @@ Bus := {
 		if addr.mod_by(4) > 0 {
 			Err(MisalignedAddress(addr))
 		} else {
-			read_le32 : List(U8), U32 -> Try(U32, [OutOfBounds])
-			read_le32 = |lst, relative_addr| {
-				i = lst.get(relative_addr.plus(3).to_u64())?
-				j = lst.get(relative_addr.plus(2).to_u64())?
-				k = lst.get(relative_addr.plus(1).to_u64())?
-				l = lst.get(relative_addr.to_u64())?
-				Ok(i.to_u32().shl_wrap(24) + j.to_u32().shl_wrap(16) + k.to_u32().shl_wrap(8) + l.to_u32())
-			}
 			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 			(val, state) = match region {
 				CPUExternalRAM => (read_le32(bus.ewram, relative_addr)?, Unchanged)
@@ -393,6 +452,47 @@ Bus := {
 				_ => return Err(UnsupportedRegion(region))
 			}
 			Ok({ val: val, state: state, signal: BusSignals.record_read32(bus.signal, purpose, addr, val) })
+		}
+	}
+
+	read_view32 : ReadView, U32 -> Try([Value(U32), NeedsSlow], _)
+	read_view32 = |rv, addr| {
+		if addr.mod_by(4) > 0 {
+			Err(MisalignedAddress(addr))
+		} else {
+			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+			match region {
+				CPUExternalRAM => Ok(Value(read_le32(rv.ewram, relative_addr)?))
+				CPUInternalRAM => Ok(Value(read_le32(rv.iwram, relative_addr)?))
+				PaletteRAM => Ok(Value(read_le32(rv.paletteram, relative_addr)?))
+				VRAM => {
+					mode = DisplayRegs.get_bg_mode(rv.display)
+					window_offset = (addr - 0x6000000).mod_by(0x20000)
+					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+						Ok(Value(0))
+					} else {
+						Ok(Value(read_le32(rv.vram, relative_addr)?))
+					}
+				}
+				OAM => Ok(Value(read_le32(rv.oam, relative_addr)?))
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+					Ok(
+						Value(
+							if relative_addr.to_u64() + 4 <= rv.gamepak_rom.len() {
+								read_le32(rv.gamepak_rom, relative_addr)?
+							} else {
+								half = addr.shr_wrap(1)
+								lo = half.bitwise_and(0xFFFF)
+								hi = half.plus_wrap(1)
+								hi.shl_wrap(16).bitwise_or(lo)
+							},
+						),
+					)
+				}
+				SystemROM => Ok(Value(read_le32(rv.bios, relative_addr)?))
+				IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read32(rv.display, relative_addr)?)) else Ok(NeedsSlow)
+				_ => Err(UnsupportedRegion(region))
+			}
 		}
 	}
 
@@ -531,6 +631,22 @@ Bus := {
 		wait_cnt = SystemRegs.get_waitcnt(bus.io_regs.system)
 		access_cycles(wait_cnt, width, addr, kind)
 	}
+}
+
+read_le16 : List(U8), U32 -> Try(U16, [OutOfBounds])
+read_le16 = |lst, relative_addr| {
+	i = lst.get(relative_addr.plus(1).to_u64())?
+	j = lst.get(relative_addr.to_u64())?
+	Ok(i.to_u16().shl_wrap(8) + j.to_u16())
+}
+
+read_le32 : List(U8), U32 -> Try(U32, [OutOfBounds])
+read_le32 = |lst, relative_addr| {
+	i = lst.get(relative_addr.plus(3).to_u64())?.to_u32()
+	j = lst.get(relative_addr.plus(2).to_u64())?.to_u32()
+	k = lst.get(relative_addr.plus(1).to_u64())?.to_u32()
+	l = lst.get(relative_addr.to_u64())?.to_u32()
+	Ok(i.shl_wrap(24) + j.shl_wrap(16) + k.shl_wrap(8) + l)
 }
 
 resolve_read32 : U32, U32, U32 -> U32

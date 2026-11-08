@@ -3,15 +3,25 @@ import BusSignals
 
 FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
-Pipeline : [
-	Empty,
-	Ready(
-		{
-			first : FetchedCode,
-			second : FetchedCode,
-			access_kind : ARM7TDMI.ReqKind,
-		},
-	),
+ReadyPipeline : {
+	first : FetchedCode,
+	second : FetchedCode,
+	access_kind : ARM7TDMI.ReqKind,
+}
+
+Pipeline : [Empty, Ready(ReadyPipeline)]
+
+FetchState : { now : U64, signal : BusSignals }
+
+EngineState : {
+	now : U64,
+	signal : BusSignals,
+	pipeline : Pipeline,
+}
+
+FetchResult(state_type) : [
+	NeedsSlow,
+	Fetched({ state : state_type, code : FetchedCode }),
 ]
 
 HotState : { core : ARM7TDMI, pipeline : Pipeline }
@@ -30,13 +40,15 @@ Limits : {
 	budget : U32,
 }
 
+BlockExit : [
+	Boundary([ReachedTarget, BudgetExhausted, NeedsSlow]),
+	Pending(ARM7TDMI.Execution_state),
+]
+
 BlockResult : {
 	state : RunState,
 	actions_completed : U32,
-	exit : [
-		Boundary([ReachedTarget, BudgetExhausted, NeedsSlow]),
-		Pending(ARM7TDMI.Execution_state),
-	],
+	exit : BlockExit,
 }
 
 CpuTypes :: {}.{}

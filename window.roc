@@ -9,8 +9,6 @@ import rr.Assets
 import rr.Trace
 
 import src/Machine
-import src/Cpu
-import src/KeyRegs
 
 Binding : { host : Keys.Key, mask : U16 }
 

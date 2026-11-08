@@ -104,14 +104,21 @@ Machine :: {
 		} else if m.power_state == Halted {
 			run_halted_until(m, target, num_of_actions)
 		} else {
-			run_until(step_forward(m)?, target, num_of_actions - 1) # no point of calling run_one_action as its definitely running
+			res = run_cpu_chunk(m, At(target), num_of_actions)?
+			run_until(
+				res.machine,
+				target,
+				# Hmmm, no need to worry about hitting under zero due to all checks inside func
+				num_of_actions.minus_wrap(res.actions_completed),
+			)
 		}
 	}
 
 	run_with_budget : Machine, U32 -> Try(Machine, _)
 	run_with_budget = |m, num_of_actions| {
 		if (num_of_actions == 0 or m.power_state == Stopped) return Ok(m)
-		run_with_budget(run_one_action(m)?, num_of_actions - 1)
+		res = run_cpu_chunk(m, None, num_of_actions)?
+		run_with_budget(res.machine, num_of_actions.minus_wrap(res.actions_completed))
 	}
 
 	step_forward : Machine -> Try(Machine, _)
@@ -238,22 +245,53 @@ run_one_action = |m| {
 		Running => Machine.step_forward(m)
 		Halted if SystemRegs.enable_pending(m.bus.io_regs.system) != 0 => Machine.step_forward(m)
 		Halted => {
-			after_dma = if no_dma(m) {
-				m
-			} else {
-				return deal_with_dma(m)
-			}
-			next_lcd_time = after_dma.next_lcd_at
-			next_timer_time = TimerRegs.next_event_at(after_dma.bus.io_regs.timers)
-			next_dma_time = DmaRegs.next_ready_at(after_dma.bus.io_regs.dmas)
-			closest_next = match (next_timer_time, next_dma_time) {
-				(None, None) => next_lcd_time
-				(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
-				(At(x), At(y)) => next_lcd_time.min(x).min(y)
-			}
+			after_dma = if (no_dma(m)) m else return deal_with_dma(m)
+			closest_next = next_cpu_event_at(after_dma)
 			Machine.advance_to(after_dma, closest_next)
 		}
 		Stopped => Ok(m)
+	}
+}
+
+commit_cpu_state : Machine, CpuTypes.RunState -> Try(Machine, _)
+commit_cpu_state = |m, rs| {
+	advanced = Machine.advance_to(m, rs.now)?
+	Ok({
+		..advanced,
+		cpu: { ..advanced.cpu, hot: rs.hot },
+		bus: { ..advanced.bus, signal: rs.signal },
+	})
+}
+
+run_cpu_chunk : Machine, [None, At(U64)], U32 -> Try({ machine : Machine, actions_completed : U32 }, _)
+run_cpu_chunk = |m, target_time, action_budget| {
+	closest_next = next_cpu_block_event_at(m)
+	# Boxing make comp a torture
+	if (
+		m.power_state != Running or !no_dma(m) or closest_next <= m.now or closest_next.minus_wrap(m.now) == 1
+			or match m.cpu.suspended {
+				None => False
+				Resume(_) => True
+			}
+	) return Ok({ machine: run_one_action(m)?, actions_completed: 1 })
+	block_res = Cpu.run_block(
+		Bus.get_read_view(m.bus),
+		{ hot: m.cpu.hot, now: m.now, signal: m.bus.signal },
+		{ event_at: closest_next, target: target_time, budget: action_budget },
+		SystemRegs.interrupt_req_fired(m.bus.io_regs.system),
+	)?
+	commited = commit_cpu_state(m, block_res.state)?
+	match block_res.exit {
+		Boundary(ReachedTarget) | Boundary(BudgetExhausted) =>
+			Ok({ machine: commited, actions_completed: block_res.actions_completed })
+		Boundary(NeedsSlow) => Ok({
+			machine: run_one_action(commited)?,
+			actions_completed: block_res.actions_completed.plus_wrap(1),
+		})
+		Pending(exec) => Ok({
+			machine: walk_execution_state(commited, exec)?,
+			actions_completed: block_res.actions_completed.plus_wrap(1),
+		})
 	}
 }
 
@@ -336,27 +374,14 @@ walk_memory_execution_state = |before_dma, state| {
 			req_bios = Bus.requires_bios(request.width, request.addr)
 			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)
 			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
-			post_write_bus = match request.width {
-				W8 => {
-					if req_bios and cur_addr > 0x3FFF {
-						io_delay_applied_machine.bus
-					} else {
-						io_delay_applied_machine.bus.write8(request.addr, request.val.to_u8_wrap())?
-					}
-				}
-				W16 => {
-					if req_bios and cur_addr > 0x3FFF {
-						io_delay_applied_machine.bus
-					} else {
-						io_delay_applied_machine.bus.write16(request.addr, request.val.to_u16_wrap(), CpuData)?
-					}
-				}
-				W32 => {
-					if req_bios and cur_addr > 0x3FFF {
-						io_delay_applied_machine.bus
-					} else {
-						io_delay_applied_machine.bus.write32(request.addr, request.val, CpuData)?
-					}
+
+			post_write_bus = if req_bios and cur_addr > 0x3FFF {
+				io_delay_applied_machine.bus
+			} else {
+				match request.width {
+					W8 => io_delay_applied_machine.bus.write8(request.addr, request.val.to_u8_wrap())?
+					W16 => io_delay_applied_machine.bus.write16(request.addr, request.val.to_u16_wrap(), CpuData)?
+					W32 => io_delay_applied_machine.bus.write32(request.addr, request.val, CpuData)?
 				}
 			}
 			scheduled_dma_rgs = DmaRegs.schedule_pending(post_write_bus.io_regs.dmas, io_delay_applied_machine.now)
@@ -612,6 +637,45 @@ process_lcd_event = |m, at| {
 	}
 }
 
+next_cpu_event_at : Machine -> U64
+next_cpu_event_at = |m| {
+	next_lcd_time = m.next_lcd_at
+	next_timer_time = TimerRegs.next_event_at(m.bus.io_regs.timers)
+	next_dma_time = DmaRegs.next_ready_at(m.bus.io_regs.dmas)
+	match (next_timer_time, next_dma_time) {
+		(None, None) => next_lcd_time
+		(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
+		(At(x), At(y)) => next_lcd_time.min(x).min(y)
+	}
+}
+
+next_cpu_block_event_at : Machine -> U64
+next_cpu_block_event_at = |m| {
+	nxt_cpu_event_time = next_cpu_event_at(m)
+	if (nxt_cpu_event_time <= m.now) return nxt_cpu_event_time
+	fallback_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+	next_dma_time = match fallback_at {
+		None => DmaRegs.next_ready_at(m.bus.io_regs.dmas)
+		At(t) => {
+			if (t > U64.highest - 2) return nxt_cpu_event_time
+			DmaRegs.next_ready_at(DmaRegs.schedule_pending(m.bus.io_regs.dmas, t))
+		}
+	}
+	match earlier_event(next_dma_time, TimerRegs.next_batch_boundary_at(m.bus.io_regs.timers)) {
+		At(t) => m.next_lcd_at.min(t)
+		None => m.next_lcd_at
+	}
+}
+
+earlier_event : [None, At(U64)], [None, At(U64)] -> [None, At(U64)]
+earlier_event = |t1, t2| {
+	match (t1, t2) {
+		(None, None) => None
+		(None, At(t)) | (At(t), None) => At(t)
+		(At(x), At(y)) => At(x.min(y))
+	}
+}
+
 to_bus_width : [W16, W32] -> [W8, W16, W32] # All these just to calm down the compiler
 to_bus_width = |w| w
 
@@ -747,11 +811,9 @@ dma_transfer_unit = |m, req_read_kind, req_write_kind| {
 #      ⡟⡾⣿⢿⢿⢵⣽⣾⣼⣘⢸⢸⣞⡟
 #       ⠁⠇⠡⠩⡫⢿⣝⡻⡮⣒⢽⠋⠀⠀⠀⠀
 no_dma : Machine -> Bool
-no_dma = |m| {
-	if (m.power_state == Stopped or
-		(!DmaRegs.has_ready(m.bus.io_regs.dmas, m.now)
-			and m.dma_owner == None)) True else False
-}
+no_dma = |m| (m.power_state == Stopped or
+	(!DmaRegs.has_ready(m.bus.io_regs.dmas, m.now)
+		and m.dma_owner == None))
 
 deal_with_dma : Machine -> Try(Machine, _)
 deal_with_dma = |m| {

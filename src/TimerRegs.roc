@@ -303,32 +303,6 @@ TimerRegs :: {
 	# has no overflow, pending write, or startup event.
 	try_batch_ticks_to_known_next : TimerRegs, U64, U64 -> [NoBatch, Batched({ timers : TimerRegs, last_at : U64 })]
 	try_batch_ticks_to_known_next = |rgs, limit, first_at| {
-		moment_needs_process : TimerReg, TimerSelection -> [None, At(U64)]
-		moment_needs_process = |reg, selection| {
-			tick_boundary = match reg.next_tick_at {
-				None => None
-				At(t) => match clock_period(reg, selection) {
-					NoClock => At(t)
-					Period(p) => {
-						# Overflow occurs on tick (65536 - counter)
-						delta = U64.minus_wrap(65535, reg.counter.to_u64()).times_wrap(p)
-						if (delta > U64.highest - t) At(t) else At(t + delta)
-					}
-				}
-			}
-			reload_at = match reg.pending_reload {
-				None => None
-				Pending(x) => At(x.at)
-			}
-			control_at = match reg.pending_control {
-				None => None
-				Pending(x) => At(x.at)
-			}
-			earlier_event(
-				earlier_event(tick_boundary, reg.startup_reload_at),
-				earlier_event(reload_at, control_at),
-			)
-		}
 		batch_one : TimerReg, TimerSelection, U64 -> { counter : U16, next_tick_at : [None, At(U64)], last_at : [None, At(U64)] }
 		batch_one = |reg, selection, batch_limit| {
 			match reg.next_tick_at {
@@ -401,6 +375,20 @@ TimerRegs :: {
 			},
 			last_at: last_at,
 		})
+	}
+
+	next_batch_boundary_at : TimerRegs -> [None, At(U64)]
+	next_batch_boundary_at = |rgs| {
+		earlier_event(
+			earlier_event(
+				moment_needs_process(rgs.timer0, Timer0),
+				moment_needs_process(rgs.timer1, Timer1),
+			),
+			earlier_event(
+				moment_needs_process(rgs.timer2, Timer2),
+				moment_needs_process(rgs.timer3, Timer3),
+			),
+		)
 	}
 }
 
@@ -657,5 +645,32 @@ timer_next_event_at = |reg| {
 			},
 		),
 		earlier_event(reg.startup_reload_at, reg.next_tick_at),
+	)
+}
+
+moment_needs_process : TimerReg, TimerSelection -> [None, At(U64)]
+moment_needs_process = |reg, selection| {
+	tick_boundary = match reg.next_tick_at {
+		None => None
+		At(t) => match clock_period(reg, selection) {
+			NoClock => At(t)
+			Period(p) => {
+				# Overflow occurs on tick (65536 - counter)
+				delta = U64.minus_wrap(65535, reg.counter.to_u64()).times_wrap(p)
+				if (delta > U64.highest - t) At(t) else At(t + delta)
+			}
+		}
+	}
+	reload_at = match reg.pending_reload {
+		None => None
+		Pending(x) => At(x.at)
+	}
+	control_at = match reg.pending_control {
+		None => None
+		Pending(x) => At(x.at)
+	}
+	earlier_event(
+		earlier_event(tick_boundary, reg.startup_reload_at),
+		earlier_event(reload_at, control_at),
 	)
 }
