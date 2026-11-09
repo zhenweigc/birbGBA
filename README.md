@@ -7,7 +7,11 @@ Rn it will just being able to run some offical ROMs, without crashing during pla
 ![Cult of GBA's BIOS running in birbGBA](docs/images/progress.png)
 
 With the minimal RocRay frontend, birbGBA can run cult-of-GBA BIOS, EmiBIOS and the official BIOS without explicit crashing.
-No sound/input supported rn though. Running-speed has been optimized to a minimum acceptable scale via batched CPU execution and reduced state copying.
+No sound/input supported rn though.
+
+Running-speed has been optimized to a minimum acceptable scale via batched CPU execution and reduced state copying.
+
+BirbGBA passed ArmWrestler test suites, but are still not able run mGBA's suite due to lots of IO behaviors are just implemented.
 
 ## Behavior references:
 - ARM DDI 0100I Architecture Reference Manual
@@ -17,6 +21,7 @@ No sound/input supported rn though. Running-speed has been optimized to a minimu
 - [NanoBoyAdvance](https://codeberg.org/nba-emu/NanoBoyAdvance)
 - [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
 - [EmiBIOS](https://github.com/coolbho3k/emibios)
+- [ArmWrestler](https://github.com/destoer/armwrestler-gba-fixed)
 - Many more tech blogs, will write them in later
 
 ## License

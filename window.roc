@@ -1,4 +1,4 @@
-app [Model, program] { rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.12.0/79nt7eRxopFeMc2RcTHhPmjDxdRZjpNWLa9Na5xVGw9p.tar.zst" }
+app [Model, program] { rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.12.1/EtDK2uhnAG7oAzez8RX5YV9wohQzzuSfHmzBM19hCdWw.tar.zst" }
 
 import rr.App
 import rr.Keys

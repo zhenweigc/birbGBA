@@ -167,7 +167,6 @@ Bus := {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			UnsupportedIORegOffset(U32),
-			WriteIntoROM(U32),
 		],
 	)
 	write8 = |bus, addr, cxt| {
@@ -218,7 +217,7 @@ Bus := {
 				}
 			}
 			OAM => Ok({ ..bus, signal: new_signal }) # GBAtek explicitly said no 1byte write
-			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
 			SystemROM => Ok({ ..bus, signal: new_signal })
 			IORegs => Ok({
 				..bus,
@@ -335,7 +334,6 @@ Bus := {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
-			WriteIntoROM(U32),
 			UnsupportedIORegOffset(U32),
 		],
 	)
@@ -383,7 +381,7 @@ Bus := {
 					oam: (bus.oam).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
 					signal: new_signal,
 				})
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
 				SystemROM => Ok({ ..bus, signal: new_signal })
 				IORegs => Ok({
 					..bus,
@@ -505,7 +503,6 @@ Bus := {
 			OutOfBounds,
 			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
-			WriteIntoROM(U32),
 			UnsupportedIORegOffset(U32),
 		],
 	)
@@ -558,7 +555,7 @@ Bus := {
 					oam: (bus.oam).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
 					signal: new_signal,
 				})
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Err(WriteIntoROM(addr))
+				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
 				SystemROM => Ok({ ..bus, signal: new_signal })
 				IORegs => Ok({
 					..bus,
