@@ -4,6 +4,7 @@ import SystemRegs
 import Bits
 import BusSignals
 import DisplayRegs
+import SRAM
 
 ReadResult(val_type, type) : {
 	val : val_type,
@@ -37,9 +38,10 @@ Bus := {
 	bios : List(U8),
 	io_regs : IoRegs,
 	signal : BusSignals,
+	sram : SRAM,
 }.{
-	init : List(U8), List(U8) -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
-	init = |bios, rom| {
+	init : List(U8), List(U8), SRAM -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
+	init = |bios, rom, sram| {
 		if rom.len() > 0x02000000 {
 			Err(ROMSizeTooLarge)
 		} else if bios.len() != 0x4000 {
@@ -55,6 +57,7 @@ Bus := {
 				bios: bios,
 				io_regs: IoRegs.init(),
 				signal: BusSignals.init(),
+				sram: sram,
 			})
 		}
 	}
@@ -73,6 +76,9 @@ Bus := {
 			wait_cnt: SystemRegs.get_waitcnt(bus.io_regs.system),
 		}
 	}
+
+	set_sram_info : Bus, { time : U64, ecc : List(U8) } -> Bus
+	set_sram_info = |bus, saved| { ..bus, sram: SRAM.set_saved(bus.sram, Some(saved)) }
 
 	read8 : Bus,
 	U32 -> Try(
@@ -120,6 +126,7 @@ Bus := {
 					},
 				)
 			}
+			GamePakRAM => (SRAM.read8(bus.sram, relative_addr)?, Unchanged)
 			_ => return Err(UnsupportedRegion(region))
 		}
 		Ok({ val: val, state: state, signal: BusSignals.record_read8(bus.signal, addr, val) })
@@ -155,6 +162,7 @@ Bus := {
 			}
 			SystemROM => Ok(Value((rv.bios).get(U32.to_u64(relative_addr))?))
 			IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read8(rv.display, relative_addr)?)) else Ok(NeedsSlow)
+			GamePakRAM => Ok(NeedsSlow)
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -224,6 +232,7 @@ Bus := {
 				io_regs: IoRegs.write8(bus.io_regs, relative_addr, cxt)?,
 				signal: new_signal,
 			})
+			GamePakRAM => Ok({ ..bus, sram: SRAM.write8(bus.sram, relative_addr, cxt)?, signal: new_signal })
 			_ => Err(UnsupportedRegion(region))
 		}
 	}

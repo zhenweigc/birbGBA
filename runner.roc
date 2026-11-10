@@ -6,6 +6,7 @@ import pf.OsStr
 import src/Machine
 import src/Cpu
 import src/ARM7TDMI
+import src/SRAM
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
@@ -20,7 +21,7 @@ main! = |args| {
 	rom = rom_path.read_bytes!()?
 	num_of_actions = U32.from_str(OsStr.to_str_try(budget_arg)?)?
 
-	m = Machine.init(bios, rom)?
+	m = Machine.init(bios, rom, SRAM.init())?
 	done = Machine.run_with_budget(m, num_of_actions)?
 	c = Machine.get_cpu(done)
 

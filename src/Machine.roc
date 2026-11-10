@@ -11,6 +11,7 @@ import DmaRegs
 import SoundRegs
 import IoRegs
 import KeyRegs
+import SRAM
 
 Machine :: {
 	bus : Bus,
@@ -25,10 +26,10 @@ Machine :: {
 	next_lcd_event : [EnterHBlank, NextScanline, VideoDMARequest],
 	video_dma_running : Bool,
 }.{
-	init : List(U8), List(U8) -> Try(Machine, _)
-	init = |bios, rom| {
+	init : List(U8), List(U8), SRAM -> Try(Machine, _)
+	init = |bios, rom, sram| {
 		Ok({
-			bus: Bus.init(bios, rom)?,
+			bus: Bus.init(bios, rom, sram)?,
 			cpu: Cpu.init(),
 			ppu: Ppu.init(),
 			power_state: Running,
@@ -54,6 +55,9 @@ Machine :: {
 
 	get_cpu : Machine -> Cpu
 	get_cpu = |m| m.cpu
+
+	mark_sram_saved : Machine, { time : U64, ecc : List(U8) } -> Machine
+	mark_sram_saved = |m, info| { ..m, bus: Bus.set_sram_info(m.bus, info) }
 
 	process_next_event : Machine -> Try((Machine, U8), _)
 	process_next_event = |m| {

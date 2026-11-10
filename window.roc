@@ -7,8 +7,11 @@ import rr.Draw
 import rr.Texture
 import rr.Assets
 import rr.Trace
+import rr.Files
 
 import src/Machine
+import src/SRAM
+import src/Bus
 
 Binding : { host : Keys.Key, mask : U16 }
 
@@ -47,9 +50,13 @@ Model : {
 	cycles_per_second : F64,
 	paused : Bool,
 	layout_pick : U64,
+	save_dir : Files.Dir,
+	save_status : [Idle, Saving, Failed(Files.WriteError)],
 }
 
-Msg : []
+Msg : [
+	SaveFinished(Try({ time : U64, ecc : List(U8) }, Files.WriteError)),
+]
 
 program = { init!, update!, render! }
 
@@ -59,12 +66,17 @@ init! = App.init(
 		.with_title("birbGBA")
 		.with_size({ width: 960, height: 640 })
 		.with_frame_pacing(Capped(240))
-		.with_permission(WorkingDirectory(ReadOnly)),
+		.with_permission(WorkingDirectory(ReadWrite)),
 	|io| {
-		dir = io.files().working_directory_read!()?
+		dir = io.files().working_directory!()?
 		bios = dir.read_bytes!("bios.bin")?
 		rom = dir.read_bytes!("game.gba")?
-		machine = Machine.init(bios, rom)?
+		save = match dir.read_bytes!("game.sav") {
+			Ok(bytes) => SRAM.from_save(bytes)?
+			Err(NotFound) => SRAM.init()
+			Err(e) => return Err(e)
+		}
+		machine = Machine.init(bios, rom, save)?
 
 		texture = Assets.generate_color_texture!({
 			width: 240,
@@ -82,12 +94,15 @@ init! = App.init(
 			cycles_per_second: 0,
 			paused: False,
 			layout_pick: 0,
+			save_dir: dir,
+			save_status: Idle,
 		})
 	},
 )
 
 update! : Model, App.Input(Msg), App.Io => Try(Model, _)
-update! = |model, input, _io| {
+update! = |old_model, input, _io| {
+	model = input.messages.fold(old_model, apply_save_message)
 	if input.devices.key_pressed(KeyP) {
 		new_pause = !model.paused
 		Ok({
@@ -227,5 +242,17 @@ advance_due! = |model, target_cycles, frames_left| {
 		}
 		BudgetExhausted => Ok(advanced)
 		Stopped => Ok(advanced)
+	}
+}
+
+apply_save_message : Model, Msg -> Model
+apply_save_message = |model, msg| {
+	match msg {
+		SaveFinished(Ok(info)) => {
+			..model,
+			save_status: Idle,
+			machine: Machine.mark_sram_saved(model.machine, info),
+		}
+		SaveFinished(Err(e)) => { ..model, save_status: Failed(e) }
 	}
 }

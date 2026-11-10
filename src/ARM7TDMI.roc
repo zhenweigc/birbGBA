@@ -476,56 +476,13 @@ U32_carry_overflow : { val : U32, carry : Bool, overflow : Bool }
 pc_inc : U32, U32 -> U32
 pc_inc = |r15, val| U32.plus_wrap(r15, val)
 
-rotate_right_u32 : U32, U8 -> U32
-rotate_right_u32 = |i, j| {
-	tmp = j % 32
-	if (tmp == 0) i else i.shr_wrap(tmp).bitwise_or(i.shl_wrap(U8.minus_wrap(32, tmp)))
-}
-
-signed_extend_u32 : U32, U8 -> U32
-signed_extend_u32 = |val, e| {
-	if (e == 0 or e >= 32) return val
-	if (Bits.get_ith_bit_u32_certain(val, e - 1)) return val.bitwise_or(U32.highest.shl_wrap(e))
-	val
-}
-
 rotate : Rotation, U32 -> U32
 rotate = |r, val| {
 	match r {
 		Identity => val
-		RotRight(i) => rotate_right_u32(val, i)
-		SignedExtend8 => signed_extend_u32(val, 8)
-		SignedExtend16 => signed_extend_u32(val, 16)
-	}
-}
-
-arithmetic_shift_right : U32, U8 -> U32
-arithmetic_shift_right = |i, j| {
-	if j == 0 or i == 0 or i == 4294967295 {
-		i
-	} else if j >= 32 {
-		U32.minus_wrap(0, i.shr_wrap(31))
-	} else {
-		i.shr_wrap(j).bitwise_or(U32.minus_wrap(0, i.shr_wrap(31)).shl_wrap(U8.minus_wrap(32, j)))
-	}
-}
-
-add_with_carry : U32, U32, Bool -> U32_carry_overflow
-add_with_carry = |i, j, b| {
-	c = if (b) 1 else 0
-	partial = U32.to_u64(i) + U32.to_u64(j) + U32.to_u64(c)
-	res = U64.to_u32_wrap(partial)
-	{
-		val: res,
-		carry: partial > U32.to_u64(U32.highest),
-		overflow: match I64.to_i32_try(
-			I32.to_i64(U32.to_i32_wrap(i)) +
-				I32.to_i64(U32.to_i32_wrap(j)) +
-				U32.to_i64(c),
-		) {
-			Ok(_) => Bool.False
-			_ => Bool.True
-		},
+		RotRight(i) => Bits.rotate_right_u32(val, i)
+		SignedExtend8 => Bits.signed_extend_u32(val, 8)
+		SignedExtend16 => Bits.signed_extend_u32(val, 16)
 	}
 }
 
@@ -609,7 +566,7 @@ arm_data_processing_operands_register = |i, c| {
 arm_data_processing_operands_immediate : U32, Bool -> U32_carry
 arm_data_processing_operands_immediate = |i, c_flag| {
 	rotate_imm = arm_data_processing_rotate_imm(i)
-	tmp = rotate_right_u32(U8.to_u32(arm_data_processing_get_immed_8(i)), rotate_imm * 2)
+	tmp = Bits.rotate_right_u32(U8.to_u32(arm_data_processing_get_immed_8(i)), rotate_imm * 2)
 	if rotate_imm == 0 {
 		{ val: tmp, carry: c_flag }
 	} else {
@@ -748,7 +705,7 @@ data_processing_asr_by_immediate = |rm_val, shift_imm| {
 			{ val: 0xFFFFFFFF, carry: Bool.True }
 		}
 	} else {
-		{ val: arithmetic_shift_right(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
+		{ val: Bits.arithmetic_shift_right(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
 	}
 }
 
@@ -758,7 +715,7 @@ data_processing_asr_by_register = |rm_val, rs_val, c_flag| {
 	if tmp == 0 {
 		{ val: rm_val, carry: c_flag }
 	} else if tmp < 32 {
-		{ val: arithmetic_shift_right(rm_val, tmp), carry: Bits.get_ith_bit_u32_certain(rm_val, tmp - 1) }
+		{ val: Bits.arithmetic_shift_right(rm_val, tmp), carry: Bits.get_ith_bit_u32_certain(rm_val, tmp - 1) }
 	} else {
 		if !Bits.get_ith_bit_u32_certain(rm_val, 31) {
 			{ val: 0, carry: Bool.False }
@@ -784,7 +741,7 @@ data_processing_ror_by_immediate = |rm_val, shift_imm, c_flag| {
 	if shift_imm == 0 {
 		data_processing_rrx(rm_val, c_flag)
 	} else {
-		{ val: rotate_right_u32(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
+		{ val: Bits.rotate_right_u32(rm_val, shift_imm), carry: Bits.get_ith_bit_u32_certain(rm_val, shift_imm - 1) }
 	}
 }
 
@@ -798,7 +755,7 @@ data_processing_ror_by_register = |rm_val, rs_val, c_flag| {
 			{ val: rm_val, carry: Bits.get_ith_bit_u32_certain(rm_val, 31) }
 		} else {
 			{
-				val: rotate_right_u32(rm_val, tmp),
+				val: Bits.rotate_right_u32(rm_val, tmp),
 				carry: Bits.get_ith_bit_u32_certain(rm_val, tmp - 1),
 			}
 		}
@@ -976,12 +933,12 @@ data_processing_alu = |alu_op, op1, op2, c_flag, v_flag| {
 		MOV => { val: op2.val, carry: op2.carry, overflow: v_flag }
 		BIC => { val: U32.bitwise_and(op1, U32.bitwise_not(op2.val)), carry: op2.carry, overflow: v_flag }
 		MVN => { val: U32.bitwise_not(op2.val), carry: op2.carry, overflow: v_flag }
-		SUB | CMP => add_with_carry(op1, U32.bitwise_not(op2.val), Bool.True)
-		RSB => add_with_carry(op2.val, U32.bitwise_not(op1), Bool.True)
-		ADD | CMN => add_with_carry(op1, op2.val, Bool.False)
-		ADC => add_with_carry(op1, op2.val, c_flag)
-		SBC => add_with_carry(op1, U32.bitwise_not(op2.val), c_flag)
-		RSC => add_with_carry(op2.val, U32.bitwise_not(op1), c_flag)
+		SUB | CMP => Bits.add_with_carry(op1, U32.bitwise_not(op2.val), Bool.True)
+		RSB => Bits.add_with_carry(op2.val, U32.bitwise_not(op1), Bool.True)
+		ADD | CMN => Bits.add_with_carry(op1, op2.val, Bool.False)
+		ADC => Bits.add_with_carry(op1, op2.val, c_flag)
+		SBC => Bits.add_with_carry(op1, U32.bitwise_not(op2.val), c_flag)
+		RSC => Bits.add_with_carry(op2.val, U32.bitwise_not(op1), c_flag)
 	}
 }
 
@@ -2641,13 +2598,13 @@ thumb_branch_execute = |op, c| {
 	if Bits.bits_match_16(op, 0b11111_00000000000, 0b11100_00000000000) {
 		old_PC = cpu_getReg(R15, c)?
 		signed_immed_11 = Bits.get_seg_of_u16_certain(op, 0, 11)
-		extended_immed = signed_extend_u32(signed_immed_11.to_u32(), 11)
+		extended_immed = Bits.signed_extend_u32(signed_immed_11.to_u32(), 11)
 		pc = U32.plus_wrap(old_PC.plus_wrap(4), extended_immed.shl_wrap(1))
 		Ok({ core: cpu_setReg(R15, c, pc)?, pc_status: PCWritten, remaining_cycles: 0 })
 	} else if Bits.bits_match_16(op, 0b1111_000000000000, 0b1101_000000000000) {
 		old_PC = cpu_getReg(R15, c)?
 		signed_immed_8 = Bits.get_seg_of_u16_certain(op, 0, 8)
-		extended_immed = signed_extend_u32(signed_immed_8.to_u32(), 8)
+		extended_immed = Bits.signed_extend_u32(signed_immed_8.to_u32(), 8)
 		cond_val = Bits.get_seg_of_u16_certain(op, 8, 4)
 		if cond_val >= 14 {
 			Err(Branch_Type_Unknown) # SWI and undefined, should be intercepted earlier.
@@ -2685,7 +2642,7 @@ thumb_branch_execute = |op, c| {
 		offset_11 = Bits.get_seg_of_u16_certain(op, 0, 11).to_u32()
 		old_PC = cpu_getReg(R15, c)?
 		if h == 0b10 {
-			extended_immed = signed_extend_u32(offset_11, 11)
+			extended_immed = Bits.signed_extend_u32(offset_11, 11)
 			Ok({
 				core: cpu_setReg(R14, c, old_PC.plus_wrap(extended_immed.shl_wrap(12)).plus_wrap(4))?,
 				pc_status: PCSequential,
@@ -3089,7 +3046,7 @@ thumb_data_processing_execute = |i, c| {
 							if (rn == R15) 4 else 0,
 						)
 						# plus is minus, unsigned is signed, ....and I cannot make another joke.
-						intermediate_res = add_with_carry(rn_val, rm_val.bitwise_not(), True)
+						intermediate_res = Bits.add_with_carry(rn_val, rm_val.bitwise_not(), True)
 						Ok({
 							core: { ..c, cpsr: cpsr_setNZCV(c.cpsr, intermediate_res) },
 							pc_status: PCSequential,
@@ -3102,12 +3059,13 @@ thumb_data_processing_execute = |i, c| {
 		}
 		UndefinedFormat => return Err(UNPREDICTABLE)
 	}
-	match chk {
-		Ok(x) => Ok(x)
-		Err(UB_ShiftbyPC) | Err(NoSPSR) => Err(WTFisThis) # Shouldnt happen in thumb cases
-		Err(WTFisThis) => Err(WTFisThis)
-		Err(InvalidMode) => Err(InvalidMode)
-	}
+	chk.map_err(
+		|e| match e {
+			UB_ShiftbyPC | NoSPSR => WTFisThis # Shouldnt happen in thumb cases
+			WTFisThis => WTFisThis
+			InvalidMode => InvalidMode
+		},
+	)
 }
 
 thumb_load_store_decode : U16 -> Thumb_LoadStoreOpCode

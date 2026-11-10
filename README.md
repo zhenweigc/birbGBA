@@ -7,7 +7,7 @@ Rn it will just being able to run some offical ROMs, without crashing during pla
 ![Cult of GBA's BIOS running in birbGBA](docs/images/progress.png)
 
 With the minimal RocRay frontend, birbGBA can run cult-of-GBA BIOS, EmiBIOS and the official BIOS without explicit crashing.
-No sound/input supported rn though.
+No sound rn though.
 
 Running-speed has been optimized to a minimum acceptable scale via batched CPU execution and reduced state copying.
 
