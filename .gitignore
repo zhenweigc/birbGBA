@@ -11,3 +11,5 @@
 *.lib
 *.rrstats
 *.data
+*.sav
+*.sav.meta

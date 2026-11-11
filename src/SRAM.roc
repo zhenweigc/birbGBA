@@ -7,6 +7,12 @@ SRAM :: {
 	init : () -> SRAM
 	init = || { bytes: List.repeat(0xFF, 0x8000), saved: None }
 
+	get_bytes : SRAM -> List(U8)
+	get_bytes = |s| s.bytes
+
+	get_saved : SRAM -> [None, Some({ time : U64, ecc : List(U8) })]
+	get_saved = |s| s.saved
+
 	read8 : SRAM, U32 -> Try(U8, [OutOfBounds])
 	read8 = |sram, offset| (sram.bytes).get(offset.bitwise_and(0x7FFF).to_u64())
 

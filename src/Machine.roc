@@ -56,6 +56,9 @@ Machine :: {
 	get_cpu : Machine -> Cpu
 	get_cpu = |m| m.cpu
 
+	get_sram : Machine -> SRAM
+	get_sram = |m| m.bus.sram
+
 	mark_sram_saved : Machine, { time : U64, ecc : List(U8) } -> Machine
 	mark_sram_saved = |m, info| { ..m, bus: Bus.set_sram_info(m.bus, info) }
 

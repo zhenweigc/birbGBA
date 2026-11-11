@@ -8,10 +8,12 @@ import rr.Texture
 import rr.Assets
 import rr.Trace
 import rr.Files
+import rr.Task
 
 import src/Machine
 import src/SRAM
 import src/Bus
+import src/Bits
 
 Binding : { host : Keys.Key, mask : U16 }
 
@@ -52,6 +54,8 @@ Model : {
 	layout_pick : U64,
 	save_dir : Files.Dir,
 	save_status : [Idle, Saving, Failed(Files.WriteError)],
+	last_save_attempt_ns : U64,
+	closing : Bool,
 }
 
 Msg : [
@@ -66,16 +70,14 @@ init! = App.init(
 		.with_title("birbGBA")
 		.with_size({ width: 960, height: 640 })
 		.with_frame_pacing(Capped(240))
-		.with_permission(WorkingDirectory(ReadWrite)),
+		.with_permission(WorkingDirectory(ReadWrite))
+		.with_close_request(Deliver)
+		.with_exit_key(NoExitKey),
 	|io| {
 		dir = io.files().working_directory!()?
 		bios = dir.read_bytes!("bios.bin")?
 		rom = dir.read_bytes!("game.gba")?
-		save = match dir.read_bytes!("game.sav") {
-			Ok(bytes) => SRAM.from_save(bytes)?
-			Err(NotFound) => SRAM.init()
-			Err(e) => return Err(e)
-		}
+		save = load_save!(dir)?
 		machine = Machine.init(bios, rom, save)?
 
 		texture = Assets.generate_color_texture!({
@@ -96,13 +98,19 @@ init! = App.init(
 			layout_pick: 0,
 			save_dir: dir,
 			save_status: Idle,
+			last_save_attempt_ns: 0,
+			closing: False,
 		})
 	},
 )
 
 update! : Model, App.Input(Msg), App.Io => Try(Model, _)
 update! = |old_model, input, _io| {
-	model = input.messages.fold(old_model, apply_save_message)
+	received = input.messages.fold(old_model, apply_save_message)
+	nxt = if (input.window.close_requested or input.devices.key_pressed(KeyEscape)) { ..received, closing: True } else received
+	if (nxt.closing) return finish_close!(nxt, input)
+
+	model = if (save_due(nxt, input.time.monotonic_nanos)) start_save!(nxt, input)? else nxt
 	if input.devices.key_pressed(KeyP) {
 		new_pause = !model.paused
 		Ok({
@@ -135,7 +143,8 @@ update! = |old_model, input, _io| {
 		target_cycles = pacing.gba_cycles + elapsed_cycles
 
 		layout = default_key_layouts.get(model.layout_pick)?
-		held = List.keep_if(layout.bindings, (|binding| input.devices.key_down(binding.host)))
+		held
+			=List.keep_if(layout.bindings, (|binding| input.devices.key_down(binding.host)))
 		masks = List.map(held, (|binding| binding.mask))
 		pressed = List.fold(masks, 0, U16.bitwise_or)
 		m = Machine.set_pressed(model.machine, pressed)
@@ -197,21 +206,111 @@ render! = |model, frame| {
 			},
 		)
 	}
+	match model.save_status {
+		Failed(_) => Draw.debug_text!(
+			frame,
+			{
+				pos: { x: 10, y: 40 },
+				text: "Save failed; retrying...",
+				size: 20,
+				color: Color.red,
+			},
+		)
+		_ => {}
+	}
+	if (model.closing) Draw.debug_text!(
+		frame,
+		{
+			pos: { x: 10, y: 40 },
+			text: "Saving before exit...",
+			size: 20,
+			color: Color.red,
+		},
+	)
 	Ok({})
 }
 
-rgb555_to_rgba : U16 -> Color.Rgba
-rgb555_to_rgba = |pixel| {
-	# https://computergraphics.stackexchange.com/questions/8173/why-replicating-the-higher-bits-of-rgb565-when-converting-to-rgba8888
-	# black magic
-	channel5_to8 : U16 -> U8
-	channel5_to8 = |v| v.shl_wrap(3).bitwise_or(v.shr_wrap(2)).to_u8_wrap()
+load_save! : Files.Dir => Try(SRAM, _)
+load_save! = |dir| {
+	match dir.read_bytes!("game.sav") {
+		Err(NotFound) => Ok(SRAM.init())
+		Err(e) => Err(e)
+		Ok(save) => {
+			match dir.read_bytes!("game.sav.meta") {
+				Err(NotFound) => Ok(SRAM.from_save(save)?)
+				Err(e) => Err(e)
+				Ok(meta) => {
+					ecc = decode_save_meta(meta)?
+					SRAM.from_save(
+						SRAM.repair_save(
+							save,
+							ecc,
+							Bits.golay_init_corrections()?,
+						)?,
+					)
+				}
+			}
+		}
+	}
+}
 
-	r = channel5_to8(pixel.bitwise_and(0b1_1111))
-	g = channel5_to8(pixel.shr_wrap(5).bitwise_and(0b1_1111))
-	b = channel5_to8(pixel.shr_wrap(10).bitwise_and(0b1_1111))
+write_save! : Files.Dir,
+{
+	save : List(U8),
+	pending_meta : List(U8),
+	complete_meta : List(U8),
+} => Try({}, Files.WriteError)
+write_save! = |dir, cxt| {
+	dir.write_bytes!("game.sav.meta", cxt.pending_meta)?
+	dir.write_bytes!("game.sav", cxt.save)?
+	dir.write_bytes!("game.sav.meta", cxt.complete_meta)
+}
 
-	Color.rgba(r, g, b, 255)
+start_save! : Model, App.Input(Msg) => Try(Model, [InvalidEccLength])
+start_save! = |model, input| {
+	if (model.save_status == Saving) return Ok(model)
+	sram = model.machine.get_sram()
+	bytes = sram.get_bytes()
+	saved = sram.get_saved()
+	new_ecc = SRAM.gen_ecc_of_save(bytes)
+	match (model.save_status, saved) {
+		(Idle, Some(info)) if info.ecc == new_ecc => {
+			return Ok({
+				..model,
+				machine: Machine.mark_sram_saved(model.machine, { ..info, time: input.time.monotonic_nanos }),
+			})
+		}
+		_ => {}
+	}
+	cxt = {
+		save: bytes,
+		pending_meta: encode_save_meta(new_ecc, Pending)?,
+		complete_meta: encode_save_meta(new_ecc, Complete)?,
+	}
+	Task.spawn!(
+		input,
+		|| SaveFinished(
+			write_save!(model.save_dir, cxt)
+				.map_ok(|_| { time: input.time.monotonic_nanos, ecc: new_ecc }),
+		),
+	)
+	Ok({
+		..model,
+		save_status: Saving,
+		last_save_attempt_ns: input.time.monotonic_nanos,
+	})
+}
+
+finish_close! : Model, App.Input(Msg) => Try(Model, [InvalidEccLength, Exit(I64)])
+finish_close! = |model, input| {
+	match model.save_status {
+		Saving => Ok(model)
+		Failed(_) if !save_due(model, input.time.monotonic_nanos) => Ok(model)
+		_ => {
+			m = start_save!(model, input)?
+			if (m.save_status == Idle) Err(Exit(0)) else Ok(m)
+		}
+	}
 }
 
 advance_due! : Model, U64, U8 => Try(Model, _)
@@ -245,6 +344,20 @@ advance_due! = |model, target_cycles, frames_left| {
 	}
 }
 
+rgb555_to_rgba : U16 -> Color.Rgba
+rgb555_to_rgba = |pixel| {
+	# https://computergraphics.stackexchange.com/questions/8173/why-replicating-the-higher-bits-of-rgb565-when-converting-to-rgba8888
+	# black magic
+	channel5_to8 : U16 -> U8
+	channel5_to8 = |v| v.shl_wrap(3).bitwise_or(v.shr_wrap(2)).to_u8_wrap()
+
+	r = channel5_to8(pixel.bitwise_and(0b1_1111))
+	g = channel5_to8(pixel.shr_wrap(5).bitwise_and(0b1_1111))
+	b = channel5_to8(pixel.shr_wrap(10).bitwise_and(0b1_1111))
+
+	Color.rgba(r, g, b, 255)
+}
+
 apply_save_message : Model, Msg -> Model
 apply_save_message = |model, msg| {
 	match msg {
@@ -254,5 +367,44 @@ apply_save_message = |model, msg| {
 			machine: Machine.mark_sram_saved(model.machine, info),
 		}
 		SaveFinished(Err(e)) => { ..model, save_status: Failed(e) }
+	}
+}
+
+encode_save_meta : List(U8), [Pending, Complete] -> Try(List(U8), [InvalidEccLength])
+encode_save_meta = |ecc, state| {
+	if (ecc.len() != 32769) return Err(InvalidEccLength)
+	header = "BGSV".to_utf8().append(1).append(if (state == Pending) 0 else 1)
+	Ok(header.concat(ecc))
+}
+
+decode_save_meta : List(U8) -> Try(
+	List(U8),
+	[
+		InvalidMetaLength,
+		InvalidMetaMagic,
+		UnsupportedMetaVersion,
+		InvalidMetaState,
+		IncompleteSave,
+		OutOfBounds,
+	],
+)
+decode_save_meta = |meta| {
+	if (meta.len() != 32775) return Err(InvalidMetaLength)
+	if (meta.take_first(4) != "BGSV".to_utf8()) return Err(InvalidMetaMagic)
+	if (meta.get(4)? != 1) return Err(UnsupportedMetaVersion)
+	if (meta.get(5)? == 0) return Err(IncompleteSave)
+	if (meta.get(5)? > 1) return Err(InvalidMetaState)
+	Ok(meta.drop_first(6))
+}
+
+save_due : Model, U64 -> Bool
+save_due = |model, time| {
+	match model.save_status {
+		Saving => False
+		Failed(_) => time - model.last_save_attempt_ns >= 1_000_000_000
+		Idle => match model.machine.get_sram().get_saved() {
+			None => True
+			Some(info) => time - info.time >= 1_000_000_000
+		}
 	}
 }
