@@ -1,5 +1,6 @@
 import ARM7TDMI
 import BusSignals
+import Bus
 
 FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
@@ -38,6 +39,7 @@ Limits : {
 	event_at : U64,
 	target : [None, At(U64)],
 	budget : U32,
+	schedule_dma : Bool,
 }
 
 BlockExit : [
@@ -49,6 +51,11 @@ BlockResult : {
 	state : RunState,
 	actions_completed : U32,
 	exit : BlockExit,
+	memory : Bus.MemoryView,
+	# First fast RAM write's completion time if DMA scheduling is needed
+	# schedule_pending will add 2 to mimic the DMA delay
+	# Machine uses min(write_at, next_timer_at) when a timer event exists
+	dma_schedule_at : [None, At(U64)],
 }
 
 CpuTypes :: {}.{}

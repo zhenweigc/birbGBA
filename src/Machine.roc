@@ -307,13 +307,48 @@ run_cpu_chunk = |m, target_time, action_budget| {
 				Resume(_) => True
 			}
 	) return Ok({ machine: run_one_action(m)?, actions_completed: 1 })
-	block_res = Cpu.run_block(
-		Bus.get_read_view(m.bus),
-		{ hot: m.cpu.hot, now: m.now, signal: m.bus.signal },
-		{ event_at: closest_next, target: target_time, budget: action_budget },
-		SystemRegs.interrupt_req_fired(m.bus.io_regs.system),
-	)?
-	commited = commit_cpu_state(m, block_res.state)?
+	state = { hot: m.cpu.hot, now: m.now, signal: m.bus.signal }
+	limits = {
+		event_at: closest_next,
+		target: target_time,
+		budget: action_budget,
+		schedule_dma: DmaRegs.has_unscheduled(m.bus.io_regs.dmas),
+	}
+	irq_asserted = SystemRegs.interrupt_req_fired(m.bus.io_regs.system)
+	(cold_bus, memory_view) = Bus.take_memory_view(m.bus)
+	cold_machine = { ..m, bus: cold_bus }
+	finish_cpu_chunk(cold_machine, Cpu.run_block(memory_view, state, limits, irq_asserted))
+}
+
+finish_cpu_chunk : Machine, Try(CpuTypes.BlockResult, _) -> Try({ machine : Machine, actions_completed : U32 }, _)
+finish_cpu_chunk = |cold_machine, brs| {
+	match brs {
+		Err(e) => Err(e)
+		Ok(block_res) => commit_cpu_chunk(cold_machine, block_res)
+	}
+}
+
+commit_cpu_chunk : Machine, CpuTypes.BlockResult -> Try({ machine : Machine, actions_completed : U32 }, _)
+commit_cpu_chunk = |cold_machine, block_res| {
+	reheated_bus = Bus.restore_memory_view((cold_machine.bus, block_res.memory))
+	events_updated_bus = match block_res.dma_schedule_at {
+		None => reheated_bus
+		At(write_at) => {
+			timer_nxt_event = TimerRegs.next_event_at(reheated_bus.io_regs.timers)
+			schedule_at = match timer_nxt_event {
+				None => write_at
+				At(timer_at) => write_at.min(timer_at)
+			}
+			{
+				..reheated_bus,
+				io_regs: {
+					..reheated_bus.io_regs,
+					dmas: DmaRegs.schedule_pending(reheated_bus.io_regs.dmas, schedule_at),
+				},
+			}
+		}
+	}
+	commited = commit_cpu_state({ ..cold_machine, bus: events_updated_bus }, block_res.state)?
 	match block_res.exit {
 		Boundary(ReachedTarget) | Boundary(BudgetExhausted) =>
 			Ok({ machine: commited, actions_completed: block_res.actions_completed })

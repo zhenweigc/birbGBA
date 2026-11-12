@@ -14,7 +14,7 @@ ReadResult(val_type, type) : {
 
 ReadPurpose : [Fetch, CpuData, Dma(U8)]
 
-ReadView : {
+MemoryView : {
 	ewram : List(U8),
 	iwram : List(U8),
 	paletteram : List(U8),
@@ -62,20 +62,27 @@ Bus := {
 		}
 	}
 
-	get_read_view : Bus -> ReadView
-	get_read_view = |bus| {
-		{
-			ewram: bus.ewram,
-			iwram: bus.iwram,
-			paletteram: bus.paletteram,
-			vram: bus.vram,
-			oam: bus.oam,
-			gamepak_rom: bus.gamepak_rom,
-			bios: bus.bios,
-			display: bus.io_regs.display,
-			wait_cnt: SystemRegs.get_waitcnt(bus.io_regs.system),
-		}
+	# nukes RAM references in bus for better perf
+	take_memory_view : Bus -> (Bus, MemoryView)
+	take_memory_view = |bus| {
+		(
+			{ ..bus, ewram: [], iwram: [] },
+			{
+				ewram: bus.ewram,
+				iwram: bus.iwram,
+				paletteram: bus.paletteram,
+				vram: bus.vram,
+				oam: bus.oam,
+				gamepak_rom: bus.gamepak_rom,
+				bios: bus.bios,
+				display: bus.io_regs.display,
+				wait_cnt: SystemRegs.get_waitcnt(bus.io_regs.system),
+			},
+		)
 	}
+
+	restore_memory_view : (Bus, MemoryView) -> Bus
+	restore_memory_view = |(bus, mv)| { ..bus, ewram: mv.ewram, iwram: mv.iwram }
 
 	set_sram_info : Bus, { time : U64, ecc : List(U8) } -> Bus
 	set_sram_info = |bus, saved| { ..bus, sram: SRAM.set_saved(bus.sram, Some(saved)) }
@@ -132,36 +139,36 @@ Bus := {
 		Ok({ val: val, state: state, signal: BusSignals.record_read8(bus.signal, addr, val) })
 	}
 
-	read_view8 : ReadView, U32 -> Try([Value(U8), NeedsSlow], _)
-	read_view8 = |rv, addr| {
+	read_view8 : MemoryView, U32 -> Try([Value(U8), NeedsSlow], _)
+	read_view8 = |mv, addr| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		match region {
-			CPUExternalRAM => Ok(Value((rv.ewram).get(U32.to_u64(relative_addr))?))
-			CPUInternalRAM => Ok(Value(((rv.iwram).get(U32.to_u64(relative_addr))?)))
-			PaletteRAM => Ok(Value((rv.paletteram).get(U32.to_u64(relative_addr))?))
+			CPUExternalRAM => Ok(Value((mv.ewram).get(U32.to_u64(relative_addr))?))
+			CPUInternalRAM => Ok(Value(((mv.iwram).get(U32.to_u64(relative_addr))?)))
+			PaletteRAM => Ok(Value((mv.paletteram).get(U32.to_u64(relative_addr))?))
 			VRAM => {
-				mode = DisplayRegs.get_bg_mode(rv.display)
+				mode = DisplayRegs.get_bg_mode(mv.display)
 				window_offset = (addr - 0x6000000).mod_by(0x20000)
 				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
 					Ok(Value((0)))
 				} else {
-					Ok(Value(((rv.vram).get(U32.to_u64(relative_addr))?)))
+					Ok(Value(((mv.vram).get(U32.to_u64(relative_addr))?)))
 				}
 			}
-			OAM => Ok(Value((rv.oam).get(U32.to_u64(relative_addr))?))
+			OAM => Ok(Value((mv.oam).get(U32.to_u64(relative_addr))?))
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
 				Ok(
 					Value(
-						if relative_addr.to_u64() + 1 <= rv.gamepak_rom.len() {
-							(rv.gamepak_rom).get(relative_addr.to_u64())?
+						if relative_addr.to_u64() + 1 <= mv.gamepak_rom.len() {
+							(mv.gamepak_rom).get(relative_addr.to_u64())?
 						} else {
 							addr.shr_wrap(1 + (if (addr.mod_by(2) == 0) 0 else 8)).to_u8_wrap()
 						},
 					),
 				)
 			}
-			SystemROM => Ok(Value((rv.bios).get(U32.to_u64(relative_addr))?))
-			IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read8(rv.display, relative_addr)?)) else Ok(NeedsSlow)
+			SystemROM => Ok(Value((mv.bios).get(U32.to_u64(relative_addr))?))
+			IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read8(mv.display, relative_addr)?)) else Ok(NeedsSlow)
 			GamePakRAM => Ok(NeedsSlow)
 			_ => Err(UnsupportedRegion(region))
 		}
@@ -249,88 +256,82 @@ Bus := {
 		],
 	)
 	read16 = |bus, addr, purpose| {
-		if addr.mod_by(2) == 1 {
-			Err(MisalignedAddress(addr))
-		} else {
-			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-			(val, state) = match region {
-				CPUExternalRAM => (read_le16(bus.ewram, relative_addr)?, Unchanged)
-				CPUInternalRAM => (read_le16(bus.iwram, relative_addr)?, Unchanged)
-				PaletteRAM => (read_le16(bus.paletteram, relative_addr)?, Unchanged)
-				VRAM => {
-					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-					window_offset = (addr - 0x6000000).mod_by(0x20000)
-					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-						# If cond directly stolen from mGBA
-						(0, Unchanged)
-					} else {
-						(read_le16(bus.vram, relative_addr)?, Unchanged)
-					}
+		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		(val, state) = match region {
+			CPUExternalRAM => (read_le16(bus.ewram, relative_addr)?, Unchanged)
+			CPUInternalRAM => (read_le16(bus.iwram, relative_addr)?, Unchanged)
+			PaletteRAM => (read_le16(bus.paletteram, relative_addr)?, Unchanged)
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					# If cond directly stolen from mGBA
+					(0, Unchanged)
+				} else {
+					(read_le16(bus.vram, relative_addr)?, Unchanged)
 				}
-				OAM => (read_le16(bus.oam, relative_addr)?, Unchanged)
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-					value = if relative_addr.to_u64() + 2 <= bus.gamepak_rom.len() {
-						read_le16(bus.gamepak_rom, relative_addr)?
-					} else {
-						# Out of bound addr -> ROM will not WB value
-						# So the CPU will just read the low 16 bits of Halfword addr back.
-						addr.shr_wrap(1).to_u16_wrap()
-					}
-					(value, Unchanged)
-				}
-				SystemROM => (read_le16(bus.bios, relative_addr)?, Unchanged)
-				IORegs => {
-					intermediate = IoRegs.read16(bus.io_regs, relative_addr)?
-					(
-						intermediate.val,
-						match intermediate.reg {
-							Unchanged => Unchanged
-							Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
-						},
-					)
-				}
-				_ => return Err(UnsupportedRegion(region))
 			}
-			Ok({ val: val, state: state, signal: BusSignals.record_read16(bus.signal, purpose, addr, val) })
+			OAM => (read_le16(bus.oam, relative_addr)?, Unchanged)
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				value = if relative_addr.to_u64() + 2 <= bus.gamepak_rom.len() {
+					read_le16(bus.gamepak_rom, relative_addr)?
+				} else {
+					# Out of bound addr -> ROM will not WB value
+					# So the CPU will just read the low 16 bits of Halfword addr back.
+					addr.shr_wrap(1).to_u16_wrap()
+				}
+				(value, Unchanged)
+			}
+			SystemROM => (read_le16(bus.bios, relative_addr)?, Unchanged)
+			IORegs => {
+				intermediate = IoRegs.read16(bus.io_regs, relative_addr)?
+				(
+					intermediate.val,
+					match intermediate.reg {
+						Unchanged => Unchanged
+						Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
+					},
+				)
+			}
+			_ => return Err(UnsupportedRegion(region))
 		}
+		Ok({ val: val, state: state, signal: BusSignals.record_read16(bus.signal, purpose, addr, val) })
 	}
 
-	read_view16 : ReadView, U32 -> Try([Value(U16), NeedsSlow], _)
-	read_view16 = |rv, addr| {
-		if addr.mod_by(2) == 1 {
-			Err(MisalignedAddress(addr))
-		} else {
-			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-			match region {
-				CPUExternalRAM => Ok(Value(read_le16(rv.ewram, relative_addr)?))
-				CPUInternalRAM => Ok(Value(read_le16(rv.iwram, relative_addr)?))
-				PaletteRAM => Ok(Value(read_le16(rv.paletteram, relative_addr)?))
-				VRAM => {
-					mode = DisplayRegs.get_bg_mode(rv.display)
-					window_offset = (addr - 0x6000000).mod_by(0x20000)
-					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-						# If cond directly stolen from mGBA
-						Ok(Value(0))
-					} else {
-						Ok(Value(read_le16(rv.vram, relative_addr)?))
-					}
+	read_view16 : MemoryView, U32 -> Try([Value(U16), NeedsSlow], _)
+	read_view16 = |mv, addr| {
+		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		match region {
+			CPUExternalRAM => Ok(Value(read_le16(mv.ewram, relative_addr)?))
+			CPUInternalRAM => Ok(Value(read_le16(mv.iwram, relative_addr)?))
+			PaletteRAM => Ok(Value(read_le16(mv.paletteram, relative_addr)?))
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(mv.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					# If cond directly stolen from mGBA
+					Ok(Value(0))
+				} else {
+					Ok(Value(read_le16(mv.vram, relative_addr)?))
 				}
-				OAM => Ok(Value(read_le16(rv.oam, relative_addr)?))
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-					if relative_addr.to_u64() + 2 <= rv.gamepak_rom.len() {
-						Ok(Value(read_le16(rv.gamepak_rom, relative_addr)?))
-					} else {
-						# Out of bound addr -> ROM will not WB value
-						# So the CPU will just read the low 16 bits of Halfword addr back.
-						Ok(Value(addr.shr_wrap(1).to_u16_wrap()))
-					}
-				}
-				SystemROM => Ok(Value(read_le16(rv.bios, relative_addr)?))
-				IORegs => {
-					if (relative_addr < 0x60) Ok(Value(DisplayRegs.read16(rv.display, relative_addr)?)) else Ok(NeedsSlow)
-				}
-				_ => Err(UnsupportedRegion(region))
 			}
+			OAM => Ok(Value(read_le16(mv.oam, relative_addr)?))
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				if relative_addr.to_u64() + 2 <= mv.gamepak_rom.len() {
+					Ok(Value(read_le16(mv.gamepak_rom, relative_addr)?))
+				} else {
+					# Out of bound addr -> ROM will not WB value
+					# So the CPU will just read the low 16 bits of Halfword addr back.
+					Ok(Value(addr.shr_wrap(1).to_u16_wrap()))
+				}
+			}
+			SystemROM => Ok(Value(read_le16(mv.bios, relative_addr)?))
+			IORegs => {
+				if (relative_addr < 0x60) Ok(Value(DisplayRegs.read16(mv.display, relative_addr)?)) else Ok(NeedsSlow)
+			}
+			_ => Err(UnsupportedRegion(region))
 		}
 	}
 
@@ -350,55 +351,52 @@ Bus := {
 		chopper = |i| {
 			{ lo: i.to_u8_wrap(), hi: i.shr_wrap(8).to_u8_wrap() }
 		}
+		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
 		new_signal = BusSignals.record_write16(bus.signal, purpose, addr, cxt)
-		if addr.mod_by(2) == 1 {
-			Err(MisalignedAddress(addr))
-		} else {
-			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-			{ lo, hi } = chopper(cxt)
-			match region {
-				CPUExternalRAM => Ok({
-					..bus,
-					ewram: (bus.ewram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
-					signal: new_signal,
-				})
-				CPUInternalRAM => Ok({
-					..bus,
-					iwram: (bus.iwram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
-					signal: new_signal,
-				})
-				PaletteRAM => Ok({
-					..bus,
-					paletteram: (bus.paletteram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
-					signal: new_signal,
-				})
-				VRAM => {
-					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-					window_offset = (addr - 0x6000000).mod_by(0x20000)
-					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-						Ok({ ..bus, signal: new_signal })
-					} else {
-						Ok({
-							..bus,
-							vram: (bus.vram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
-							signal: new_signal,
-						})
-					}
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		{ lo, hi } = chopper(cxt)
+		match region {
+			CPUExternalRAM => Ok({
+				..bus,
+				ewram: (bus.ewram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				signal: new_signal,
+			})
+			CPUInternalRAM => Ok({
+				..bus,
+				iwram: (bus.iwram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				signal: new_signal,
+			})
+			PaletteRAM => Ok({
+				..bus,
+				paletteram: (bus.paletteram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				signal: new_signal,
+			})
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					Ok({ ..bus, signal: new_signal })
+				} else {
+					Ok({
+						..bus,
+						vram: (bus.vram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+						signal: new_signal,
+					})
 				}
-				OAM => Ok({
-					..bus,
-					oam: (bus.oam).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
-					signal: new_signal,
-				})
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
-				SystemROM => Ok({ ..bus, signal: new_signal })
-				IORegs => Ok({
-					..bus,
-					io_regs: IoRegs.write16(bus.io_regs, relative_addr, cxt)?,
-					signal: new_signal,
-				})
-				_ => Err(UnsupportedRegion(region))
 			}
+			OAM => Ok({
+				..bus,
+				oam: (bus.oam).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				signal: new_signal,
+			})
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
+			SystemROM => Ok({ ..bus, signal: new_signal })
+			IORegs => Ok({
+				..bus,
+				io_regs: IoRegs.write16(bus.io_regs, relative_addr, cxt)?,
+				signal: new_signal,
+			})
+			_ => Err(UnsupportedRegion(region))
 		}
 	}
 
@@ -414,92 +412,86 @@ Bus := {
 		],
 	)
 	read32 = |bus, addr, purpose| {
-		if addr.mod_by(4) > 0 {
-			Err(MisalignedAddress(addr))
-		} else {
-			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-			(val, state) = match region {
-				CPUExternalRAM => (read_le32(bus.ewram, relative_addr)?, Unchanged)
-				CPUInternalRAM => (read_le32(bus.iwram, relative_addr)?, Unchanged)
-				PaletteRAM => (read_le32(bus.paletteram, relative_addr)?, Unchanged)
-				VRAM => {
-					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-					window_offset = (addr - 0x6000000).mod_by(0x20000)
-					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-						(0, Unchanged)
-					} else {
-						(read_le32(bus.vram, relative_addr)?, Unchanged)
-					}
+		if (addr.mod_by(4) > 0) return Err(MisalignedAddress(addr))
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		(val, state) = match region {
+			CPUExternalRAM => (read_le32(bus.ewram, relative_addr)?, Unchanged)
+			CPUInternalRAM => (read_le32(bus.iwram, relative_addr)?, Unchanged)
+			PaletteRAM => (read_le32(bus.paletteram, relative_addr)?, Unchanged)
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					(0, Unchanged)
+				} else {
+					(read_le32(bus.vram, relative_addr)?, Unchanged)
 				}
-				OAM => (read_le32(bus.oam, relative_addr)?, Unchanged)
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-					(
-						if relative_addr.to_u64() + 4 <= bus.gamepak_rom.len() {
-							read_le32(bus.gamepak_rom, relative_addr)?
+			}
+			OAM => (read_le32(bus.oam, relative_addr)?, Unchanged)
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				(
+					if relative_addr.to_u64() + 4 <= bus.gamepak_rom.len() {
+						read_le32(bus.gamepak_rom, relative_addr)?
+					} else {
+						half = addr.shr_wrap(1)
+						lo = half.bitwise_and(0xFFFF)
+						hi = half.plus_wrap(1)
+						hi.shl_wrap(16).bitwise_or(lo)
+					},
+					Unchanged,
+				)
+			}
+			SystemROM => (read_le32(bus.bios, relative_addr)?, Unchanged)
+			IORegs => {
+				intermediate = IoRegs.read32(bus.io_regs, relative_addr)?
+				(
+					intermediate.val,
+					match intermediate.reg {
+						Unchanged => Unchanged
+						Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
+					},
+				)
+			}
+			_ => return Err(UnsupportedRegion(region))
+		}
+		Ok({ val: val, state: state, signal: BusSignals.record_read32(bus.signal, purpose, addr, val) })
+	}
+
+	read_view32 : MemoryView, U32 -> Try([Value(U32), NeedsSlow], _)
+	read_view32 = |mv, addr| {
+		if (addr.mod_by(4) > 0) return Err(MisalignedAddress(addr))
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		match region {
+			CPUExternalRAM => Ok(Value(read_le32(mv.ewram, relative_addr)?))
+			CPUInternalRAM => Ok(Value(read_le32(mv.iwram, relative_addr)?))
+			PaletteRAM => Ok(Value(read_le32(mv.paletteram, relative_addr)?))
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(mv.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					Ok(Value(0))
+				} else {
+					Ok(Value(read_le32(mv.vram, relative_addr)?))
+				}
+			}
+			OAM => Ok(Value(read_le32(mv.oam, relative_addr)?))
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				Ok(
+					Value(
+						if relative_addr.to_u64() + 4 <= mv.gamepak_rom.len() {
+							read_le32(mv.gamepak_rom, relative_addr)?
 						} else {
 							half = addr.shr_wrap(1)
 							lo = half.bitwise_and(0xFFFF)
 							hi = half.plus_wrap(1)
 							hi.shl_wrap(16).bitwise_or(lo)
 						},
-						Unchanged,
-					)
-				}
-				SystemROM => (read_le32(bus.bios, relative_addr)?, Unchanged)
-				IORegs => {
-					intermediate = IoRegs.read32(bus.io_regs, relative_addr)?
-					(
-						intermediate.val,
-						match intermediate.reg {
-							Unchanged => Unchanged
-							Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
-						},
-					)
-				}
-				_ => return Err(UnsupportedRegion(region))
+					),
+				)
 			}
-			Ok({ val: val, state: state, signal: BusSignals.record_read32(bus.signal, purpose, addr, val) })
-		}
-	}
-
-	read_view32 : ReadView, U32 -> Try([Value(U32), NeedsSlow], _)
-	read_view32 = |rv, addr| {
-		if addr.mod_by(4) > 0 {
-			Err(MisalignedAddress(addr))
-		} else {
-			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-			match region {
-				CPUExternalRAM => Ok(Value(read_le32(rv.ewram, relative_addr)?))
-				CPUInternalRAM => Ok(Value(read_le32(rv.iwram, relative_addr)?))
-				PaletteRAM => Ok(Value(read_le32(rv.paletteram, relative_addr)?))
-				VRAM => {
-					mode = DisplayRegs.get_bg_mode(rv.display)
-					window_offset = (addr - 0x6000000).mod_by(0x20000)
-					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-						Ok(Value(0))
-					} else {
-						Ok(Value(read_le32(rv.vram, relative_addr)?))
-					}
-				}
-				OAM => Ok(Value(read_le32(rv.oam, relative_addr)?))
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-					Ok(
-						Value(
-							if relative_addr.to_u64() + 4 <= rv.gamepak_rom.len() {
-								read_le32(rv.gamepak_rom, relative_addr)?
-							} else {
-								half = addr.shr_wrap(1)
-								lo = half.bitwise_and(0xFFFF)
-								hi = half.plus_wrap(1)
-								hi.shl_wrap(16).bitwise_or(lo)
-							},
-						),
-					)
-				}
-				SystemROM => Ok(Value(read_le32(rv.bios, relative_addr)?))
-				IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read32(rv.display, relative_addr)?)) else Ok(NeedsSlow)
-				_ => Err(UnsupportedRegion(region))
-			}
+			SystemROM => Ok(Value(read_le32(mv.bios, relative_addr)?))
+			IORegs => if (relative_addr < 0x60) Ok(Value(DisplayRegs.read32(mv.display, relative_addr)?)) else Ok(NeedsSlow)
+			_ => Err(UnsupportedRegion(region))
 		}
 	}
 
@@ -524,55 +516,76 @@ Bus := {
 				quater: i.shr_wrap(24).to_u8_wrap(),
 			}
 		}
+		if (addr.mod_by(4) > 0) return Err(MisalignedAddress(addr))
 		new_signal = BusSignals.record_write32(bus.signal, purpose, addr, cxt)
-		if addr.mod_by(4) > 0 {
-			Err(MisalignedAddress(addr))
-		} else {
-			{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-			{ semel, bis, ter, quater } = chopper(cxt)
-			match region {
-				CPUExternalRAM => Ok({
-					..bus,
-					ewram: (bus.ewram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
-					signal: new_signal,
-				})
-				CPUInternalRAM => Ok({
-					..bus,
-					iwram: (bus.iwram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
-					signal: new_signal,
-				})
-				PaletteRAM => Ok({
-					..bus,
-					paletteram: (bus.paletteram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
-					signal: new_signal,
-				})
-				VRAM => {
-					mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-					window_offset = (addr - 0x6000000).mod_by(0x20000)
-					if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-						Ok({ ..bus, signal: new_signal })
-					} else {
-						Ok({
-							..bus,
-							vram: (bus.vram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
-							signal: new_signal,
-						})
-					}
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		{ semel, bis, ter, quater } = chopper(cxt)
+		match region {
+			CPUExternalRAM => Ok({
+				..bus,
+				ewram: (bus.ewram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+				signal: new_signal,
+			})
+			CPUInternalRAM => Ok({
+				..bus,
+				iwram: (bus.iwram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+				signal: new_signal,
+			})
+			PaletteRAM => Ok({
+				..bus,
+				paletteram: (bus.paletteram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+				signal: new_signal,
+			})
+			VRAM => {
+				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
+				window_offset = (addr - 0x6000000).mod_by(0x20000)
+				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+					Ok({ ..bus, signal: new_signal })
+				} else {
+					Ok({
+						..bus,
+						vram: (bus.vram).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+						signal: new_signal,
+					})
 				}
-				OAM => Ok({
-					..bus,
-					oam: (bus.oam).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
-					signal: new_signal,
-				})
-				GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
-				SystemROM => Ok({ ..bus, signal: new_signal })
-				IORegs => Ok({
-					..bus,
-					io_regs: IoRegs.write32(bus.io_regs, relative_addr, cxt)?,
-					signal: new_signal,
-				})
-				_ => Err(UnsupportedRegion(region))
 			}
+			OAM => Ok({
+				..bus,
+				oam: (bus.oam).set(relative_addr.to_u64(), semel)?.set(relative_addr.plus(1).to_u64(), bis)?.set(relative_addr.plus(2).to_u64(), ter)?.set(relative_addr.plus(3).to_u64(), quater)?,
+				signal: new_signal,
+			})
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
+			SystemROM => Ok({ ..bus, signal: new_signal })
+			IORegs => Ok({
+				..bus,
+				io_regs: IoRegs.write32(bus.io_regs, relative_addr, cxt)?,
+				signal: new_signal,
+			})
+			_ => Err(UnsupportedRegion(region))
+		}
+	}
+
+	write_view : MemoryView, [W8, W16, W32], U32, U32 -> Try(MemoryView, _)
+	write_view = |mv, width, addr, cxt| {
+		if ((width == W16 and addr.mod_by(2) > 0) or (width == W32 and addr.mod_by(4) > 0))
+			return Err(MisalignedAddress(addr))
+		store_ram : List(U8), U64 -> Try(List(U8), [OutOfBounds])
+		store_ram = |mem, offset| {
+			match width {
+				W8 => mem.set(offset, cxt.to_u8_wrap())
+				W16 => mem.set(offset, cxt.to_u8_wrap())?
+					.set(offset.plus(1), cxt.shr_wrap(8).to_u8_wrap())
+				W32 => mem.set(offset, cxt.to_u8_wrap())?
+					.set(offset.plus(1), cxt.shr_wrap(8).to_u8_wrap())?
+					.set(offset.plus(2), cxt.shr_wrap(16).to_u8_wrap())?
+					.set(offset.plus(3), cxt.shr_wrap(24).to_u8_wrap())
+			}
+		}
+		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
+		match region {
+			CPUExternalRAM => Ok({ ..mv, ewram: store_ram(mv.ewram, relative_addr.to_u64())? })
+			CPUInternalRAM => Ok({ ..mv, iwram: store_ram(mv.iwram, relative_addr.to_u64())? })
+			_ => Err(UnsupportedRegion(region))
 		}
 	}
 

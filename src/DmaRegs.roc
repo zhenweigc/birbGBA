@@ -275,6 +275,14 @@ DmaRegs :: {
 	has_video_dma : DmaRegs -> Bool
 	has_video_dma = |rgs| Bits.get_ith_bit_u16_certain(rgs.dma3.cnt_h, 15) and Bits.get_seg_of_u16_certain(rgs.dma3.cnt_h, 12, 2) == 3
 
+	has_unscheduled : DmaRegs -> Bool
+	has_unscheduled = |rgs| {
+		(rgs.dma0.phase == Pending and rgs.dma0.ready_at == None)
+			or (rgs.dma1.phase == Pending and rgs.dma1.ready_at == None)
+			or (rgs.dma2.phase == Pending and rgs.dma2.ready_at == None)
+			or (rgs.dma3.phase == Pending and rgs.dma3.ready_at == None)
+	}
+
 	trigger_video : DmaRegs -> DmaRegs
 	trigger_video = |rgs| {
 		{

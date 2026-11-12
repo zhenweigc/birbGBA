@@ -33,6 +33,7 @@ BirbGBA passed ArmWrestler test suites, but are still not able run mGBA's suite 
 - [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
 - [EmiBIOS](https://github.com/coolbho3k/emibios)
 - [ArmWrestler](https://github.com/destoer/armwrestler-gba-fixed)
+- EmuDev & GBADev Discord
 - Many more tech blogs, will write them in later
 
 ## License
