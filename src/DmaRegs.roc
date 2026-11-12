@@ -359,20 +359,10 @@ DmaRegs :: {
 	}
 
 	has_ready : DmaRegs, U64 -> Bool
-	has_ready = |rgs, given_now| {
-		single_reg_has_ready : [Disabled, Waiting, Pending], [None, At(U64)] -> Bool
-		single_reg_has_ready = |phase, ready_at| {
-			if phase == Pending and ready_at != None {
-				match ready_at {
-					At(t) if t <= given_now => return True
-					_ => return False
-				}
-			}
-			False
-		}
-		single_reg_has_ready(rgs.dma0.phase, rgs.dma0.ready_at) or single_reg_has_ready(rgs.dma1.phase, rgs.dma1.ready_at) or
-			single_reg_has_ready(rgs.dma2.phase, rgs.dma2.ready_at) or single_reg_has_ready(rgs.dma3.phase, rgs.dma3.ready_at)
-	}
+	has_ready = |rgs, given_now| single_reg_has_ready(rgs.dma0.phase, rgs.dma0.ready_at, given_now)
+		or single_reg_has_ready(rgs.dma1.phase, rgs.dma1.ready_at, given_now)
+		or single_reg_has_ready(rgs.dma2.phase, rgs.dma2.ready_at, given_now)
+		or single_reg_has_ready(rgs.dma3.phase, rgs.dma3.ready_at, given_now)
 
 	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
 	get_reg_ready_to_io = |rgs, given_now| {
@@ -384,17 +374,12 @@ DmaRegs :: {
 				2 => rgs.dma2
 				_ => rgs.dma3
 			}
-			if reg.phase == Pending and reg.ready_at != None {
-				match reg.ready_at {
-					At(t) if t <= given_now => {
-						return Transfer(
-							$num,
-							reg,
-							if (is_fifo_dma(reg, $num) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) W32 else W16,
-						)
-					}
-					_ => {}
-				}
+			if single_reg_has_ready(reg.phase, reg.ready_at, given_now) {
+				return Transfer(
+					$num,
+					reg,
+					if (is_fifo_dma(reg.cnt_h, $num) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) W32 else W16,
+				)
 			}
 			$num = $num + 1
 		}
@@ -434,7 +419,7 @@ DmaRegs :: {
 		# This unit of IO has to be completed, so stage var is needed
 		# To avoid throwing errors
 		validate_transfer(reg, selection, Completing)?
-		width = if (is_fifo_dma(reg, selection) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) 4 else 2.U32
+		width = if (is_fifo_dma(reg.cnt_h, selection) or (Bits.get_ith_bit_u16_certain(reg.cnt_h, 10))) 4 else 2.U32
 		new_source = match Bits.get_seg_of_u16_certain(reg.cnt_h, 7, 2) {
 			0 => reg.source_addr.plus_wrap(width)
 			1 => reg.source_addr.minus_wrap(width)
@@ -442,7 +427,7 @@ DmaRegs :: {
 			_ => return Err(DMAImpossibleStepMode)
 		}
 		new_dest = match Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) {
-			_ if is_fifo_dma(reg, selection) => reg.dest_addr
+			_ if is_fifo_dma(reg.cnt_h, selection) => reg.dest_addr
 			0 => reg.dest_addr.plus_wrap(width)
 			1 => reg.dest_addr.minus_wrap(width)
 			2 => reg.dest_addr
@@ -466,13 +451,13 @@ DmaRegs :: {
 					..reg,
 					source_addr: new_source,
 					dest_addr: if Bits.get_seg_of_u16_certain(reg.cnt_h, 5, 2) != 3
-						or is_fifo_dma(reg, selection) {
+						or is_fifo_dma(reg.cnt_h, selection) {
 						new_dest
 					} else {
 						reg.dad_h.to_u32().shl_wrap(16)
 							+ reg.dad_l.to_u32().bitwise_and(if (width == 4) 0xFFFFFFFC else 0xFFFFFFFE)
 					},
-					remaining: if is_fifo_dma(reg, selection) {
+					remaining: if is_fifo_dma(reg.cnt_h, selection) {
 						4
 					} else if reg.cnt_l != 0 {
 						reg.cnt_l.to_u32()
@@ -501,10 +486,8 @@ DmaRegs :: {
 		}
 	}
 
-	is_fifo_dma : DMAReg, U8 -> Bool
-	is_fifo_dma = |reg, selection| {
-		selection < 3 and selection > 0 and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3
-	}
+	is_fifo_dma : U16, U8 -> Bool
+	is_fifo_dma = |cnt_h, selection| selection < 3 and selection > 0 and Bits.get_seg_of_u16_certain(cnt_h, 12, 2) == 3
 
 	validate_transfer : DMAReg,
 	U8,
@@ -524,7 +507,7 @@ DmaRegs :: {
 		} else if Bits.get_ith_bit_u16_certain(reg.cnt_h, 11) {
 			# Game Pak DRQ not here yet
 			Err(GamePakDRQUnsupported)
-		} else if Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3 and (!is_fifo_dma(reg, selection) and selection != 3) {
+		} else if Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3 and (!is_fifo_dma(reg.cnt_h, selection) and selection != 3) {
 			# Special start timing is prohibited for DMA0
 			Err(DMAWrongMode)
 		} else if reg.remaining == 0 {
@@ -594,4 +577,15 @@ write_cnt_h = |reg, new_cnt_h, zero_count| {
 		}
 		_ => { ..reg, cnt_h: new_cnt_h }
 	}
+}
+
+single_reg_has_ready : [Disabled, Waiting, Pending], [None, At(U64)], U64 -> Bool
+single_reg_has_ready = |phase, ready_at, given_now| {
+	if phase == Pending and ready_at != None {
+		match ready_at {
+			At(t) if t <= given_now => return True
+			_ => return False
+		}
+	}
+	False
 }

@@ -104,8 +104,7 @@ Bus := {
 			PaletteRAM => ((bus.paletteram).get(U32.to_u64(relative_addr))?, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+				if is_vram_hole(mode, addr) {
 					(0, Unchanged)
 				} else {
 					((bus.vram).get(U32.to_u64(relative_addr))?, Unchanged)
@@ -148,8 +147,7 @@ Bus := {
 			PaletteRAM => Ok(Value((mv.paletteram).get(U32.to_u64(relative_addr))?))
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(mv.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+				if is_vram_hole(mode, addr) {
 					Ok(Value((0)))
 				} else {
 					Ok(Value(((mv.vram).get(U32.to_u64(relative_addr))?)))
@@ -264,9 +262,7 @@ Bus := {
 			PaletteRAM => (read_le16(bus.paletteram, relative_addr)?, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-					# If cond directly stolen from mGBA
+				if is_vram_hole(mode, addr) {
 					(0, Unchanged)
 				} else {
 					(read_le16(bus.vram, relative_addr)?, Unchanged)
@@ -309,9 +305,7 @@ Bus := {
 			PaletteRAM => Ok(Value(read_le16(mv.paletteram, relative_addr)?))
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(mv.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
-					# If cond directly stolen from mGBA
+				if is_vram_hole(mode, addr) {
 					Ok(Value(0))
 				} else {
 					Ok(Value(read_le16(mv.vram, relative_addr)?))
@@ -348,45 +342,40 @@ Bus := {
 		],
 	)
 	write16 = |bus, addr, cxt, purpose| {
-		chopper = |i| {
-			{ lo: i.to_u8_wrap(), hi: i.shr_wrap(8).to_u8_wrap() }
-		}
 		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
 		new_signal = BusSignals.record_write16(bus.signal, purpose, addr, cxt)
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-		{ lo, hi } = chopper(cxt)
 		match region {
 			CPUExternalRAM => Ok({
 				..bus,
-				ewram: (bus.ewram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				ewram: write_le16(bus.ewram, relative_addr, cxt)?,
 				signal: new_signal,
 			})
 			CPUInternalRAM => Ok({
 				..bus,
-				iwram: (bus.iwram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				iwram: write_le16(bus.iwram, relative_addr, cxt)?,
 				signal: new_signal,
 			})
 			PaletteRAM => Ok({
 				..bus,
-				paletteram: (bus.paletteram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				paletteram: write_le16(bus.paletteram, relative_addr, cxt)?,
 				signal: new_signal,
 			})
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+				if is_vram_hole(mode, addr) {
 					Ok({ ..bus, signal: new_signal })
 				} else {
 					Ok({
 						..bus,
-						vram: (bus.vram).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+						vram: write_le16(bus.vram, relative_addr, cxt)?,
 						signal: new_signal,
 					})
 				}
 			}
 			OAM => Ok({
 				..bus,
-				oam: (bus.oam).set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)?,
+				oam: write_le16(bus.oam, relative_addr, cxt)?,
 				signal: new_signal,
 			})
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
@@ -420,8 +409,7 @@ Bus := {
 			PaletteRAM => (read_le32(bus.paletteram, relative_addr)?, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+				if is_vram_hole(mode, addr) {
 					(0, Unchanged)
 				} else {
 					(read_le32(bus.vram, relative_addr)?, Unchanged)
@@ -467,8 +455,7 @@ Bus := {
 			PaletteRAM => Ok(Value(read_le32(mv.paletteram, relative_addr)?))
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(mv.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+				if is_vram_hole(mode, addr) {
 					Ok(Value(0))
 				} else {
 					Ok(Value(read_le32(mv.vram, relative_addr)?))
@@ -538,8 +525,7 @@ Bus := {
 			})
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
-				window_offset = (addr - 0x6000000).mod_by(0x20000)
-				if mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000 {
+				if is_vram_hole(mode, addr) {
 					Ok({ ..bus, signal: new_signal })
 				} else {
 					Ok({
@@ -565,6 +551,12 @@ Bus := {
 		}
 	}
 
+	supports_view_write : U32 -> Bool
+	supports_view_write = |addr| {
+		region = addr.shr_wrap(24)
+		region == 0x2 or region == 0x3
+	}
+
 	write_view : MemoryView, [W8, W16, W32], U32, U32 -> Try(MemoryView, _)
 	write_view = |mv, width, addr, cxt| {
 		if ((width == W16 and addr.mod_by(2) > 0) or (width == W32 and addr.mod_by(4) > 0))
@@ -573,8 +565,7 @@ Bus := {
 		store_ram = |mem, offset| {
 			match width {
 				W8 => mem.set(offset, cxt.to_u8_wrap())
-				W16 => mem.set(offset, cxt.to_u8_wrap())?
-					.set(offset.plus(1), cxt.shr_wrap(8).to_u8_wrap())
+				W16 => write_le16(mem, offset.to_u32_wrap(), cxt.to_u16_wrap())
 				W32 => mem.set(offset, cxt.to_u8_wrap())?
 					.set(offset.plus(1), cxt.shr_wrap(8).to_u8_wrap())?
 					.set(offset.plus(2), cxt.shr_wrap(16).to_u8_wrap())?
@@ -650,6 +641,19 @@ Bus := {
 		wait_cnt = SystemRegs.get_waitcnt(bus.io_regs.system)
 		access_cycles(wait_cnt, width, addr, kind)
 	}
+}
+
+# cond directly stolen from mGBA
+is_vram_hole : U16, U32 -> Bool
+is_vram_hole = |mode, addr| {
+	window_offset = (addr - 0x6000000).mod_by(0x20000)
+	mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000
+}
+
+write_le16 : List(U8), U32, U16 -> Try(List(U8), [OutOfBounds])
+write_le16 = |lst, relative_addr, cxt| {
+	(lo, hi) = (cxt.to_u8_wrap(), cxt.shr_wrap(8).to_u8_wrap())
+	lst.set(relative_addr.to_u64(), lo)?.set(relative_addr.plus(1).to_u64(), hi)
 }
 
 read_le16 : List(U8), U32 -> Try(U16, [OutOfBounds])

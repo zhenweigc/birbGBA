@@ -82,9 +82,8 @@ Cpu := {
 					if (engine.now >= event_at) return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 					match state {
 						W(request) => {
-							region = request.addr.shr_wrap(24)
 							# Only supports RAM reigon fast write
-							if (region != 0x2 and region != 0x3) return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
+							if (!Bus.supports_view_write(request.addr)) return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 							cycles_needed =
 								Bus.access_cycles(current_mv.wait_cnt, request.width, request.addr, request.access_kind)
 							if cycles_needed >= event_at - engine.now {
@@ -261,7 +260,7 @@ Cpu := {
 	)
 	fetch_opcode = |mv, rs, addr, width, req_kind, event_at| {
 		if (rs.now >= event_at) return Ok(NeedsSlow)
-		cycles_needed = fetch_cycles(mv, addr, width, req_kind)
+		cycles_needed = fetch_cycles(mv.wait_cnt, addr, width, req_kind)
 		if (cycles_needed >= event_at - rs.now) return Ok(NeedsSlow)
 
 		if addr >= 0x4000 and addr < 0x100_0000 { # Unmapped reigon right after BIOS
@@ -302,8 +301,8 @@ Cpu := {
 		if (fs.now >= event_at) return Ok(NeedsSlow)
 		(width, steps) = if (is_thumb) (W16, 2.U32) else (W32, 4)
 
-		first_cycles = fetch_cycles(mv, cur_pc, width, NonSequential)
-		second_cycles = fetch_cycles(mv, cur_pc.plus_wrap(steps), width, Sequential)
+		first_cycles = fetch_cycles(mv.wait_cnt, cur_pc, width, NonSequential)
+		second_cycles = fetch_cycles(mv.wait_cnt, cur_pc.plus_wrap(steps), width, Sequential)
 		if (first_cycles + second_cycles >= event_at - fs.now) return Ok(NeedsSlow)
 
 		first_opcode =
@@ -338,9 +337,9 @@ init_hot = || { core: ARM7TDMI.init(), pipeline: Empty }
 to_bus_width : [W16, W32] -> [W8, W16, W32]
 to_bus_width = |w| w
 
-fetch_cycles : Bus.MemoryView, U32, [W16, W32], [NonSequential, Sequential] -> U64
-fetch_cycles = |mv, addr, width, req_kind| {
-	if (addr >= 0x4000 and addr < 0x100_0000) 1 else Bus.access_cycles(mv.wait_cnt, to_bus_width(width), addr, req_kind)
+fetch_cycles : U16, U32, [W16, W32], [NonSequential, Sequential] -> U64
+fetch_cycles = |wait_cnt, addr, width, req_kind| {
+	if (addr >= 0x4000 and addr < 0x100_0000) 1 else Bus.access_cycles(wait_cnt, to_bus_width(width), addr, req_kind)
 }
 
 finish_block : ARM7TDMI, CpuTypes.EngineState, U32, CpuTypes.BlockExit, Bus.MemoryView, [None, At(U64)] -> CpuTypes.BlockResult
