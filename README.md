@@ -3,6 +3,17 @@
 ## Goal
 Rn it will just being able to run some offical ROMs, without crashing during playthrough of course.
 
+## Controls
+
+| GBA | Arrows (default) | WASD |
+|---|---|---|
+| D-pad | Arrow keys | WASD |
+| A / B | X / Z | K / J |
+| L / R | A / S | L / ; |
+| Start / Select | Enter / Backspace | Enter / Backspace |
+
+Alt: switch layouts · P: pause/resume · Esc: save and exit.
+
 ## Some Progress here
 ![Cult of GBA's BIOS running in birbGBA](docs/images/progress.png)
 

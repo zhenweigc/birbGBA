@@ -43,12 +43,27 @@ Cpu := {
 								Unmapped(addr) => return Err(UnmappedInstructionFetch(addr))
 								Opcode(op) => op
 							}
-							execution = if core.is_thumb() {
-								ARM7TDMI.execute_thumb_opcode(core, opcode.to_u16_wrap())?
+							if core.is_thumb() {
+								loop(
+									current_rv,
+									core,
+									fetched.state,
+									Execute(
+										ARM7TDMI.execute_thumb_opcode(core, opcode.to_u16_wrap())?,
+									),
+									actions_completed,
+								)
 							} else {
-								ARM7TDMI.execute_arm_opcode(core, opcode)?
+								loop(
+									current_rv,
+									core,
+									fetched.state,
+									Execute(
+										ARM7TDMI.execute_arm_opcode(core, opcode)?,
+									),
+									actions_completed,
+								)
 							}
-							loop(current_rv, core, fetched.state, Execute(execution), actions_completed)
 						}
 					}
 				}
