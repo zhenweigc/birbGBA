@@ -94,7 +94,19 @@ Cpu := {
 							write_at = engine.now + cycles_needed
 							if (first_dma_write and write_at > U64.highest - 2)
 								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-							new_mv = Bus.write_view(current_mv, request.width, request.addr, request.val)?
+							# the write_view_ram method uses much smaller param and returns a List rathe than full mv
+							# And yes, it does save memcpy amount comparing to passing full MV.
+							new_mv = if request.addr.shr_wrap(24) == 2 {
+								{
+									..current_mv,
+									ewram: Bus.write_view_ram(current_mv.ewram, request.width, request.addr, request.val)?,
+								}
+							} else {
+								{
+									..current_mv,
+									iwram: Bus.write_view_ram(current_mv.iwram, request.width, request.addr, request.val)?,
+								}
+							}
 							new_signal = match request.width {
 								W8 => BusSignals.record_write8(engine.signal, request.addr, request.val.to_u8_wrap())
 								W16 => BusSignals.record_write16(engine.signal, CpuData, request.addr, request.val.to_u16_wrap())

@@ -2769,7 +2769,7 @@ ARM7TDMI -> Try(
 )
 thumb_data_processing_execute = |i, c| {
 	op = thumb_data_processing_decode(i)
-	chk = match op.format {
+	arm_opcode = match op.format {
 		Format1 => {
 			rd = Bits.get_seg_of_u16_certain(i, 0, 3).to_u32()
 			rn = Bits.get_seg_of_u16_certain(i, 3, 3).to_u32()
@@ -2777,13 +2777,11 @@ thumb_data_processing_execute = |i, c| {
 			match op.code {
 				ADD => {
 					base = 0b1110_00001001_0000_0000_00000000_0000
-					equiv_op = base + rm + rn.shl_wrap(16) + rd.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + rm + rn.shl_wrap(16) + rd.shl_wrap(12)
 				}
 				SUB => {
 					base = 0b1110_00000101_0000_0000_00000000_0000
-					equiv_op = base + rm + rn.shl_wrap(16) + rd.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + rm + rn.shl_wrap(16) + rd.shl_wrap(12)
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
@@ -2795,13 +2793,11 @@ thumb_data_processing_execute = |i, c| {
 			match op.code {
 				ADD => {
 					base = 0b1110_00101001_0000_0000_00000000_0000
-					equiv_op = base + tri_bit_immediate + rn.shl_wrap(16) + rd.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + tri_bit_immediate + rn.shl_wrap(16) + rd.shl_wrap(12)
 				}
 				SUB => {
 					base = 0b1110_00100101_0000_0000_00000000_0000
-					equiv_op = base + tri_bit_immediate + rn.shl_wrap(16) + rd.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + tri_bit_immediate + rn.shl_wrap(16) + rd.shl_wrap(12)
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
@@ -2812,23 +2808,19 @@ thumb_data_processing_execute = |i, c| {
 			match op.code {
 				ADD => {
 					base = 0b1110_00101001_0000_0000_00000000_0000
-					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(16) + rdrn.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + octa_bit_immediate + rdrn.shl_wrap(16) + rdrn.shl_wrap(12)
 				}
 				SUB => {
 					base = 0b1110_00100101_0000_0000_0000_00000000
-					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(16) + rdrn.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + octa_bit_immediate + rdrn.shl_wrap(16) + rdrn.shl_wrap(12)
 				}
 				MOV => {
 					base = 0b1110_00111011_0000_0000_0000_00000000
-					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(12)
-					arm_data_processing_execute(equiv_op, c)
+					base + octa_bit_immediate + rdrn.shl_wrap(12)
 				}
 				CMP => {
 					base = 0b1110_00110101_0000_0000_0000_00000000
-					equiv_op = base + octa_bit_immediate + rdrn.shl_wrap(16)
-					arm_data_processing_execute(equiv_op, c)
+					base + octa_bit_immediate + rdrn.shl_wrap(16)
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
@@ -2840,18 +2832,15 @@ thumb_data_processing_execute = |i, c| {
 			match op.code {
 				LSL => {
 					base = 0b1110_00011011_0000_0000_00000_000_0000
-					equiv_op = base + shift_immediate.shl_wrap(7) + rd.shl_wrap(12) + rm
-					arm_data_processing_execute(equiv_op, c)
+					base + shift_immediate.shl_wrap(7) + rd.shl_wrap(12) + rm
 				}
 				LSR => {
 					base = 0b1110_00011011_0000_0000_00000_010_0000
-					equiv_op = base + shift_immediate.shl_wrap(7) + rd.shl_wrap(12) + rm
-					arm_data_processing_execute(equiv_op, c)
+					base + shift_immediate.shl_wrap(7) + rd.shl_wrap(12) + rm
 				}
 				ASR => {
 					base = 0b1110_00011011_0000_0000_00000_100_0000
-					equiv_op = base + shift_immediate.shl_wrap(7) + rd.shl_wrap(12) + rm
-					arm_data_processing_execute(equiv_op, c)
+					base + shift_immediate.shl_wrap(7) + rd.shl_wrap(12) + rm
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
@@ -2862,73 +2851,60 @@ thumb_data_processing_execute = |i, c| {
 			match op.code {
 				AND => {
 					base = 0b1110_00000001_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
 				}
 				EOR => {
 					base = 0b1110_00000011_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
 				}
 				LSL => {
 					base = 0b1110_00011011_0000_0000_0000_0001_0000
-					equiv_op = base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
 				}
 				LSR => {
 					base = 0b1110_00011011_0000_0000_0000_0011_0000
-					equiv_op = base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
 				}
 				ASR => {
 					base = 0b1110_00011011_0000_0000_0000_0101_0000
-					equiv_op = base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
 				}
 				ADC => {
 					base = 0b1110_00001011_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
 				}
 				SBC => {
 					base = 0b1110_00001101_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
 				}
 				ROR => {
 					base = 0b1110_00011011_0000_0000_0000_0111_0000
-					equiv_op = base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn + rdrn.shl_wrap(12) + rmrs.shl_wrap(8)
 				}
 				TST => {
 					base = 0b1110_00010001_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rmrs
 				}
 				NEG => {
 					base = 0b1110_00100111_0000_0000_000000000000
-					equiv_op = base + rdrn.shl_wrap(12) + rmrs.shl_wrap(16)
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(12) + rmrs.shl_wrap(16)
 				}
 				CMP => {
 					base = 0b1110_00010101_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rmrs
 				}
 				CMN => {
 					base = 0b1110_00010111_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rmrs
 				}
 				ORR => {
 					base = 0b1110_00011001_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
 				}
 				MUL => {
 					base = 0b1110_00000001_0000_0000_0000_1001_0000
 					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(8) + rmrs
-					Ok({
+					return Ok({
 						core: arm_multiply_execute(equiv_op, c)?,
 						pc_status: PCSequential,
 						remaining_cycles: multiply_cycles(equiv_op, c, False)?,
@@ -2936,13 +2912,11 @@ thumb_data_processing_execute = |i, c| {
 				}
 				BIC => {
 					base = 0b1110_00011101_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(16) + rdrn.shl_wrap(12) + rmrs
 				}
 				MVN => {
 					base = 0b1110_00011111_0000_0000_00000000_0000
-					equiv_op = base + rdrn.shl_wrap(12) + rmrs
-					arm_data_processing_execute(equiv_op, c)
+					base + rdrn.shl_wrap(12) + rmrs
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
@@ -2953,14 +2927,13 @@ thumb_data_processing_execute = |i, c| {
 			sp_pc = Bits.get_ith_bit_u16_certain(i, 11)
 			if sp_pc {
 				base = 0b1110_00101000_1101_0000_1111_00000000
-				equiv_op = base + shift_immediate + rd.shl_wrap(12)
-				arm_data_processing_execute(equiv_op, c)
+				base + shift_immediate + rd.shl_wrap(12)
 			} else {
 				thumb_pc = (c.regs.r15).plus_wrap(4)
 				pc_aligned = thumb_pc.bitwise_and(0xFFFFFFFC)
 				tmp = shift_immediate.times_wrap(4)
 				rd_new_val = pc_aligned.plus_wrap(tmp)
-				Ok({
+				return Ok({
 					core: cpu_setReg(gpr_from_idx(rd.to_u8_wrap())?, c, rd_new_val)?,
 					pc_status: PCSequential,
 					remaining_cycles: 0,
@@ -2972,13 +2945,11 @@ thumb_data_processing_execute = |i, c| {
 			match op.code {
 				ADD => {
 					base = 0b1110_00101000_1101_1101_11110_0000000
-					equiv_op = base + sept_bit_immediate
-					arm_data_processing_execute(equiv_op, c)
+					base + sept_bit_immediate
 				}
 				SUB => {
 					base = 0b1110_00100100_1101_1101_11110_0000000
-					equiv_op = base + sept_bit_immediate
-					arm_data_processing_execute(equiv_op, c)
+					base + sept_bit_immediate
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
@@ -2994,72 +2965,63 @@ thumb_data_processing_execute = |i, c| {
 			)
 			match op.code {
 				ADD => {
-					if h1 == 0 and h1 == h2 {
-						return Err(UNPREDICTABLE)
+					if (h1 == 0 and h1 == h2) return Err(UNPREDICTABLE)
+					rd = gpr_from_idx((h1.shl_wrap(3) + rdrn).to_u8_wrap())?
+					rd_val = cpu_getReg(rd, c)?.plus_wrap(
+						if (rd == R15) 4 else 0,
+					)
+					res = rd_val.plus_wrap(rm_val)
+					if rd == R15 {
+						return Ok({
+							core: cpu_setReg(rd, c, res.bitwise_and(0xFFFFFFFE))?, # 'When R15 is written, bit0 is IGNORED...'
+							pc_status: PCWritten,
+							remaining_cycles: 0,
+						})
 					} else {
-						rd = gpr_from_idx((h1.shl_wrap(3) + rdrn).to_u8_wrap())?
-						rd_val = cpu_getReg(rd, c)?.plus_wrap(
-							if (rd == R15) 4 else 0,
-						)
-						res = rd_val.plus_wrap(rm_val)
-						if rd == R15 {
-							Ok({
-								core: cpu_setReg(rd, c, res.bitwise_and(0xFFFFFFFE))?, # 'When R15 is written, bit0 is IGNORED...'
-								pc_status: PCWritten,
-								remaining_cycles: 0,
-							})
-						} else {
-							Ok({
-								core: cpu_setReg(rd, c, res)?,
-								pc_status: PCSequential,
-								remaining_cycles: 0,
-							})
-						}
-					}
-				}
-				MOV => {
-					if h1 == 0 and h1 == h2 {
-						return Err(UNPREDICTABLE)
-					} else {
-						rd = gpr_from_idx((h1.shl_wrap(3) + rdrn).to_u8_wrap())?
-						if rd == R15 {
-							Ok({
-								core: cpu_setReg(rd, c, rm_val.bitwise_and(0xFFFFFFFE))?,
-								pc_status: PCWritten,
-								remaining_cycles: 0,
-							})
-						} else {
-							Ok({
-								core: cpu_setReg(rd, c, rm_val)?,
-								pc_status: PCSequential,
-								remaining_cycles: 0,
-							})
-						}
-					}
-				}
-				CMP => {
-					if (h1 == 0 and h1 == h2) or (h1 == 1 and rdrn == 0b111) {
-						return Err(UNPREDICTABLE)
-					} else {
-						rn = gpr_from_idx((h1.shl_wrap(3) + rdrn).to_u8_wrap())?
-						rn_val = cpu_getReg(rn, c)?.plus_wrap(
-							if (rn == R15) 4 else 0,
-						)
-						# plus is minus, unsigned is signed, ....and I cannot make another joke.
-						intermediate_res = Bits.add_with_carry(rn_val, rm_val.bitwise_not(), True)
-						Ok({
-							core: { ..c, cpsr: cpsr_setNZCV(c.cpsr, intermediate_res) },
+						return Ok({
+							core: cpu_setReg(rd, c, res)?,
 							pc_status: PCSequential,
 							remaining_cycles: 0,
 						})
 					}
+				}
+				MOV => {
+					if (h1 == 0 and h1 == h2) return Err(UNPREDICTABLE)
+					rd = gpr_from_idx((h1.shl_wrap(3) + rdrn).to_u8_wrap())?
+					if rd == R15 {
+						return Ok({
+							core: cpu_setReg(rd, c, rm_val.bitwise_and(0xFFFFFFFE))?,
+							pc_status: PCWritten,
+							remaining_cycles: 0,
+						})
+					} else {
+						return Ok({
+							core: cpu_setReg(rd, c, rm_val)?,
+							pc_status: PCSequential,
+							remaining_cycles: 0,
+						})
+					}
+				}
+				CMP => {
+					if ((h1 == 0 and h1 == h2) or (h1 == 1 and rdrn == 0b111)) return Err(UNPREDICTABLE)
+					rn = gpr_from_idx((h1.shl_wrap(3) + rdrn).to_u8_wrap())?
+					rn_val = cpu_getReg(rn, c)?.plus_wrap(
+						if (rn == R15) 4 else 0,
+					)
+					# plus is minus, unsigned is signed, ....and I cannot make another joke.
+					intermediate_res = Bits.add_with_carry(rn_val, rm_val.bitwise_not(), True)
+					return Ok({
+						core: { ..c, cpsr: cpsr_setNZCV(c.cpsr, intermediate_res) },
+						pc_status: PCSequential,
+						remaining_cycles: 0,
+					})
 				}
 				_ => return Err(ImpossibleFormatOpCombination({ code: op.code, format: op.format }))
 			}
 		}
 		UndefinedFormat => return Err(UNPREDICTABLE)
 	}
-	chk.map_err(
+	arm_data_processing_execute(arm_opcode, c).map_err(
 		|e| match e {
 			UB_ShiftbyPC | NoSPSR => WTFisThis # Shouldnt happen in thumb cases
 			WTFisThis => WTFisThis

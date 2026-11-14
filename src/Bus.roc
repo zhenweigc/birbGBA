@@ -557,8 +557,8 @@ Bus := {
 		region == 0x2 or region == 0x3
 	}
 
-	write_view : MemoryView, [W8, W16, W32], U32, U32 -> Try(MemoryView, _)
-	write_view = |mv, width, addr, cxt| {
+	write_view_ram : List(U8), [W8, W16, W32], U32, U32 -> Try(List(U8), _)
+	write_view_ram = |memory, width, addr, cxt| {
 		if ((width == W16 and addr.mod_by(2) > 0) or (width == W32 and addr.mod_by(4) > 0))
 			return Err(MisalignedAddress(addr))
 		store_ram : List(U8), U64 -> Try(List(U8), [OutOfBounds])
@@ -574,8 +574,19 @@ Bus := {
 		}
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		match region {
-			CPUExternalRAM => Ok({ ..mv, ewram: store_ram(mv.ewram, relative_addr.to_u64())? })
-			CPUInternalRAM => Ok({ ..mv, iwram: store_ram(mv.iwram, relative_addr.to_u64())? })
+			CPUExternalRAM | CPUInternalRAM => store_ram(memory, relative_addr.to_u64())
+			_ => Err(UnsupportedRegion(region))
+		}
+	}
+
+	write_view : MemoryView, [W8, W16, W32], U32, U32 -> Try(MemoryView, _)
+	write_view = |mv, width, addr, cxt| {
+		if ((width == W16 and addr.mod_by(2) > 0) or (width == W32 and addr.mod_by(4) > 0))
+			return Err(MisalignedAddress(addr))
+		region = MemoryRegion.memory_map_decode(addr).region
+		match region {
+			CPUExternalRAM => Ok({ ..mv, ewram: write_view_ram(mv.ewram, width, addr, cxt)? })
+			CPUInternalRAM => Ok({ ..mv, iwram: write_view_ram(mv.iwram, width, addr, cxt)? })
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
