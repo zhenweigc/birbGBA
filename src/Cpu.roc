@@ -173,19 +173,54 @@ Cpu := {
 								W8 => {
 									match Bus.read_view8(current_mv, request.addr)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Value(v) => (v.to_u32(), BusSignals.record_read8(engine.signal, request.addr, v))
+										Value(result) => {
+											after_b_latch = match result.bios_latch_update {
+												Unchanged => engine.signal
+												Updated(word) => BusSignals.set_bios_latch(engine.signal, word)
+											}
+											after_access = BusSignals.record_read8(
+												after_b_latch,
+												request.addr,
+												result.val,
+											)
+											(result.val.to_u32(), after_access)
+										}
 									}
 								}
 								W16 => {
 									match Bus.read_view16(current_mv, request.addr)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Value(v) => (v.to_u32(), BusSignals.record_read16(engine.signal, CpuData, request.addr, v))
+										Value(result) => {
+											after_b_latch = match result.bios_latch_update {
+												Unchanged => engine.signal
+												Updated(word) => BusSignals.set_bios_latch(engine.signal, word)
+											}
+											after_access = BusSignals.record_read16(
+												after_b_latch,
+												CpuData,
+												request.addr,
+												result.val,
+											)
+											(result.val.to_u32(), after_access)
+										}
 									}
 								}
 								W32 => {
 									match Bus.read_view32(current_mv, request.addr)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Value(v) => (v, BusSignals.record_read32(engine.signal, CpuData, request.addr, v))
+										Value(result) => {
+											after_b_latch = match result.bios_latch_update {
+												Unchanged => engine.signal
+												Updated(word) => BusSignals.set_bios_latch(engine.signal, word)
+											}
+											after_access = BusSignals.record_read32(
+												after_b_latch,
+												CpuData,
+												request.addr,
+												result.val,
+											)
+											(result.val, after_access)
+										}
 									}
 								}
 							}
@@ -285,13 +320,37 @@ Cpu := {
 				W16 => {
 					match Bus.read_view16(mv, addr)? {
 						NeedsSlow => return Ok(NeedsSlow)
-						Value(v) => (v.to_u32(), BusSignals.record_read16(rs.signal, Fetch, addr, v))
+						Value(result) => {
+							after_b_latch = match result.bios_latch_update {
+								Unchanged => rs.signal
+								Updated(word) => BusSignals.set_bios_latch(rs.signal, word)
+							}
+							after_access = BusSignals.record_read16(
+								after_b_latch,
+								Fetch,
+								addr,
+								result.val,
+							)
+							(result.val.to_u32(), after_access)
+						}
 					}
 				}
 				W32 => {
 					match Bus.read_view32(mv, addr)? {
 						NeedsSlow => return Ok(NeedsSlow)
-						Value(v) => (v, BusSignals.record_read32(rs.signal, Fetch, addr, v))
+						Value(result) => {
+							after_b_latch = match result.bios_latch_update {
+								Unchanged => rs.signal
+								Updated(word) => BusSignals.set_bios_latch(rs.signal, word)
+							}
+							after_access = BusSignals.record_read32(
+								after_b_latch,
+								Fetch,
+								addr,
+								result.val,
+							)
+							(result.val, after_access)
+						}
 					}
 				}
 			}

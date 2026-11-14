@@ -21,11 +21,18 @@ BusSignals :: {
 			},
 		),
 	],
+	bios_latch : [None, BIOS(U32)],
 }.{
 	init : () -> BusSignals
 	init = || {
-		{ last_fetch: None, last_access: None }
+		{ last_fetch: None, last_access: None, bios_latch: None }
 	}
+
+	get_bios_latch : BusSignals -> [None, BIOS(U32)]
+	get_bios_latch = |bus| bus.bios_latch
+
+	set_bios_latch : BusSignals, U32 -> BusSignals
+	set_bios_latch = |old, word| { ..old, bios_latch: BIOS(word) }
 
 	record_read8 : BusSignals, U32, U8 -> BusSignals
 	record_read8 = |old, addr, val| {
@@ -62,6 +69,7 @@ BusSignals :: {
 		})
 		if purpose == Fetch {
 			{
+				..old,
 				last_fetch: Fetched({
 					addr: addr,
 					width: W16,
@@ -97,6 +105,7 @@ BusSignals :: {
 		})
 		if purpose == Fetch {
 			{
+				..old,
 				last_fetch: Fetched({
 					addr: addr,
 					width: W32,
