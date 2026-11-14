@@ -966,10 +966,11 @@ arm_data_processing_execute = |op, c| {
 	res = arm_data_processing_calculate(op, c, alu_op)?
 	shift_cycles = if (!Bits.get_ith_bit_u32_certain(op, 25)
 		and Bits.get_ith_bit_u32_certain(op, 4)) 1 else 0
+	rd = get_gpr_12_15(op)?
+	s_flag = arm_s_flag(op)
 	if data_processing_writes_rd(alu_op) {
-		rd = get_gpr_12_15(op)?
 		match rd {
-			R15 => if arm_s_flag(op) {
+			R15 => if s_flag {
 				# Rd=PC + S=1 => CPSR loads from SPSR
 				# PC must be aligned then, ARM clears 2 LSBs; Thumb clears 1 LSB.
 				Ok({
@@ -993,7 +994,7 @@ arm_data_processing_execute = |op, c| {
 					remaining_cycles: shift_cycles,
 				})
 			}
-			_ => if arm_s_flag(op) {
+			_ => if s_flag {
 				Ok({
 					core: { ..cpu_setReg(rd, c, res.val)?, cpsr: cpsr_setNZCV(c.cpsr, res) },
 					pc_status: PCSequential,
@@ -1008,8 +1009,22 @@ arm_data_processing_execute = |op, c| {
 			}
 		}
 	} else {
+		normal_cpsr = cpsr_setNZCV(c.cpsr, res)
+		# Well, in ARM test ROM we can have opcode violating SBZ by letting them be 1111
+		# So in that case s_flag = 1, and 'rd' will be R15.
+		# In that case we copy SPSR(if there is one) to CPSR
+		# Looks like a hardware quirk to me
+		next_cpsr = if s_flag and rd == R15 {
+			match cpu_getSPSR(c) {
+				Ok(spsr) => spsr
+				Err(NoSPSR) => normal_cpsr
+				Err(err) => return Err(err)
+			}
+		} else {
+			normal_cpsr
+		}
 		Ok({
-			core: { ..c, cpsr: cpsr_setNZCV(c.cpsr, res) },
+			core: { ..c, cpsr: next_cpsr },
 			pc_status: PCSequential,
 			remaining_cycles: shift_cycles,
 		})
@@ -1210,12 +1225,7 @@ arm_multiply_decode = |op| {
 arm_multiply_execute : U32,
 ARM7TDMI -> Try(
 	ARM7TDMI,
-	[
-		WTFisThis,
-		UB_multiply_rd_rm_same,
-		UB_multiply_use_of_R15,
-		InvalidMode,
-	],
+	[WTFisThis, UB_multiply_use_of_R15, InvalidMode],
 )
 arm_multiply_execute = |op, c| {
 	catch_R15 = |gpr| match gpr {
@@ -1227,21 +1237,20 @@ arm_multiply_execute = |op, c| {
 	rd = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?)?
 	rm_val = cpu_getReg(rm, c)?
 	rs_val = cpu_getReg(rs, c)?
-	if rd == rm {
-		Err(UB_multiply_rd_rm_same)
+	# Note, rd == rm was banned in ISA but again on real hardware it is ok.
+	# Also, NBA seems to recompute c flag despite technically ROM should not
+	# use c flag result after mul according to the manual? Gonna slack off for now.
+	res = if arm_multiply_decode(op) == MLA {
+		rn = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?)?
+		rn_val = cpu_getReg(rn, c)?
+		U32.plus_wrap(U32.times_wrap(rm_val, rs_val), rn_val)
 	} else {
-		res = if arm_multiply_decode(op) == MLA {
-			rn = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?)?
-			rn_val = cpu_getReg(rn, c)?
-			U32.plus_wrap(U32.times_wrap(rm_val, rs_val), rn_val)
-		} else {
-			U32.times_wrap(rm_val, rs_val)
-		}
-		if arm_s_flag(op) {
-			Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(res, 31)), res == 0) })
-		} else {
-			cpu_setReg(rd, c, res)
-		}
+		U32.times_wrap(rm_val, rs_val)
+	}
+	if arm_s_flag(op) {
+		Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(res, 31)), res == 0) })
+	} else {
+		cpu_setReg(rd, c, res)
 	}
 }
 
@@ -1475,11 +1484,8 @@ arm_single_data_transfer_execute = |op, c| {
 					val: rd_val,
 					continuation: StoreAndFinish({
 						wba: if w_bit or !(p_bit) {
-							if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
-								return Err(UNPREDICTABLE)
-							} else {
-								WriteBack({ rn: rn, val: adjusted })
-							}
+							if (rn == R15 or (i_bit and get_gpr_0_3(op)? == rn)) return Err(UNPREDICTABLE)
+							WriteBack({ rn: rn, val: adjusted })
 						} else {
 							NoWriteBack
 						},
@@ -2760,7 +2766,6 @@ ARM7TDMI -> Try(
 	Execution_outcome,
 	[
 		WTFisThis,
-		UB_multiply_rd_rm_same,
 		UB_multiply_use_of_R15,
 		InvalidMode,
 		ImpossibleFormatOpCombination(Thumb_ALUOpCode),
