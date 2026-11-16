@@ -1,5 +1,6 @@
 import Bits
 import Bus
+import BusSignals
 import Cpu
 import CpuTypes
 import ARM7TDMI
@@ -381,11 +382,9 @@ walk_memory_execution_state = |before_dma, state| {
 	can_yield = |e_state| {
 		match e_state {
 			R(_) => True # Well IO hasnt start so yes
-			W(request) => match request.continuation {
-				StoreAndFinish(_) => True
-				WriteMultiple(_) => True
-				SetRegAndFinish(_) => False # SWP/SWPB, should be atomic
-			}
+			W({ continuation: StoreAndFinish(_), .. }) => True
+			W({ continuation: WriteMultiple(_), .. }) => True
+			W({ continuation: SetRegAndFinish(_), .. }) => False # SWP/SWPB, should be atomic
 			Complete(_) => False
 		}
 	}
@@ -423,7 +422,14 @@ walk_memory_execution_state = |before_dma, state| {
 					inner = io_delay_applied_machine.bus.read16(request.addr, CpuData)?
 					{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 				}
-				W32 => io_delay_applied_machine.bus.read32(request.addr, CpuData)?
+				W32 => {
+					cxt = Cpu.data_read_context(
+						request.core,
+						io_delay_applied_machine.cpu.hot.pipeline,
+						io_delay_applied_machine.bus.signal,
+					)
+					io_delay_applied_machine.bus.read32(request.addr, CpuData, cxt)?
+				}
 			}
 			raw_val = intermediate.val
 			new_bus = match intermediate.state {
@@ -695,6 +701,8 @@ to_bus_width = |w| w
 
 timed_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
 timed_read = |m, width, addr, req_kind, purpose| {
+	# Should be handled by walk_memory_execution_state() rather than here.
+	if (width == W32 and purpose == CpuData) return Err(MissingCpuReadContext)
 	bus_width = to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
@@ -703,7 +711,15 @@ timed_read = |m, width, addr, req_kind, purpose| {
 			inner = Bus.read16(advanced.bus, addr, purpose)?
 			{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
 		}
-		W32 => Bus.read32(advanced.bus, addr, purpose)?
+		W32 => {
+			latch = BusSignals.get_bios_latch(advanced.bus.signal)
+			cxt = {
+				open_bus: None,
+				bios_latch: latch,
+				bios_readable: purpose == Fetch and addr < 0x4000,
+			}
+			Bus.read32(advanced.bus, addr, purpose, cxt)?
+		}
 	}
 	match intermediate.state {
 		Unchanged => Ok(({ ..advanced, bus: { ..advanced.bus, signal: intermediate.signal } }, intermediate.val))

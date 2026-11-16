@@ -518,62 +518,59 @@ apply_pending_control : TimerReg, U64, TimerSelection -> TimerReg
 apply_pending_control = |reg, now, selection| {
 	match reg.pending_control {
 		None => reg
-		Pending(x) => {
-			if now < x.at {
-				reg
+		Pending(x) if now >= x.at => {
+			old_enabled = Bits.get_ith_bit_u16_certain(reg.control, 7)
+			new_enabled = Bits.get_ith_bit_u16_certain(x.value, 7)
+			if !new_enabled {
+				{
+					..reg,
+					control: x.value,
+					pending_control: None,
+					next_tick_at: None,
+					startup_reload_at: None,
+				}
+			} else if old_enabled {
+				intermediate_reg = { ..reg, control: x.value, pending_control: None }
+				period = clock_period(intermediate_reg, selection)
+				match period {
+					Period(p) => {
+						..intermediate_reg,
+						next_tick_at: At(x.at + (p - x.at.mod_by(p))),
+					}
+					NoClock => { ..intermediate_reg, next_tick_at: None } # Already enabled here, so NoClock -> cascade.
+				}
 			} else {
-				old_enabled = Bits.get_ith_bit_u16_certain(reg.control, 7)
-				new_enabled = Bits.get_ith_bit_u16_certain(x.value, 7)
-				if !new_enabled {
-					{
-						..reg,
-						control: x.value,
-						pending_control: None,
-						next_tick_at: None,
-						startup_reload_at: None,
-					}
-				} else if old_enabled {
-					intermediate_reg = { ..reg, control: x.value, pending_control: None }
-					period = clock_period(intermediate_reg, selection)
-					match period {
-						Period(p) => {
-							..intermediate_reg,
-							next_tick_at: At(x.at + (p - x.at.mod_by(p))),
-						}
-						NoClock => { ..intermediate_reg, next_tick_at: None } # Already enabled here, so NoClock -> cascade.
-					}
-				} else {
-					intermediate_reg = {
-						..reg,
-						control: x.value,
-						pending_control: None,
-					}
-					match clock_period(intermediate_reg, selection) {
-						NoClock => { ..intermediate_reg, counter: reg.reload, next_tick_at: None }
-						Period(p) => {
-							remainder = x.at.mod_by(p)
-							next_multiple = x.at + (p - remainder)
-							# https://codeberg.org/nba-emu/NanoBoyAdvance/issues/331
-							# TLDR, When a timer is re-enabled with counter == 0xFFFF, it may overflow
-							# before the startup reload takes effect, requesting an IRQ if enabled.
-							if remainder == 0 and reg.counter == 0xFFFF {
-								{
-									..intermediate_reg,
-									next_tick_at: At(next_multiple),
-									startup_reload_at: None,
-								}
-							} else {
-								{
-									..intermediate_reg,
-									next_tick_at: At(next_multiple + 1),
-									counter: reg.reload,
-								}
+				intermediate_reg = {
+					..reg,
+					control: x.value,
+					pending_control: None,
+				}
+				match clock_period(intermediate_reg, selection) {
+					NoClock => { ..intermediate_reg, counter: reg.reload, next_tick_at: None }
+					Period(p) => {
+						remainder = x.at.mod_by(p)
+						next_multiple = x.at + (p - remainder)
+						# https://codeberg.org/nba-emu/NanoBoyAdvance/issues/331
+						# TLDR, When a timer is re-enabled with counter == 0xFFFF, it may overflow
+						# before the startup reload takes effect, requesting an IRQ if enabled.
+						if remainder == 0 and reg.counter == 0xFFFF {
+							{
+								..intermediate_reg,
+								next_tick_at: At(next_multiple),
+								startup_reload_at: None,
+							}
+						} else {
+							{
+								..intermediate_reg,
+								next_tick_at: At(next_multiple + 1),
+								counter: reg.reload,
 							}
 						}
 					}
 				}
 			}
 		}
+		_ => reg
 	}
 }
 

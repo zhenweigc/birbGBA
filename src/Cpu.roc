@@ -16,6 +16,15 @@ Cpu := {
 	get_core : Cpu -> ARM7TDMI
 	get_core = |c| c.hot.core
 
+	data_read_context : ARM7TDMI, CpuTypes.Pipeline, BusSignals -> Bus.ReadContext
+	data_read_context = |core, pipe, signal| {
+		{
+			open_bus: if (ARM7TDMI.is_thumb(core)) None else arm_prefetch_word(pipe),
+			bios_latch: BusSignals.get_bios_latch(signal),
+			bios_readable: ARM7TDMI.getPC(core) < 0x4000,
+		}
+	}
+
 	run_block : Bus.MemoryView, CpuTypes.RunState, CpuTypes.Limits, Bool -> Try(CpuTypes.BlockResult, _)
 	run_block = |mv, rs, limits, irq_asserted| {
 		# Pass MemoryView explicitly to reduce per-instruction MemoryView RC overhead.
@@ -44,17 +53,14 @@ Cpu := {
 
 					match take_opcode(current_mv, engine, ARM7TDMI.getPC(core), core.is_thumb(), event_at)? {
 						NeedsSlow => Ok(finish_block(core, engine, actions_completed, Boundary(NeedsSlow), current_mv, dma_scheduled_at))
-						Fetched(fetched) => {
-							opcode = match fetched.code {
-								Unmapped(addr) => return Err(UnmappedInstructionFetch(addr))
-								Opcode(op) => op
-							}
+						Fetched({ code: Unmapped(addr), .. }) => Err(UnmappedInstructionFetch(addr))
+						Fetched({ code: Opcode(opcode), state: fetched_state }) => {
 							# seems retarded branching? saves extra copying in generated code.
 							if core.is_thumb() {
 								loop(
 									current_mv,
 									core,
-									fetched.state,
+									fetched_state,
 									Execute(
 										ARM7TDMI.execute_thumb_opcode(core, opcode.to_u16_wrap())?,
 									),
@@ -66,7 +72,7 @@ Cpu := {
 								loop(
 									current_mv,
 									core,
-									fetched.state,
+									fetched_state,
 									Execute(
 										ARM7TDMI.execute_arm_opcode(core, opcode)?,
 									),
@@ -206,7 +212,8 @@ Cpu := {
 									}
 								}
 								W32 => {
-									match Bus.read_view32(current_mv, request.addr)? {
+									cxt = data_read_context(request.core, engine.pipeline, engine.signal)
+									match Bus.read_view32(current_mv, request.addr, cxt)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 										Value(result) => {
 											after_b_latch = match result.bios_latch_update {
@@ -312,7 +319,7 @@ Cpu := {
 
 		if addr >= 0x4000 and addr < 0x100_0000 { # Unmapped reigon right after BIOS
 			alignment = if (width == W16) 2 else 4
-			if (addr.mod_by(alignment) != 0) return Err(MisalignedAddress(addr)) else {}
+			if (addr.mod_by(alignment) != 0) return Err(MisalignedAddress(addr))
 			new_rs = { ..rs, now: rs.now + cycles_needed }
 			Ok(Fetched({ state: new_rs, code: Unmapped(addr) }))
 		} else {
@@ -336,7 +343,12 @@ Cpu := {
 					}
 				}
 				W32 => {
-					match Bus.read_view32(mv, addr)? {
+					cxt = {
+						open_bus: None, # Not entirely done yet, so still None
+						bios_latch: BusSignals.get_bios_latch(rs.signal),
+						bios_readable: addr < 0x4000,
+					}
+					match Bus.read_view32(mv, addr, cxt)? {
 						NeedsSlow => return Ok(NeedsSlow)
 						Value(result) => {
 							after_b_latch = match result.bios_latch_update {
@@ -421,6 +433,14 @@ finish_block = |core, engine, actions_completed, exit_reason, mv, dma_schedule_a
 		exit: exit_reason,
 		memory: mv,
 		dma_schedule_at: dma_schedule_at,
+	}
+}
+
+arm_prefetch_word : CpuTypes.Pipeline -> [None, Value(U32)]
+arm_prefetch_word = |pipe| {
+	match pipe {
+		Ready({ second: Opcode(word), .. }) => Value(word)
+		_ => None
 	}
 }
 

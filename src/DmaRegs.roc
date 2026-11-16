@@ -344,8 +344,8 @@ DmaRegs :: {
 				2 => rgs.dma2
 				_ => rgs.dma3
 			}
-			match reg.ready_at {
-				At(t) if reg.phase == Pending => {
+			match reg {
+				{ phase: Pending, ready_at: At(t), .. } => {
 					$res = match $res {
 						None => At(t)
 						At(x) => if (t < x) At(t) else At(x)
@@ -581,11 +581,8 @@ write_cnt_h = |reg, new_cnt_h, zero_count| {
 
 single_reg_has_ready : [Disabled, Waiting, Pending], [None, At(U64)], U64 -> Bool
 single_reg_has_ready = |phase, ready_at, given_now| {
-	if phase == Pending and ready_at != None {
-		match ready_at {
-			At(t) if t <= given_now => return True
-			_ => return False
-		}
+	match (phase, ready_at) {
+		(Pending, At(t)) if t <= given_now => True
+		_ => False
 	}
-	False
 }
