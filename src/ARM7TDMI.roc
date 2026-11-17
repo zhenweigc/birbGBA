@@ -2131,7 +2131,7 @@ arm_halfword_data_transfer_execute = |op, c| {
 						val: rd_val,
 						continuation: StoreAndFinish({
 							wba: if w_bit or !(p_bit) {
-								if rd == rn or rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
+								if rn == R15 or (!i_bit and get_gpr_0_3(op)? == rn) {
 									return Err(UNPREDICTABLE)
 								} else {
 									WriteBack({ rn: rn, val: adjusted })
