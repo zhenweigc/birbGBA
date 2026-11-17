@@ -330,6 +330,12 @@ Bus := {
 					},
 				)
 			}
+			GamePakRAM => {
+				# There is no real R16 for SRAM in GBA hardware, so the return result is just duplicated
+				# https://problemkaputt.de/gbatek-gba-unpredictable-things.htm
+				byte = SRAM.read8(bus.sram, relative_addr)?.to_u16()
+				(byte.shl_wrap(8).bitwise_or(byte), Unchanged)
+			}
 			_ => return Err(UnsupportedRegion(region))
 		}
 		Ok({ val: val, state: state, signal: BusSignals.record_read16(bus.signal, purpose, addr, val) })
@@ -369,12 +375,14 @@ Bus := {
 					Ok(NeedsSlow)
 				}
 			}
+			GamePakRAM => Ok(NeedsSlow)
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
 
 	write16 : Bus,
 	U32,
+	U8,
 	U16,
 	WritePurpose -> Try(
 		Bus,
@@ -385,7 +393,7 @@ Bus := {
 			UnsupportedIORegOffset(U32),
 		],
 	)
-	write16 = |bus, addr, cxt, purpose| {
+	write16 = |bus, addr, addr_low, cxt, purpose| {
 		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
 		new_signal = BusSignals.record_write16(bus.signal, purpose, addr, cxt)
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
@@ -429,6 +437,20 @@ Bus := {
 				io_regs: IoRegs.write16(bus.io_regs, relative_addr, cxt)?,
 				signal: new_signal,
 			})
+			GamePakRAM => {
+				offset = relative_addr.bitwise_or(addr_low.to_u32())
+				byte = cxt.shr_wrap(addr_low * 8).to_u8_wrap()
+				Ok({
+					..bus,
+					signal: BusSignals.record_write16(
+						bus.signal,
+						purpose,
+						addr.bitwise_or(addr_low.to_u32()),
+						cxt,
+					),
+					sram: SRAM.write8(bus.sram, offset, byte)?,
+				})
+			}
 			_ => Err(UnsupportedRegion(region))
 		}
 	}
@@ -440,7 +462,6 @@ Bus := {
 		ReadResult(U32, Bus),
 		[
 			OutOfBounds,
-			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			UnsupportedIORegOffset(U32),
 			MissingOpenBus,
@@ -489,8 +510,15 @@ Bus := {
 					},
 				)
 			}
+			GamePakRAM => {
+				byte = SRAM.read8(bus.sram, relative_addr)?.to_u32()
+				(
+					byte.shl_wrap(24).bitwise_or(byte.shl_wrap(16)).bitwise_or(byte.shl_wrap(8)).bitwise_or(byte),
+					U32.highest,
+					Unchanged,
+				)
+			}
 			Unused => (0, 0, Unchanged)
-			_ => return Err(UnsupportedRegion(region))
 		}
 		val = resolve_read32(device_val, device_mask, cxt.open_bus)?
 		after_bios = match region {
@@ -540,8 +568,8 @@ Bus := {
 			} else {
 				return Ok(NeedsSlow)
 			}
+			GamePakRAM => return Ok(NeedsSlow)
 			Unused => (0, 0, Unchanged)
-			_ => return Err(UnsupportedRegion(region))
 		}
 		val = resolve_read32(device_val, device_mask, cxt.open_bus)?
 		Ok(Value({ val, bios_latch_update }))
@@ -549,6 +577,7 @@ Bus := {
 
 	write32 : Bus,
 	U32,
+	U8,
 	U32,
 	WritePurpose -> Try(
 		Bus,
@@ -559,7 +588,7 @@ Bus := {
 			UnsupportedIORegOffset(U32),
 		],
 	)
-	write32 = |bus, addr, cxt, purpose| {
+	write32 = |bus, addr, addr_low, cxt, purpose| {
 		chopper = |i| {
 			{
 				semel: i.to_u8_wrap(),
@@ -612,6 +641,20 @@ Bus := {
 				io_regs: IoRegs.write32(bus.io_regs, relative_addr, cxt)?,
 				signal: new_signal,
 			})
+			GamePakRAM => {
+				offset = relative_addr.bitwise_or(addr_low.to_u32())
+				byte = cxt.shr_wrap(addr_low * 8).to_u8_wrap()
+				Ok({
+					..bus,
+					signal: BusSignals.record_write32(
+						bus.signal,
+						purpose,
+						addr.bitwise_or(addr_low.to_u32()),
+						cxt,
+					),
+					sram: SRAM.write8(bus.sram, offset, byte)?,
+				})
+			}
 			_ => Err(UnsupportedRegion(region))
 		}
 	}

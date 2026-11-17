@@ -454,8 +454,8 @@ walk_memory_execution_state = |before_dma, state| {
 			} else {
 				match request.width {
 					W8 => io_delay_applied_machine.bus.write8(request.addr, request.val.to_u8_wrap())?
-					W16 => io_delay_applied_machine.bus.write16(request.addr, request.val.to_u16_wrap(), CpuData)?
-					W32 => io_delay_applied_machine.bus.write32(request.addr, request.val, CpuData)?
+					W16 => io_delay_applied_machine.bus.write16(request.addr, request.addr_low, request.val.to_u16_wrap(), CpuData)?
+					W32 => io_delay_applied_machine.bus.write32(request.addr, request.addr_low, request.val, CpuData)?
 				}
 			}
 			scheduled_dma_rgs = DmaRegs.schedule_pending(post_write_bus.io_regs.dmas, io_delay_applied_machine.now)
@@ -739,8 +739,8 @@ timed_write = |m, width, addr, val, req_kind, purpose| {
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	new_bus = match width {
-		W16 => Bus.write16(advanced.bus, addr, val.to_u16_wrap(), purpose)?
-		W32 => Bus.write32(advanced.bus, addr, val, purpose)?
+		W16 => Bus.write16(advanced.bus, addr, 0, val.to_u16_wrap(), purpose)?
+		W32 => Bus.write32(advanced.bus, addr, 0, val, purpose)?
 	}
 	new_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
 	Ok({ ..advanced, bus: { ..new_bus, io_regs: { ..new_bus.io_regs, dmas: new_dma_rgs } } })

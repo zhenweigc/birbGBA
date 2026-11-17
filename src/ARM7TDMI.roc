@@ -178,6 +178,12 @@ ARM7TDMI := {
 			{
 				core : ARM7TDMI,
 				addr : U32,
+				# Ok, when designing layout & structure, addr above is aligned w.r.t. width
+				# However for SRAM write it needs low address bit(s) which are nuked by bitwise_and
+				# Thus we have to put this info back as a U8
+				# or else we need to change even more code in param passing & handling
+				# Well no I am NOT doing that.
+				addr_low : U8,
 				width : ReqWidth,
 				val : U32,
 				continuation : WriteContinuation,
@@ -372,6 +378,11 @@ ARM7TDMI := {
 					W({
 						core: c,
 						addr: x.addr,
+						addr_low: match x.rot {
+							RotRight(n) => n // 8
+							Identity => 0
+							_ => return Err(WTFisThis) # Shouldnt be here
+						},
 						width: x.width,
 						val: x.rm_val,
 						continuation: SetRegAndFinish({ rd: x.rd, val: rotate(x.rot, raw_val), isThumb: x.isThumb }),
@@ -416,6 +427,7 @@ ARM7TDMI := {
 						W({
 							core: c,
 							addr: x.next_addr,
+							addr_low: 0,
 							width: W32,
 							val: val,
 							continuation: WriteMultiple({
@@ -1471,15 +1483,13 @@ arm_single_data_transfer_execute = |op, c| {
 				Bits.get_seg_of_u32_certain(op, 0, 12)
 			}
 			adjusted = if (u_bit) U32.plus_wrap(base, offset) else U32.minus_wrap(base, offset)
-			addr = if p_bit {
-				U32.bitwise_and(adjusted, 0xFFFFFFFC)
-			} else {
-				U32.bitwise_and(base, 0xFFFFFFFC)
-			}
+			raw_addr = if (p_bit) adjusted else base
+			addr = raw_addr.bitwise_and(0xFFFFFFFC)
 			Ok(
 				W({
 					core: c,
 					addr: addr,
+					addr_low: raw_addr.to_u8_wrap().bitwise_and(3),
 					width: W32,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -1524,6 +1534,7 @@ arm_single_data_transfer_execute = |op, c| {
 				W({
 					core: c,
 					addr: addr,
+					addr_low: 0,
 					width: W8,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -1732,11 +1743,11 @@ arm_single_data_transfer_execute = |op, c| {
 			} else {
 				U32.minus_wrap(base, offset)
 			}
-			addr = U32.bitwise_and(base, 0xFFFFFFFC)
 			Ok(
 				W({
 					core: c,
-					addr: addr,
+					addr: base.bitwise_and(0xFFFFFFFC),
+					addr_low: base.to_u8_wrap().bitwise_and(3),
 					width: W32,
 					val: rd_val,
 					continuation: StoreAndFinish({ wba: WriteBack({ rn: rn, val: adjusted }), isThumb: False }),
@@ -1785,6 +1796,7 @@ arm_single_data_transfer_execute = |op, c| {
 				W({
 					core: c,
 					addr: addr,
+					addr_low: 0,
 					width: W8,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -2126,7 +2138,8 @@ arm_halfword_data_transfer_execute = |op, c| {
 						# On unaligned(odd) addr, it should not panic
 						# Instead it's bit 0 will be ignored
 						# However WBA val will not be forcefully aligned
-						addr: (addr // 2) * 2,
+						addr: addr.bitwise_and(0xFFFFFFFE),
+						addr_low: addr.to_u8_wrap().bitwise_and(1),
 						width: W16,
 						val: rd_val,
 						continuation: StoreAndFinish({
@@ -2263,6 +2276,7 @@ arm_block_data_transfer_execute = |op, c| {
 						W({
 							core: c,
 							addr: trio.start_addr,
+							addr_low: 0,
 							width: W32,
 							val: if first_reg == R15 {
 								pc_inc(c.regs.r15, 12)
@@ -2459,6 +2473,7 @@ thumb_push_pop_execute = |op, c| {
 				W({
 					core: c,
 					addr: trio.start_addr,
+					addr_low: 0,
 					width: W32,
 					val: if first_reg == R15 {
 						pc_inc(c.regs.r15, 6)
@@ -2541,6 +2556,7 @@ thumb_block_data_transfer_execute = |op, c| {
 				W({
 					core: c,
 					addr: trio.start_addr,
+					addr_low: 0,
 					width: W32,
 					val: if first_reg == R15 {
 						pc_inc(c.regs.r15, 6) # mGBA and nanoBoy all do this
@@ -3143,6 +3159,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 				W({
 					core: c,
 					addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+					addr_low: addr.to_u8_wrap().bitwise_and(3),
 					width: W32,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -3177,6 +3194,7 @@ thumb_load_store_immediate_execute = |op, c, t| {
 				W({
 					core: c,
 					addr: addr,
+					addr_low: 0,
 					width: W8,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -3212,11 +3230,12 @@ thumb_load_store_immediate_execute = |op, c, t| {
 		STRH => {
 			rd_val = cpu_getReg(rd, c)?
 			# Similar to ARM mode STRH, align to even num
-			addr = rn_val.plus_wrap(immed_5.times_wrap(2)).bitwise_and((0.U32).bitwise_not() - 1)
+			addr = rn_val.plus_wrap(immed_5.times_wrap(2))
 			Ok(
 				W({
 					core: c,
-					addr: addr,
+					addr: addr.bitwise_and(0xFFFFFFFE),
+					addr_low: addr.bitwise_and(1).to_u8_wrap(),
 					width: W16,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -3336,6 +3355,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 				W({
 					core: c,
 					addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+					addr_low: addr.to_u8_wrap().bitwise_and(3),
 					width: W32,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -3352,6 +3372,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 				W({
 					core: c,
 					addr: addr,
+					addr_low: 0,
 					width: W8,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -3368,6 +3389,7 @@ thumb_load_store_register_offset_execute = |op, c, t| {
 				W({
 					core: c,
 					addr: addr.bitwise_and(0xFFFF_FFFE),
+					addr_low: addr.to_u8_wrap().bitwise_and(1),
 					width: W16,
 					val: rd_val,
 					continuation: StoreAndFinish({
@@ -3432,6 +3454,7 @@ thumb_load_store_sp_relative_execute = |op, c| {
 			W({
 				core: c,
 				addr: addr.bitwise_and(0xFFFF_FFFF - 3),
+				addr_low: addr.to_u8_wrap().bitwise_and(3),
 				width: W32,
 				val: rd_val,
 				continuation: StoreAndFinish({
