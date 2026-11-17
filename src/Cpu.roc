@@ -174,10 +174,10 @@ Cpu := {
 							if cycles_needed >= event_at - engine.now {
 								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 							}
-
+							cxt = data_read_context(request.core, engine.pipeline, engine.signal)
 							(raw_val, signal) = match request.width {
 								W8 => {
-									match Bus.read_view8(current_mv, request.addr)? {
+									match Bus.read_view8(current_mv, request.addr, cxt)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 										Value(result) => {
 											after_b_latch = match result.bios_latch_update {
@@ -194,7 +194,7 @@ Cpu := {
 									}
 								}
 								W16 => {
-									match Bus.read_view16(current_mv, request.addr)? {
+									match Bus.read_view16(current_mv, request.addr, cxt)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 										Value(result) => {
 											after_b_latch = match result.bios_latch_update {
@@ -212,7 +212,6 @@ Cpu := {
 									}
 								}
 								W32 => {
-									cxt = data_read_context(request.core, engine.pipeline, engine.signal)
 									match Bus.read_view32(current_mv, request.addr, cxt)? {
 										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
 										Value(result) => {
@@ -323,9 +322,14 @@ Cpu := {
 			new_rs = { ..rs, now: rs.now + cycles_needed }
 			Ok(Fetched({ state: new_rs, code: Unmapped(addr) }))
 		} else {
+			cxt = {
+				open_bus: None, # Not entirely done yet, so still None
+				bios_latch: BusSignals.get_bios_latch(rs.signal),
+				bios_readable: addr < 0x4000,
+			}
 			(value, signal) = match width {
 				W16 => {
-					match Bus.read_view16(mv, addr)? {
+					match Bus.read_view16(mv, addr, cxt)? {
 						NeedsSlow => return Ok(NeedsSlow)
 						Value(result) => {
 							after_b_latch = match result.bios_latch_update {
@@ -343,11 +347,6 @@ Cpu := {
 					}
 				}
 				W32 => {
-					cxt = {
-						open_bus: None, # Not entirely done yet, so still None
-						bios_latch: BusSignals.get_bios_latch(rs.signal),
-						bios_readable: addr < 0x4000,
-					}
 					match Bus.read_view32(mv, addr, cxt)? {
 						NeedsSlow => return Ok(NeedsSlow)
 						Value(result) => {

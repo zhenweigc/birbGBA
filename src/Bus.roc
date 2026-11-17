@@ -108,29 +108,31 @@ Bus := {
 	}
 
 	read8 : Bus,
-	U32 -> Try(
+	U32,
+	ReadContext -> Try(
 		ReadResult(U8, Bus),
 		[
 			OutOfBounds,
-			UnsupportedRegion(MemoryRegion),
 			UnsupportedIORegOffset(U32),
+			MissingBIOSLatch,
+			MissingOpenBus,
 		],
 	)
-	read8 = |bus, addr| {
+	read8 = |bus, addr, cxt| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-		(val, state) = match region {
-			CPUExternalRAM => ((bus.ewram).get(U32.to_u64(relative_addr))?, Unchanged)
-			CPUInternalRAM => ((bus.iwram).get(U32.to_u64(relative_addr))?, Unchanged)
-			PaletteRAM => ((bus.paletteram).get(U32.to_u64(relative_addr))?, Unchanged)
+		(device_val, device_mask, state, bios_latch_update) = match region {
+			CPUExternalRAM => ((bus.ewram).get(U32.to_u64(relative_addr))?, U8.highest, Unchanged, Unchanged)
+			CPUInternalRAM => ((bus.iwram).get(U32.to_u64(relative_addr))?, U8.highest, Unchanged, Unchanged)
+			PaletteRAM => ((bus.paletteram).get(U32.to_u64(relative_addr))?, U8.highest, Unchanged, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 				if is_vram_hole(mode, addr) {
-					(0, Unchanged)
+					(0, U8.highest, Unchanged, Unchanged)
 				} else {
-					((bus.vram).get(U32.to_u64(relative_addr))?, Unchanged)
+					((bus.vram).get(U32.to_u64(relative_addr))?, U8.highest, Unchanged, Unchanged)
 				}
 			}
-			OAM => ((bus.oam).get(U32.to_u64(relative_addr))?, Unchanged)
+			OAM => ((bus.oam).get(U32.to_u64(relative_addr))?, U8.highest, Unchanged, Unchanged)
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
 				(
 					if relative_addr.to_u64() + 1 <= bus.gamepak_rom.len() {
@@ -138,89 +140,91 @@ Bus := {
 					} else {
 						addr.shr_wrap(1 + (if (addr.mod_by(2) == 0) 0 else 8)).to_u8_wrap()
 					},
+					U8.highest,
+					Unchanged,
 					Unchanged,
 				)
 			}
-			SystemROM => ((bus.bios).get(U32.to_u64(relative_addr))?, Unchanged)
+			SystemROM => {
+				word = read_bios_word(bus.bios, relative_addr, cxt)?
+				offset = addr.to_u8_wrap().bitwise_and(0b11) * 8
+				value = word.shr_wrap(offset).to_u8_wrap()
+				(value, U8.highest, Unchanged, if (cxt.bios_readable) Updated(word) else Unchanged)
+			}
 			IORegs => {
 				intermediate = IoRegs.read8(bus.io_regs, relative_addr)?
 				(
 					intermediate.val,
+					intermediate.device_mask,
 					match intermediate.reg {
 						Unchanged => Unchanged
 						Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
 					},
+					Unchanged,
 				)
 			}
-			GamePakRAM => (SRAM.read8(bus.sram, relative_addr)?, Unchanged)
-			_ => return Err(UnsupportedRegion(region))
+			GamePakRAM => (SRAM.read8(bus.sram, relative_addr)?, U8.highest, Unchanged, Unchanged)
+			Unused => (0, 0, Unchanged, Unchanged)
 		}
-		Ok({ val: val, state: state, signal: BusSignals.record_read8(bus.signal, addr, val) })
+		shift = addr.to_u8_wrap().bitwise_and(0b11) * 8
+		val = resolve_read8(device_val, device_mask, cxt.open_bus, shift)?
+		after_bios = match bios_latch_update {
+			Unchanged => bus.signal
+			Updated(word) => BusSignals.set_bios_latch(bus.signal, word)
+		}
+		Ok({ val: val, state: state, signal: BusSignals.record_read8(after_bios, addr, val) })
 	}
 
-	read_view8 : MemoryView, U32 -> Try(ViewReadResult(U8), _)
-	read_view8 = |mv, addr| {
+	read_view8 : MemoryView, U32, ReadContext -> Try(ViewReadResult(U8), _)
+	read_view8 = |mv, addr, cxt| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-		match region {
-			CPUExternalRAM => Ok(
-				Value({
-					val: (mv.ewram).get(U32.to_u64(relative_addr))?,
-					bios_latch_update: Unchanged,
-				}),
-			)
-			CPUInternalRAM => Ok(
-				Value({
-					val: ((mv.iwram).get(U32.to_u64(relative_addr))?),
-					bios_latch_update: Unchanged,
-				}),
-			)
-			PaletteRAM => Ok(
-				Value({
-					val: (mv.paletteram).get(U32.to_u64(relative_addr))?,
-					bios_latch_update: Unchanged,
-				}),
-			)
+		(device_val, device_mask, bios_latch_update) = match region {
+			CPUExternalRAM => ((mv.ewram).get(relative_addr.to_u64())?, U8.highest, Unchanged)
+			CPUInternalRAM => ((mv.iwram).get(relative_addr.to_u64())?, U8.highest, Unchanged)
+			PaletteRAM => ((mv.paletteram).get(relative_addr.to_u64())?, U8.highest, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(mv.display)
 				if is_vram_hole(mode, addr) {
-					Ok(Value({ val: 0, bios_latch_update: Unchanged }))
+					(0, U8.highest, Unchanged)
 				} else {
-					Ok(Value(({ val: (mv.vram).get(U32.to_u64(relative_addr))?, bios_latch_update: Unchanged })))
+					((mv.vram).get(relative_addr.to_u64())?, U8.highest, Unchanged)
 				}
 			}
-			OAM => Ok(Value({ val: (mv.oam).get(U32.to_u64(relative_addr))?, bios_latch_update: Unchanged }))
+			OAM => ((mv.oam).get(relative_addr.to_u64())?, U8.highest, Unchanged)
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-				Ok(
-					Value({
-						val: if relative_addr.to_u64() + 1 <= mv.gamepak_rom.len() {
-							(mv.gamepak_rom).get(relative_addr.to_u64())?
-						} else {
-							addr.shr_wrap(1 + (if (addr.mod_by(2) == 0) 0 else 8)).to_u8_wrap()
-						},
-						bios_latch_update: Unchanged,
-					}),
+				(
+					if relative_addr.to_u64() + 1 <= mv.gamepak_rom.len() {
+						(mv.gamepak_rom).get(relative_addr.to_u64())?
+					} else {
+						addr.shr_wrap(1 + (if (addr.mod_by(2) == 0) 0 else 8)).to_u8_wrap()
+					},
+					U8.highest,
+					Unchanged,
 				)
 			}
-			SystemROM => Ok(Value({ val: (mv.bios).get(U32.to_u64(relative_addr))?, bios_latch_update: Unchanged }))
-			IORegs => if relative_addr < 0x60 {
-				Ok(Value({ val: DisplayRegs.read8(mv.display, relative_addr)?, bios_latch_update: Unchanged }))
-			} else {
-				Ok(NeedsSlow)
+			SystemROM => {
+				word = read_bios_word(mv.bios, relative_addr, cxt)?
+				offset = addr.to_u8_wrap().bitwise_and(0b11) * 8
+				value = word.shr_wrap(offset).to_u8_wrap()
+				(value, U8.highest, if (cxt.bios_readable) Updated(word) else Unchanged)
 			}
-			GamePakRAM => Ok(NeedsSlow)
-			_ => Err(UnsupportedRegion(region))
+			IORegs => {
+				if (relative_addr >= 0x60) return Ok(NeedsSlow)
+				(DisplayRegs.read8(mv.display, relative_addr)?, U8.highest, Unchanged)
+			}
+			GamePakRAM => return Ok(NeedsSlow)
+			Unused => (0, 0, Unchanged)
 		}
+		shift = addr.to_u8_wrap().bitwise_and(0b11) * 8
+		val = resolve_read8(device_val, device_mask, cxt.open_bus, shift)?
+		Ok(Value({ val, bios_latch_update }))
 	}
 
 	write8 : Bus,
 	U32,
 	U8 -> Try(
 		Bus,
-		[
-			OutOfBounds,
-			UnsupportedRegion(MemoryRegion),
-			UnsupportedIORegOffset(U32),
-		],
+		[OutOfBounds, UnsupportedRegion(MemoryRegion), UnsupportedIORegOffset(U32)],
 	)
 	write8 = |bus, addr, cxt| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
@@ -284,31 +288,33 @@ Bus := {
 
 	read16 : Bus,
 	U32,
-	ReadPurpose -> Try(
+	ReadPurpose,
+	ReadContext -> Try(
 		ReadResult(U16, Bus),
 		[
 			OutOfBounds,
-			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			UnsupportedIORegOffset(U32),
+			MissingBIOSLatch,
+			MissingOpenBus,
 		],
 	)
-	read16 = |bus, addr, purpose| {
+	read16 = |bus, addr, purpose, cxt| {
 		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-		(val, state) = match region {
-			CPUExternalRAM => (read_le16(bus.ewram, relative_addr)?, Unchanged)
-			CPUInternalRAM => (read_le16(bus.iwram, relative_addr)?, Unchanged)
-			PaletteRAM => (read_le16(bus.paletteram, relative_addr)?, Unchanged)
+		(device_val, device_mask, state, bios_latch_update) = match region {
+			CPUExternalRAM => (read_le16(bus.ewram, relative_addr)?, U16.highest, Unchanged, Unchanged)
+			CPUInternalRAM => (read_le16(bus.iwram, relative_addr)?, U16.highest, Unchanged, Unchanged)
+			PaletteRAM => (read_le16(bus.paletteram, relative_addr)?, U16.highest, Unchanged, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(bus.io_regs.display)
 				if is_vram_hole(mode, addr) {
-					(0, Unchanged)
+					(0, U16.highest, Unchanged, Unchanged)
 				} else {
-					(read_le16(bus.vram, relative_addr)?, Unchanged)
+					(read_le16(bus.vram, relative_addr)?, U16.highest, Unchanged, Unchanged)
 				}
 			}
-			OAM => (read_le16(bus.oam, relative_addr)?, Unchanged)
+			OAM => (read_le16(bus.oam, relative_addr)?, U16.highest, Unchanged, Unchanged)
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
 				value = if relative_addr.to_u64() + 2 <= bus.gamepak_rom.len() {
 					read_le16(bus.gamepak_rom, relative_addr)?
@@ -317,67 +323,85 @@ Bus := {
 					# So the CPU will just read the low 16 bits of Halfword addr back.
 					addr.shr_wrap(1).to_u16_wrap()
 				}
-				(value, Unchanged)
+				(value, U16.highest, Unchanged, Unchanged)
 			}
-			SystemROM => (read_le16(bus.bios, relative_addr)?, Unchanged)
+			SystemROM => {
+				word = read_bios_word(bus.bios, relative_addr, cxt)?
+				offset = addr.to_u8_wrap().bitwise_and(0b10) * 8
+				value = word.shr_wrap(offset).to_u16_wrap()
+				(value, U16.highest, Unchanged, if (cxt.bios_readable) Updated(word) else Unchanged)
+			}
 			IORegs => {
 				intermediate = IoRegs.read16(bus.io_regs, relative_addr)?
 				(
 					intermediate.val,
+					intermediate.device_mask,
 					match intermediate.reg {
 						Unchanged => Unchanged
 						Updated(x) => Updated(Box.box({ ..bus, io_regs: x }))
 					},
+					Unchanged,
 				)
 			}
 			GamePakRAM => {
 				# There is no real R16 for SRAM in GBA hardware, so the return result is just duplicated
 				# https://problemkaputt.de/gbatek-gba-unpredictable-things.htm
 				byte = SRAM.read8(bus.sram, relative_addr)?.to_u16()
-				(byte.shl_wrap(8).bitwise_or(byte), Unchanged)
+				(byte.shl_wrap(8).bitwise_or(byte), U16.highest, Unchanged, Unchanged)
 			}
-			_ => return Err(UnsupportedRegion(region))
+			Unused => (0, 0, Unchanged, Unchanged)
 		}
-		Ok({ val: val, state: state, signal: BusSignals.record_read16(bus.signal, purpose, addr, val) })
+		shift = addr.to_u8_wrap().bitwise_and(2) * 8
+		val = resolve_read16(device_val, device_mask, cxt.open_bus, shift)?
+		after_bios = match bios_latch_update {
+			Unchanged => bus.signal
+			Updated(word) => BusSignals.set_bios_latch(bus.signal, word)
+		}
+		Ok({ val: val, state: state, signal: BusSignals.record_read16(after_bios, purpose, addr, val) })
 	}
 
-	read_view16 : MemoryView, U32 -> Try(ViewReadResult(U16), _)
-	read_view16 = |mv, addr| {
+	read_view16 : MemoryView, U32, ReadContext -> Try(ViewReadResult(U16), _)
+	read_view16 = |mv, addr, cxt| {
 		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
-		match region {
-			CPUExternalRAM => Ok(Value({ val: read_le16(mv.ewram, relative_addr)?, bios_latch_update: Unchanged }))
-			CPUInternalRAM => Ok(Value({ val: read_le16(mv.iwram, relative_addr)?, bios_latch_update: Unchanged }))
-			PaletteRAM => Ok(Value({ val: read_le16(mv.paletteram, relative_addr)?, bios_latch_update: Unchanged }))
+		(device_val, device_mask, bios_latch_update) = match region {
+			CPUExternalRAM => (read_le16(mv.ewram, relative_addr)?, U16.highest, Unchanged)
+			CPUInternalRAM => (read_le16(mv.iwram, relative_addr)?, U16.highest, Unchanged)
+			PaletteRAM => (read_le16(mv.paletteram, relative_addr)?, U16.highest, Unchanged)
 			VRAM => {
 				mode = DisplayRegs.get_bg_mode(mv.display)
 				if is_vram_hole(mode, addr) {
-					Ok(Value({ val: 0, bios_latch_update: Unchanged }))
+					(0, U16.highest, Unchanged)
 				} else {
-					Ok(Value({ val: read_le16(mv.vram, relative_addr)?, bios_latch_update: Unchanged }))
+					(read_le16(mv.vram, relative_addr)?, U16.highest, Unchanged)
 				}
 			}
-			OAM => Ok(Value({ val: read_le16(mv.oam, relative_addr)?, bios_latch_update: Unchanged }))
+			OAM => (read_le16(mv.oam, relative_addr)?, U16.highest, Unchanged)
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
 				if relative_addr.to_u64() + 2 <= mv.gamepak_rom.len() {
-					Ok(Value({ val: read_le16(mv.gamepak_rom, relative_addr)?, bios_latch_update: Unchanged }))
+					(read_le16(mv.gamepak_rom, relative_addr)?, U16.highest, Unchanged)
 				} else {
 					# Out of bound addr -> ROM will not WB value
 					# So the CPU will just read the low 16 bits of Halfword addr back.
-					Ok(Value({ val: addr.shr_wrap(1).to_u16_wrap(), bios_latch_update: Unchanged }))
+					(addr.shr_wrap(1).to_u16_wrap(), U16.highest, Unchanged)
 				}
 			}
-			SystemROM => Ok(Value({ val: read_le16(mv.bios, relative_addr)?, bios_latch_update: Unchanged }))
+			SystemROM => {
+				word = read_bios_word(mv.bios, relative_addr, cxt)?
+				offset = addr.to_u8_wrap().bitwise_and(0b10) * 8
+				value = word.shr_wrap(offset).to_u16_wrap()
+				(value, U16.highest, if (cxt.bios_readable) Updated(word) else Unchanged)
+			}
 			IORegs => {
-				if relative_addr < 0x60 {
-					Ok(Value({ val: DisplayRegs.read16(mv.display, relative_addr)?, bios_latch_update: Unchanged }))
-				} else {
-					Ok(NeedsSlow)
-				}
+				if (relative_addr >= 0x60) return Ok(NeedsSlow)
+				(DisplayRegs.read16(mv.display, relative_addr)?, U16.highest, Unchanged)
 			}
-			GamePakRAM => Ok(NeedsSlow)
-			_ => Err(UnsupportedRegion(region))
+			GamePakRAM => return Ok(NeedsSlow)
+			Unused => (0, 0, Unchanged)
 		}
+		shift = addr.to_u8_wrap().bitwise_and(2) * 8
+		val = resolve_read16(device_val, device_mask, cxt.open_bus, shift)?
+		Ok(Value({ val, bios_latch_update }))
 	}
 
 	write16 : Bus,
@@ -789,6 +813,34 @@ read_le32 = |lst, relative_addr| {
 	k = lst.get(relative_addr.plus(1).to_u64())?.to_u32()
 	l = lst.get(relative_addr.to_u64())?.to_u32()
 	Ok(i.shl_wrap(24) + j.shl_wrap(16) + k.shl_wrap(8) + l)
+}
+
+resolve_read8 : U8, U8, [None, Value(U32)], U8 -> Try(U8, [MissingOpenBus])
+resolve_read8 = |val, device_mask, open_bus, shift| {
+	if (device_mask == U8.highest) return Ok(val)
+	match open_bus {
+		None => Err(MissingOpenBus)
+		Value(bus) => {
+			quad = bus.shr_wrap(shift).to_u8_wrap()
+			bus_bits = quad.bitwise_and(device_mask.bitwise_not())
+			device_bits = val.bitwise_and(device_mask)
+			Ok(device_bits.bitwise_or(bus_bits))
+		}
+	}
+}
+
+resolve_read16 : U16, U16, [None, Value(U32)], U8 -> Try(U16, [MissingOpenBus])
+resolve_read16 = |val, device_mask, open_bus, shift| {
+	if (device_mask == U16.highest) return Ok(val)
+	match open_bus {
+		None => Err(MissingOpenBus)
+		Value(bus) => {
+			half = bus.shr_wrap(shift).to_u16_wrap()
+			bus_bits = half.bitwise_and(device_mask.bitwise_not())
+			device_bits = val.bitwise_and(device_mask)
+			Ok(device_bits.bitwise_or(bus_bits))
+		}
+	}
 }
 
 resolve_read32 : U32, U32, [None, Value(U32)] -> Try(U32, [MissingOpenBus])
