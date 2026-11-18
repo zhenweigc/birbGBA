@@ -1,6 +1,7 @@
 import ARM7TDMI
 import Bus
 import BusSignals
+import MemoryRegion
 import CpuTypes
 
 BlockPhase : [Fetch, Execute(ARM7TDMI.Execution_state)]
@@ -19,7 +20,12 @@ Cpu := {
 	data_read_context : ARM7TDMI, CpuTypes.Pipeline, BusSignals -> Bus.ReadContext
 	data_read_context = |core, pipe, signal| {
 		{
-			open_bus: if (ARM7TDMI.is_thumb(core)) None else arm_prefetch_word(pipe),
+			open_bus: if ARM7TDMI.is_thumb(core) {
+				thumb_open_bus_candidate(ARM7TDMI.getPC(core), pipe)
+			}
+			else {
+				arm_open_bus_candidate(pipe)
+			},
 			bios_latch: BusSignals.get_bios_latch(signal),
 			bios_readable: ARM7TDMI.getPC(core) < 0x4000,
 		}
@@ -435,10 +441,38 @@ finish_block = |core, engine, actions_completed, exit_reason, mv, dma_schedule_a
 	}
 }
 
-arm_prefetch_word : CpuTypes.Pipeline -> [None, Value(U32)]
-arm_prefetch_word = |pipe| {
+arm_open_bus_candidate : CpuTypes.Pipeline -> [None, Value(U32)]
+arm_open_bus_candidate = |pipe| {
 	match pipe {
 		Ready({ second: Opcode(word), .. }) => Value(word)
+		_ => None
+	}
+}
+
+# https://problemkaputt.de/gbatek-gba-unpredictable-things.htm
+thumb_open_bus_candidate : U32, CpuTypes.Pipeline -> [None, Value(U32)]
+thumb_open_bus_candidate = |pc, pipe| {
+	match pipe {
+		Ready({ first, second: Opcode(word2), .. }) => {
+			match MemoryRegion.memory_map_decode(pc.plus_wrap(4)).region {
+				CPUExternalRAM | PaletteRAM | VRAM | GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 =>
+					Value(word2.shl_wrap(16) + word2.bitwise_and(0xFFFF))
+				CPUInternalRAM => match first {
+					Opcode(word1) => if pc.bitwise_and(0b11) == 0 {
+						Value(word1.shl_wrap(16) + word2)
+					} else {
+						Value(word2.shl_wrap(16) + word1)
+					}
+					_ => None
+				}
+				SystemROM | OAM => match first {
+					Opcode(word1) if pc.bitwise_and(0b10) != 0 =>
+						Value(word2.shl_wrap(16) + word1)
+					_ => None # Higher halfword needs PC+6, well I do not have it here.
+				}
+				_ => None
+			}
+		}
 		_ => None
 	}
 }
