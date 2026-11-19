@@ -112,6 +112,17 @@ DisplayRegs :: {
 		}
 	}
 
+	read_bus8 : DisplayRegs, U32 -> Try({ val : U8, device_mask : U8 }, [UnsupportedIORegOffset(U32)])
+	read_bus8 = |rgs, addr| {
+		match addr {
+			offset if (offset >= 0x10 and offset < 0x48)
+				or (offset >= 0x4c and offset < 0x50)
+				or (offset >= 0x54 and offset < 0x60) =>
+				Ok({ val: 0, device_mask: 0 })
+			_ => Ok({ val: read8(rgs, addr)?, device_mask: U8.highest })
+		}
+	}
+
 	read8 : DisplayRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
 	read8 = |rgs, addr| {
 		match addr {
@@ -143,6 +154,19 @@ DisplayRegs :: {
 		}
 	}
 
+	# The fast and slow paths share this helper so their open-bus masks stay in sync
+	# elsewise passing openbus masking becomes a big hassle
+	read_bus16 : DisplayRegs, U32 -> Try({ val : U16, device_mask : U16 }, [UnsupportedIORegOffset(U32)])
+	read_bus16 = |rgs, addr| {
+		match addr {
+			offset if ((offset >= 0x10 and offset < 0x48)
+				or (offset >= 0x4c and offset < 0x50)
+				or (offset >= 0x54 and offset < 0x60)) and offset.mod_by(2) == 0 =>
+				Ok({ val: 0, device_mask: 0 })
+			_ => Ok({ val: read16(rgs, addr)?, device_mask: U16.highest })
+		}
+	}
+
 	read16 : DisplayRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
 	read16 = |rgs, addr| {
 		match addr {
@@ -159,6 +183,17 @@ DisplayRegs :: {
 			0x50 => Ok(rgs.bldcnt)
 			0x52 => Ok(rgs.bldalpha)
 			_ => Err(UnsupportedIORegOffset(addr))
+		}
+	}
+
+	read_bus32 : DisplayRegs, U32 -> Try({ val : U32, device_mask : U32 }, [UnsupportedIORegOffset(U32)])
+	read_bus32 = |rgs, addr| {
+		match addr {
+			offset if ((offset >= 0x10 and offset < 0x48)
+				or (offset >= 0x4c and offset < 0x50)
+				or (offset >= 0x54 and offset < 0x60)) and offset.mod_by(4) == 0 =>
+				Ok({ val: 0, device_mask: 0 })
+			_ => Ok({ val: read32(rgs, addr)?, device_mask: U32.highest })
 		}
 	}
 

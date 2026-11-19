@@ -210,7 +210,8 @@ Bus := {
 			}
 			IORegs => {
 				if (relative_addr >= 0x60) return Ok(NeedsSlow)
-				(DisplayRegs.read8(mv.display, relative_addr)?, U8.highest, Unchanged)
+				rtn = DisplayRegs.read_bus8(mv.display, relative_addr)?
+				(rtn.val, rtn.device_mask, Unchanged)
 			}
 			GamePakRAM => return Ok(NeedsSlow)
 			Unused => (0, 0, Unchanged)
@@ -270,7 +271,14 @@ Bus := {
 				if window_offset >= maximum_addr {
 					Ok({ ..bus, signal: new_signal })
 				} else {
-					Ok({ ..bus, vram: (bus.vram).set(aligned_addr.to_u64(), cxt)?.set(aligned_addr.plus(1).to_u64(), cxt)?, signal: new_signal })
+					Ok({
+						..bus,
+						vram: (bus.vram).set(aligned_addr.to_u64(), cxt)?.set(
+							aligned_addr.plus(1).to_u64(),
+							cxt,
+						)?,
+						signal: new_signal,
+					})
 				}
 			}
 			OAM => Ok({ ..bus, signal: new_signal }) # GBAtek explicitly said no 1byte write
@@ -394,7 +402,8 @@ Bus := {
 			}
 			IORegs => {
 				if (relative_addr >= 0x60) return Ok(NeedsSlow)
-				(DisplayRegs.read16(mv.display, relative_addr)?, U16.highest, Unchanged)
+				rtn = DisplayRegs.read_bus16(mv.display, relative_addr)?
+				(rtn.val, rtn.device_mask, Unchanged)
 			}
 			GamePakRAM => return Ok(NeedsSlow)
 			Unused => (0, 0, Unchanged)
@@ -588,7 +597,8 @@ Bus := {
 				(word, U32.highest, if (cxt.bios_readable) Updated(word) else Unchanged)
 			}
 			IORegs => if relative_addr < 0x60 {
-				(DisplayRegs.read32(mv.display, relative_addr)?, U32.highest, Unchanged)
+				rtn = DisplayRegs.read_bus32(mv.display, relative_addr)?
+				(rtn.val, rtn.device_mask, Unchanged)
 			} else {
 				return Ok(NeedsSlow)
 			}
