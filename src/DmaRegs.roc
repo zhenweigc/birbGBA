@@ -22,11 +22,15 @@ DmaRegs :: {
 	dma1 : DMAReg,
 	dma2 : DMAReg,
 	dma3 : DMAReg,
+	open_bus_latch : U32,
 }.{
 	Reg : DMAReg
 
 	init : () -> DmaRegs
-	init = || { dma0: dma_init(), dma1: dma_init(), dma2: dma_init(), dma3: dma_init() }
+	init = || { dma0: dma_init(), dma1: dma_init(), dma2: dma_init(), dma3: dma_init(), open_bus_latch: 0 }
+
+	get_open_bus_latch : DmaRegs -> U32
+	get_open_bus_latch = |rgs| rgs.open_bus_latch
 
 	read8 : DmaRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
 	read8 = |rgs, addr| {
@@ -311,7 +315,7 @@ DmaRegs :: {
 				reg
 			}
 		}
-		{ dma0: process(rgs.dma0), dma1: process(rgs.dma1), dma2: process(rgs.dma2), dma3: process(rgs.dma3) }
+		{ ..rgs, dma0: process(rgs.dma0), dma1: process(rgs.dma1), dma2: process(rgs.dma2), dma3: process(rgs.dma3) }
 	}
 
 	schedule_pending : DmaRegs, U64 -> DmaRegs
@@ -326,6 +330,7 @@ DmaRegs :: {
 			}
 		}
 		{
+			..rgs,
 			dma0: process(rgs.dma0),
 			dma1: process(rgs.dma1),
 			dma2: process(rgs.dma2),
@@ -530,10 +535,10 @@ DmaRegs :: {
 		}
 		new_reg = { ..reg, data_latch: val }
 		match selection {
-			0 => Ok({ ..rgs, dma0: new_reg })
-			1 => Ok({ ..rgs, dma1: new_reg })
-			2 => Ok({ ..rgs, dma2: new_reg })
-			_ => Ok({ ..rgs, dma3: new_reg })
+			0 => Ok({ ..rgs, dma0: new_reg, open_bus_latch: val })
+			1 => Ok({ ..rgs, dma1: new_reg, open_bus_latch: val })
+			2 => Ok({ ..rgs, dma2: new_reg, open_bus_latch: val })
+			_ => Ok({ ..rgs, dma3: new_reg, open_bus_latch: val })
 		}
 	}
 }

@@ -706,7 +706,10 @@ timed_read = |m, width, addr, req_kind, purpose| {
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	latch = BusSignals.get_bios_latch(advanced.bus.signal)
 	cxt = {
-		open_bus: None,
+		open_bus: match purpose {
+			Dma(_) => Value(DmaRegs.get_open_bus_latch(advanced.bus.io_regs.dmas))
+			_ => None # Normal CpuData read never pass through this func
+		},
 		bios_latch: latch,
 		bios_readable: purpose == Fetch and addr < 0x4000,
 	}
