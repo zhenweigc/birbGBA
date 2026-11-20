@@ -48,7 +48,7 @@ Thumb_LoadStoreOpCode : {
 	format : Formats,
 }
 
-Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL]
+Conds : [EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL, NV]
 
 ShiftType : [LSL, LSR, ASR, ROR]
 
@@ -862,7 +862,7 @@ arm_instructions_settle = |outcome| Complete({ ..outcome, core: arm_instructions
 
 arm_instructions_execute : U32, ARM7TDMI -> Try(Execution_state, _)
 arm_instructions_execute = |op, c| {
-	cond = arm_opcode_parse_cond(op)?
+	cond = arm_opcode_parse_cond(op)
 	if condition_pass(cond, c.cpsr) {
 		action = arm_instructions_decode(op)?
 		match action {
@@ -1283,7 +1283,6 @@ ARM7TDMI -> Try(
 		WTFisThis,
 		UB_multiplyLong_rd_same_hi_lo,
 		UB_multiplyLong_same_rdlo_rm,
-		UB_multiplyLong_same_rdhi_rm,
 		UB_multiplyLong_use_of_R15,
 		InvalidMode,
 	],
@@ -1301,8 +1300,6 @@ arm_multiply_long_execute = |op, c| {
 	rs_val = cpu_getReg(rs, c)?
 	if rdhi == rdlo {
 		Err(UB_multiplyLong_rd_same_hi_lo)
-	} else if rdhi == rm {
-		Err(UB_multiplyLong_same_rdhi_rm)
 	} else if rdlo == rm {
 		Err(UB_multiplyLong_same_rdlo_rm)
 	} else {
@@ -2339,6 +2336,7 @@ condition_pass = |c, i| {
 		GT => (cpsr_getN(i) == cpsr_getV(i)) and !cpsr_getZ(i)
 		LE => (cpsr_getN(i) != cpsr_getV(i)) or cpsr_getZ(i)
 		AL => Bool.True
+		NV => Bool.False
 	}
 }
 
@@ -2611,7 +2609,6 @@ ARM7TDMI -> Try(
 	[
 		InvalidMode,
 		Branch_Type_Unknown,
-		ReservedinArm7,
 		WTFisThis,
 		UNPREDICTABLE,
 	],
@@ -2628,19 +2625,17 @@ thumb_branch_execute = |op, c| {
 		signed_immed_8 = Bits.get_seg_of_u16_certain(op, 0, 8)
 		extended_immed = Bits.signed_extend_u32(signed_immed_8.to_u32(), 8)
 		cond_val = Bits.get_seg_of_u16_certain(op, 8, 4)
-		if cond_val >= 14 {
-			Err(Branch_Type_Unknown) # SWI and undefined, should be intercepted earlier.
+		# SWI and undefined, should be intercepted earlier.
+		if (cond_val >= 14) return Err(Branch_Type_Unknown)
+		cond = arm_opcode_parse_cond(cond_val.to_u32().shl_wrap(28))
+		if condition_pass(cond, c.cpsr) {
+			Ok({
+				core: cpu_setReg(R15, c, U32.plus_wrap(old_PC.plus_wrap(4), extended_immed.shl_wrap(1)))?,
+				pc_status: PCWritten,
+				remaining_cycles: 0,
+			})
 		} else {
-			cond = arm_opcode_parse_cond(cond_val.to_u32().shl_wrap(28))?
-			if condition_pass(cond, c.cpsr) {
-				Ok({
-					core: cpu_setReg(R15, c, U32.plus_wrap(old_PC.plus_wrap(4), extended_immed.shl_wrap(1)))?,
-					pc_status: PCWritten,
-					remaining_cycles: 0,
-				})
-			} else {
-				Ok({ core: c, pc_status: PCSequential, remaining_cycles: 0 })
-			}
+			Ok({ core: c, pc_status: PCSequential, remaining_cycles: 0 })
 		}
 	} else if Bits.bits_match_16(op, 0b111111111_0_000_111, 0b010001110_0_000_000) {
 		rm = gpr_from_idx(Bits.get_seg_of_u16_certain(op, 3, 4).to_u8_wrap())?
@@ -3721,26 +3716,26 @@ cpu_setReg = |r, core, i| {
 	Ok({ ..core, regs: regs_set(r, m, core.regs, i) })
 }
 
-arm_opcode_parse_cond : U32 -> Try(Conds, [ReservedinArm7])
+arm_opcode_parse_cond : U32 -> Conds
 arm_opcode_parse_cond = |i| {
 	tmp = U32.shr_wrap(i, 28)
 	match tmp {
-		0 => Ok(EQ)
-		1 => Ok(NE)
-		2 => Ok(CS)
-		3 => Ok(CC)
-		4 => Ok(MI)
-		5 => Ok(PL)
-		6 => Ok(VS)
-		7 => Ok(VC)
-		8 => Ok(HI)
-		9 => Ok(LS)
-		10 => Ok(GE)
-		11 => Ok(LT)
-		12 => Ok(GT)
-		13 => Ok(LE)
-		14 => Ok(AL)
-		_ => Err(ReservedinArm7)
+		0 => EQ
+		1 => NE
+		2 => CS
+		3 => CC
+		4 => MI
+		5 => PL
+		6 => VS
+		7 => VC
+		8 => HI
+		9 => LS
+		10 => GE
+		11 => LT
+		12 => GT
+		13 => LE
+		14 => AL
+		_ => NV # Previously throw an Err, now it will just be an always fail like mGBA & NBA
 	}
 }
 

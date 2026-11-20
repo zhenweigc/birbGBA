@@ -225,7 +225,7 @@ Bus := {
 	U32,
 	U8 -> Try(
 		Bus,
-		[OutOfBounds, UnsupportedRegion(MemoryRegion), UnsupportedIORegOffset(U32)],
+		[OutOfBounds, UnsupportedIORegOffset(U32)],
 	)
 	write8 = |bus, addr, cxt| {
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
@@ -290,7 +290,7 @@ Bus := {
 				signal: new_signal,
 			})
 			GamePakRAM => Ok({ ..bus, sram: SRAM.write8(bus.sram, relative_addr, cxt)?, signal: new_signal })
-			_ => Err(UnsupportedRegion(region))
+			Unused => Ok({ ..bus, signal: new_signal })
 		}
 	}
 
@@ -421,7 +421,6 @@ Bus := {
 		Bus,
 		[
 			OutOfBounds,
-			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			UnsupportedIORegOffset(U32),
 		],
@@ -484,7 +483,7 @@ Bus := {
 					sram: SRAM.write8(bus.sram, offset, byte)?,
 				})
 			}
-			_ => Err(UnsupportedRegion(region))
+			Unused => Ok({ ..bus, signal: new_signal })
 		}
 	}
 
@@ -617,7 +616,6 @@ Bus := {
 		Bus,
 		[
 			OutOfBounds,
-			UnsupportedRegion(MemoryRegion),
 			MisalignedAddress(U32),
 			UnsupportedIORegOffset(U32),
 		],
@@ -689,7 +687,7 @@ Bus := {
 					sram: SRAM.write8(bus.sram, offset, byte)?,
 				})
 			}
-			_ => Err(UnsupportedRegion(region))
+			Unused => Ok({ ..bus, signal: new_signal })
 		}
 	}
 
