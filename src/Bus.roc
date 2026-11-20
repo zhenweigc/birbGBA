@@ -12,32 +12,10 @@ ReadResult(val_type, type) : {
 	signal : BusSignals,
 }
 
-ReadPurpose : [Fetch, CpuData, Dma(U8)]
-
-ReadContext : {
-	open_bus : [None, Value(U32)],
-	bios_latch : [None, BIOS(U32)],
-	bios_readable : Bool,
-}
-
 ViewReadResult(val_type) : [
 	NeedsSlow,
 	Value({ val : val_type, bios_latch_update : [Unchanged, Updated(U32)] }),
 ]
-
-MemoryView : {
-	ewram : List(U8),
-	iwram : List(U8),
-	paletteram : List(U8),
-	vram : List(U8),
-	oam : List(U8),
-	gamepak_rom : List(U8),
-	bios : List(U8),
-	display : DisplayRegs,
-	wait_cnt : U16,
-}
-
-WritePurpose : [CpuData, Dma(U8)]
 
 Bus := {
 	ewram : List(U8),
@@ -51,6 +29,28 @@ Bus := {
 	signal : BusSignals,
 	sram : SRAM,
 }.{
+	MemoryView : {
+		ewram : List(U8),
+		iwram : List(U8),
+		paletteram : List(U8),
+		vram : List(U8),
+		oam : List(U8),
+		gamepak_rom : List(U8),
+		bios : List(U8),
+		display : DisplayRegs,
+		wait_cnt : U16,
+	}
+
+	ReadPurpose : [Fetch, CpuData, Dma(U8)]
+
+	ReadContext : {
+		open_bus : [None, Value(U32)],
+		bios_latch : [None, BIOS(U32)],
+		bios_readable : Bool,
+	}
+
+	WritePurpose : [CpuData, Dma(U8)]
+
 	init : List(U8), List(U8), SRAM -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
 	init = |bios, rom, sram| {
 		if rom.len() > 0x02000000 {
