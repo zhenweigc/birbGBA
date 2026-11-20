@@ -149,8 +149,14 @@ update! = |old_model, input, _io| {
 		held
 			=List.keep_if(layout.bindings, (|binding| input.devices.key_down(binding.host)))
 		masks = List.map(held, (|binding| binding.mask))
+
 		pressed = List.fold(masks, 0, U16.bitwise_or)
-		m = Machine.set_pressed(model.machine, pressed)
+		cancel_pressing : U16, U16 -> U16
+		cancel_pressing = |p, mask| if (p.bitwise_and(mask) == mask) p.bitwise_xor(mask) else p
+		# Allowing bidrectional pressing can cause stack issues
+		filter_out_bidirectional_pressing = pressed |> cancel_pressing(0x30) |> cancel_pressing(0xC0)
+
+		m = Machine.set_pressed(model.machine, filter_out_bidirectional_pressing)
 		(new_baseline, new_cps) = match model.speed_baseline {
 			None => (Some({ host_ns, gba_cycles }), model.cycles_per_second)
 			Some(x) => {

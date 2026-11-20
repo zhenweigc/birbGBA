@@ -745,10 +745,32 @@ timed_write = |m, width, addr, val, req_kind, purpose| {
 	Ok({ ..advanced, bus: { ..new_bus, io_regs: { ..new_bus.io_regs, dmas: new_dma_rgs } } })
 }
 
-dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], Bus.WritePurpose -> Try(Machine, _)
-dma_write = |m, width, addr, val, req_kind, purpose| {
+# Write one DMA unit and complete it using the post-write register state, saves RC and memcpy :)
+finish_dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], U8 -> Try(Machine, _)
+finish_dma_write = |m, width, addr, val, req_kind, selection| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
-	timed_write(m, width, aligned_addr, val, req_kind, purpose)
+	bus_width = to_bus_width(width)
+	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, aligned_addr, req_kind)
+	advanced = Machine.advance_to(m, m.now + cycles_needed)?
+	new_bus = match width {
+		W16 => Bus.write16(advanced.bus, aligned_addr, 0, val.to_u16_wrap(), Dma(selection))?
+		W32 => Bus.write32(advanced.bus, aligned_addr, 0, val, Dma(selection))?
+	}
+	scheduled_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
+	(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(scheduled_dma_rgs, selection)?
+	new_sys_rgs = SystemRegs.hardware_request_interrupts(new_bus.io_regs.system, irq_mask)
+	Ok({
+		..advanced,
+		dma_owner: Channel(selection),
+		bus: {
+			..new_bus,
+			io_regs: {
+				..new_bus.io_regs,
+				dmas: new_dma_rgs,
+				system: new_sys_rgs,
+			},
+		},
+	})
 }
 
 dma_transfer_selected : Machine, U8, DmaRegs.Reg, [W16, W32], [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
@@ -790,21 +812,7 @@ dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind
 			val_with_width_considered,
 		)
 	}
-	after_write_m = dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind, Dma(selection))?
-	(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(after_write_m.bus.io_regs.dmas, selection)?
-	new_sys_rgs = SystemRegs.hardware_request_interrupts(after_write_m.bus.io_regs.system, irq_mask)
-	Ok({
-		..after_write_m,
-		dma_owner: Channel(selection),
-		bus: {
-			..after_write_m.bus,
-			io_regs: {
-				..after_write_m.bus.io_regs,
-				dmas: new_dma_rgs,
-				system: new_sys_rgs,
-			},
-		},
-	})
+	finish_dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind, selection)
 }
 
 dma_transfer_unit : Machine, [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
