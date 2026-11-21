@@ -177,60 +177,7 @@ Machine :: {
 	}
 
 	advance_to : Machine, U64 -> Try(Machine, _)
-	advance_to = |m, target| {
-		# Well, under the newest nightly 11-11, returning to the good old one func recursion is better now
-		# Man WIP langs...
-		process_event_or_batch : Machine, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
-		process_event_or_batch = |given_m, given_target, given_at, given_timer_at| {
-			if given_at > given_m.now and given_at < given_m.next_lcd_at {
-				limit = given_target.min(given_m.next_lcd_at - 1)
-				if given_at < limit {
-					match TimerRegs.try_batch_ticks_to_known_next(given_m.bus.io_regs.timers, limit, given_at) {
-						NoBatch => {}
-						Batched(x) => {
-							io_rgs = {
-								..given_m.bus.io_regs,
-								timers: x.timers,
-								# non-overflow ticks CAN schedule pending DMA.
-								dmas: DmaRegs.schedule_pending(given_m.bus.io_regs.dmas, given_at),
-							}
-							return Ok((
-								{ ..given_m, bus: { ..given_m.bus, io_regs: io_rgs }, now: x.last_at },
-								0.U8, # 0 here is useless
-							))
-						}
-					}
-				}
-			}
-			process_event_at(given_m, given_at, given_timer_at)
-		}
-		if (m.power_state == Stopped) return Ok(m)
-		if (target < m.now) return Err(WrongEventTime)
-		timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-		at = match timer_at {
-			None => m.next_lcd_at
-			At(t) => t.min(m.next_lcd_at)
-		}
-		if at <= target {
-			(processed, _) = process_event_or_batch(m, target, at, timer_at)?
-			return advance_to(processed, target)
-		}
-		Ok({
-			..m,
-			bus: {
-				..m.bus,
-				io_regs: {
-					..m.bus.io_regs,
-					timers: TimerRegs.sync_idle_to_known_next(
-						m.bus.io_regs.timers,
-						target,
-						timer_at,
-					)?,
-				},
-			},
-			now: target,
-		})
-	}
+	advance_to = |m, target| advance_to_with(m, target, |advanced| Ok(advanced))
 
 }
 
@@ -289,12 +236,17 @@ run_one_action = |m| {
 
 commit_cpu_state : Machine, CpuTypes.RunState -> Try(Machine, _)
 commit_cpu_state = |m, rs| {
-	advanced = Machine.advance_to(m, rs.now)?
-	Ok({
-		..advanced,
-		cpu: { ..advanced.cpu, hot: rs.hot },
-		bus: { ..advanced.bus, signal: rs.signal },
-	})
+	advance_to_with(
+		m,
+		rs.now,
+		|advanced| {
+			Ok({
+				..advanced,
+				cpu: { ..advanced.cpu, hot: rs.hot },
+				bus: { ..advanced.bus, signal: rs.signal },
+			})
+		},
+	)
 }
 
 run_cpu_chunk : Machine, [None, At(U64)], U32 -> Try({ machine : Machine, actions_completed : U32 }, _)
@@ -703,27 +655,38 @@ timed_read = |m, width, addr, req_kind, purpose| {
 	if (purpose == CpuData) return Err(MissingCpuReadContext)
 	bus_width = to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
-	advanced = Machine.advance_to(m, m.now + cycles_needed)?
-	latch = BusSignals.get_bios_latch(advanced.bus.signal)
-	cxt = {
-		open_bus: match purpose {
-			Dma(_) => Value(DmaRegs.get_open_bus_latch(advanced.bus.io_regs.dmas))
-			_ => None # Normal CpuData read never pass through this func
+	advance_to_with(
+		m,
+		m.now + cycles_needed,
+		|advanced| {
+			latch = BusSignals.get_bios_latch(advanced.bus.signal)
+			cxt = {
+				open_bus: match purpose {
+					Dma(_) => Value(DmaRegs.get_open_bus_latch(advanced.bus.io_regs.dmas))
+					_ => None # Normal CpuData read never pass through this func
+				},
+				bios_latch: latch,
+				bios_readable: purpose == Fetch and addr < 0x4000,
+			}
+			intermediate = match width {
+				W16 => {
+					inner = Bus.read16(advanced.bus, addr, purpose, cxt)?
+					{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
+				}
+				W32 => Bus.read32(advanced.bus, addr, purpose, cxt)?
+			}
+			match intermediate.state {
+				Unchanged => Ok((
+					{ ..advanced, bus: { ..advanced.bus, signal: intermediate.signal } },
+					intermediate.val,
+				))
+				Updated(x) => Ok((
+					{ ..advanced, bus: { ..Box.unbox(x), signal: intermediate.signal } },
+					intermediate.val,
+				)) # Again, side effect of reading
+			}
 		},
-		bios_latch: latch,
-		bios_readable: purpose == Fetch and addr < 0x4000,
-	}
-	intermediate = match width {
-		W16 => {
-			inner = Bus.read16(advanced.bus, addr, purpose, cxt)?
-			{ val: inner.val.to_u32(), state: inner.state, signal: inner.signal }
-		}
-		W32 => Bus.read32(advanced.bus, addr, purpose, cxt)?
-	}
-	match intermediate.state {
-		Unchanged => Ok(({ ..advanced, bus: { ..advanced.bus, signal: intermediate.signal } }, intermediate.val))
-		Updated(x) => Ok(({ ..advanced, bus: { ..Box.unbox(x), signal: intermediate.signal } }, intermediate.val)) # Again, side effect of reading
-	}
+	)
 }
 
 dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
@@ -751,26 +714,31 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
 	bus_width = to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, aligned_addr, req_kind)
-	advanced = Machine.advance_to(m, m.now + cycles_needed)?
-	new_bus = match width {
-		W16 => Bus.write16(advanced.bus, aligned_addr, 0, val.to_u16_wrap(), Dma(selection))?
-		W32 => Bus.write32(advanced.bus, aligned_addr, 0, val, Dma(selection))?
-	}
-	scheduled_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
-	(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(scheduled_dma_rgs, selection)?
-	new_sys_rgs = SystemRegs.hardware_request_interrupts(new_bus.io_regs.system, irq_mask)
-	Ok({
-		..advanced,
-		dma_owner: Channel(selection),
-		bus: {
-			..new_bus,
-			io_regs: {
-				..new_bus.io_regs,
-				dmas: new_dma_rgs,
-				system: new_sys_rgs,
-			},
+	advance_to_with(
+		m,
+		m.now + cycles_needed,
+		|advanced| {
+			new_bus = match width {
+				W16 => Bus.write16(advanced.bus, aligned_addr, 0, val.to_u16_wrap(), Dma(selection))?
+				W32 => Bus.write32(advanced.bus, aligned_addr, 0, val, Dma(selection))?
+			}
+			scheduled_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
+			(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(scheduled_dma_rgs, selection)?
+			new_sys_rgs = SystemRegs.hardware_request_interrupts(new_bus.io_regs.system, irq_mask)
+			Ok({
+				..advanced,
+				dma_owner: Channel(selection),
+				bus: {
+					..new_bus,
+					io_regs: {
+						..new_bus.io_regs,
+						dmas: new_dma_rgs,
+						system: new_sys_rgs,
+					},
+				},
+			})
 		},
-	})
+	)
 }
 
 dma_transfer_selected : Machine, U8, DmaRegs.Reg, [W16, W32], [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
@@ -985,4 +953,64 @@ mark_fetch_nonsequential = |m| {
 			},
 		}
 	}
+}
+
+advance_to_with : Machine, U64, (Machine -> Try(out, _)) -> Try(out, _)
+advance_to_with = |m, target, finish_func| {
+	# The finish_func is also a compiler targeted optimization, if you pass in the finish function
+	# into it, and then just post-process the intermediate result,
+	# so the caller can consume the advanced machine directly
+
+	# Well, under the newest nightly 11-11, returning to the good old one func recursion is better now
+	# Man WIP langs...
+	process_event_or_batch : Machine, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
+	process_event_or_batch = |given_m, given_target, given_at, given_timer_at| {
+		if given_at > given_m.now and given_at < given_m.next_lcd_at {
+			limit = given_target.min(given_m.next_lcd_at - 1)
+			if given_at < limit {
+				match TimerRegs.try_batch_ticks_to_known_next(given_m.bus.io_regs.timers, limit, given_at) {
+					NoBatch => {}
+					Batched(x) => {
+						io_rgs = {
+							..given_m.bus.io_regs,
+							timers: x.timers,
+							# non-overflow ticks CAN schedule pending DMA.
+							dmas: DmaRegs.schedule_pending(given_m.bus.io_regs.dmas, given_at),
+						}
+						return Ok((
+							{ ..given_m, bus: { ..given_m.bus, io_regs: io_rgs }, now: x.last_at },
+							0.U8, # 0 here is useless
+						))
+					}
+				}
+			}
+		}
+		process_event_at(given_m, given_at, given_timer_at)
+	}
+	if (m.power_state == Stopped) return finish_func(m)
+	if (target < m.now) return Err(WrongEventTime)
+	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+	at = match timer_at {
+		None => m.next_lcd_at
+		At(t) => t.min(m.next_lcd_at)
+	}
+	if at <= target {
+		(processed, _) = process_event_or_batch(m, target, at, timer_at)?
+		return advance_to_with(processed, target, finish_func)
+	}
+	finish_func({
+		..m,
+		bus: {
+			..m.bus,
+			io_regs: {
+				..m.bus.io_regs,
+				timers: TimerRegs.sync_idle_to_known_next(
+					m.bus.io_regs.timers,
+					target,
+					timer_at,
+				)?,
+			},
+		},
+		now: target,
+	})
 }

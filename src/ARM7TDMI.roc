@@ -1384,12 +1384,36 @@ ARM7TDMI -> Try(
 	],
 )
 arm_single_data_transfer_execute = |op, c| {
+	sdt_offset : [Imm12(U32), Reg(GPR)] -> Try(U32, [UNPREDICTABLE, InvalidMode])
+	sdt_offset = |given| {
+		match given {
+			Reg(R15) => Err(UNPREDICTABLE)
+			Imm12(x) => Ok(x)
+			Reg(rm) => {
+				pre_shift = cpu_getReg(rm, c)?
+				shift_imm = Bits.get_seg_of_u32_certain(op, 7, 5).to_u8_wrap()
+				Ok(
+					data_processing_shift_by_immediate(
+						arm_data_processing_get_shift_type(op),
+						pre_shift,
+						shift_imm,
+						cpsr_getC(c.cpsr),
+					).val,
+				)
+			}
+		}
+	}
 	i_bit = Bits.get_ith_bit_u32_certain(op, 25)
 	p_bit = Bits.get_ith_bit_u32_certain(op, 24)
 	u_bit = Bits.get_ith_bit_u32_certain(op, 23)
 	w_bit = Bits.get_ith_bit_u32_certain(op, 21)
 	rd = get_gpr_12_15(op)?
 	rn = get_gpr_16_19(op)?
+	offset_src = if i_bit {
+		Reg(get_gpr_0_3(op)?)
+	} else {
+		Imm12(Bits.get_seg_of_u32_certain(op, 0, 12))
+	}
 	match arm_single_data_transfer_decode(op) {
 		LDR => {
 			base = if rn == R15 {
@@ -1397,40 +1421,16 @@ arm_single_data_transfer_execute = |op, c| {
 			} else {
 				cpu_getReg(rn, c)?
 			}
-			offset = if i_bit {
-				rm = get_gpr_0_3(op)?
-				pre_shift = match rm {
-					R15 => return Err(UNPREDICTABLE)
-					_ => cpu_getReg(rm, c)?
-				}
-				shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-				data_processing_shift_by_immediate(
-					arm_data_processing_get_shift_type(op),
-					pre_shift,
-					shift_imm,
-					cpsr_getC(c.cpsr),
-				).val
-			} else {
-				Bits.get_seg_of_u32_certain(op, 0, 12)
-			}
+			offset = sdt_offset(offset_src)?
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
 			} else {
 				U32.minus_wrap(base, offset)
 			}
-			addr = if p_bit {
-				if rd == R15 and Bits.get_seg_of_u32_certain(adjusted, 0, 2) != 0 {
-					return Err(UNPREDICTABLE)
-				} else {
-					U32.bitwise_and(adjusted, 0xFFFFFFFC)
-				}
-			} else {
-				if rd == R15 and Bits.get_seg_of_u32_certain(base, 0, 2) != 0 {
-					return Err(UNPREDICTABLE)
-				} else {
-					U32.bitwise_and(base, 0xFFFFFFFC)
-				}
-			}
+			raw_addr = if (p_bit) adjusted else base
+			low = raw_addr.to_u8_wrap().bitwise_and(0b11)
+			if (rd == R15 and low != 0) return Err(UNPREDICTABLE)
+			addr = raw_addr.bitwise_and(0xFFFFFFFC)
 			Ok(
 				R({
 					core: c,
@@ -1438,13 +1438,7 @@ arm_single_data_transfer_execute = |op, c| {
 					width: W32,
 					continuation: SetRegAndFinish({
 						rd: rd,
-						rot: RotRight(
-							Bits.get_seg_of_u32_certain(
-								if (p_bit) adjusted else base,
-								0,
-								2,
-							).to_u8_wrap().times_wrap(8),
-						),
+						rot: RotRight(low.times_wrap(8)),
 						wba: if !(w_bit or !(p_bit)) {
 							NoWriteBack
 						} else if rn == R15 {
@@ -1463,22 +1457,7 @@ arm_single_data_transfer_execute = |op, c| {
 		STR => {
 			rd_val = if (rd == R15) pc_inc(c.regs.r15, 12) else cpu_getReg(rd, c)?
 			base = if (rn == R15) pc_inc(c.regs.r15, 8) else cpu_getReg(rn, c)?
-			offset = if i_bit {
-				rm = get_gpr_0_3(op)?
-				pre_shift = match rm {
-					R15 => return Err(UNPREDICTABLE)
-					_ => cpu_getReg(rm, c)?
-				}
-				shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-				data_processing_shift_by_immediate(
-					arm_data_processing_get_shift_type(op),
-					pre_shift,
-					shift_imm,
-					cpsr_getC(c.cpsr),
-				).val
-			} else {
-				Bits.get_seg_of_u32_certain(op, 0, 12)
-			}
+			offset = sdt_offset(offset_src)?
 			adjusted = if (u_bit) U32.plus_wrap(base, offset) else U32.minus_wrap(base, offset)
 			raw_addr = if (p_bit) adjusted else base
 			addr = raw_addr.bitwise_and(0xFFFFFFFC)
@@ -1491,7 +1470,7 @@ arm_single_data_transfer_execute = |op, c| {
 					val: rd_val,
 					continuation: StoreAndFinish({
 						wba: if w_bit or !(p_bit) {
-							if (rn == R15 or (i_bit and get_gpr_0_3(op)? == rn)) return Err(UNPREDICTABLE)
+							if (rn == R15 or offset_src == Reg(rn)) return Err(UNPREDICTABLE)
 							WriteBack({ rn: rn, val: adjusted })
 						} else {
 							NoWriteBack
@@ -1505,22 +1484,7 @@ arm_single_data_transfer_execute = |op, c| {
 		STRB => {
 			rd_val = if (rd == R15) return Err(UNPREDICTABLE) else cpu_getReg(rd, c)?
 			base = if (rn == R15) pc_inc(c.regs.r15, 8) else cpu_getReg(rn, c)?
-			offset = if i_bit {
-				rm = get_gpr_0_3(op)?
-				pre_shift = match rm {
-					R15 => return Err(UNPREDICTABLE)
-					_ => cpu_getReg(rm, c)?
-				}
-				shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-				data_processing_shift_by_immediate(
-					arm_data_processing_get_shift_type(op),
-					pre_shift,
-					shift_imm,
-					cpsr_getC(c.cpsr),
-				).val
-			} else {
-				Bits.get_seg_of_u32_certain(op, 0, 12)
-			}
+			offset = sdt_offset(offset_src)?
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
 			} else {
@@ -1536,7 +1500,7 @@ arm_single_data_transfer_execute = |op, c| {
 					val: rd_val,
 					continuation: StoreAndFinish({
 						wba: if w_bit or !(p_bit) {
-							if rn == R15 or rd == rn or (i_bit and get_gpr_0_3(op)? == rn) {
+							if rn == R15 or rd == rn or offset_src == Reg(rn) {
 								return Err(UNPREDICTABLE)
 							} else {
 								WriteBack({ rn: rn, val: adjusted })
@@ -1559,22 +1523,7 @@ arm_single_data_transfer_execute = |op, c| {
 				} else {
 					cpu_getReg(rn, c)?
 				}
-				offset = if i_bit {
-					rm = get_gpr_0_3(op)?
-					pre_shift = match rm {
-						R15 => return Err(UNPREDICTABLE)
-						_ => cpu_getReg(rm, c)?
-					}
-					shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-					data_processing_shift_by_immediate(
-						arm_data_processing_get_shift_type(op),
-						pre_shift,
-						shift_imm,
-						cpsr_getC(c.cpsr),
-					).val
-				} else {
-					Bits.get_seg_of_u32_certain(op, 0, 12)
-				}
+				offset = sdt_offset(offset_src)?
 				adjusted = if u_bit {
 					U32.plus_wrap(base, offset)
 				} else {
@@ -1610,26 +1559,8 @@ arm_single_data_transfer_execute = |op, c| {
 				Err(UNPREDICTABLE)
 			} else {
 				base = cpu_getReg(rn, c)?
-				offset = if i_bit {
-					rm = get_gpr_0_3(op)?
-					if rm == rn {
-						return Err(UNPREDICTABLE)
-					} else {
-						pre_shift = match rm {
-							R15 => return Err(UNPREDICTABLE)
-							_ => cpu_getReg(rm, c)?
-						}
-						shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-						data_processing_shift_by_immediate(
-							arm_data_processing_get_shift_type(op),
-							pre_shift,
-							shift_imm,
-							cpsr_getC(c.cpsr),
-						).val
-					}
-				} else {
-					Bits.get_seg_of_u32_certain(op, 0, 12)
-				}
+				if (offset_src == Reg(rn)) return Err(UNPREDICTABLE)
+				offset = sdt_offset(offset_src)?
 				adjusted = if u_bit {
 					U32.plus_wrap(base, offset)
 				} else {
@@ -1662,26 +1593,8 @@ arm_single_data_transfer_execute = |op, c| {
 				Err(UNPREDICTABLE)
 			} else {
 				base = cpu_getReg(rn, c)?
-				offset = if i_bit {
-					rm = get_gpr_0_3(op)?
-					if rm == rn {
-						return Err(UNPREDICTABLE)
-					} else {
-						pre_shift = match rm {
-							R15 => return Err(UNPREDICTABLE)
-							_ => cpu_getReg(rm, c)?
-						}
-						shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-						data_processing_shift_by_immediate(
-							arm_data_processing_get_shift_type(op),
-							pre_shift,
-							shift_imm,
-							cpsr_getC(c.cpsr),
-						).val
-					}
-				} else {
-					Bits.get_seg_of_u32_certain(op, 0, 12)
-				}
+				if (offset_src == Reg(rn)) return Err(UNPREDICTABLE)
+				offset = sdt_offset(offset_src)?
 				adjusted = if u_bit {
 					U32.plus_wrap(base, offset)
 				} else {
@@ -1715,26 +1628,8 @@ arm_single_data_transfer_execute = |op, c| {
 			} else {
 				cpu_getReg(rn, c)?
 			}
-			offset = if i_bit {
-				rm = get_gpr_0_3(op)?
-				if rm == rn {
-					return Err(UNPREDICTABLE)
-				} else {
-					pre_shift = match rm {
-						R15 => return Err(UNPREDICTABLE)
-						_ => cpu_getReg(rm, c)?
-					}
-					shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-					data_processing_shift_by_immediate(
-						arm_data_processing_get_shift_type(op),
-						pre_shift,
-						shift_imm,
-						cpsr_getC(c.cpsr),
-					).val
-				}
-			} else {
-				Bits.get_seg_of_u32_certain(op, 0, 12)
-			}
+			if (offset_src == Reg(rn)) return Err(UNPREDICTABLE)
+			offset = sdt_offset(offset_src)?
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
 			} else {
@@ -1763,26 +1658,8 @@ arm_single_data_transfer_execute = |op, c| {
 			} else {
 				cpu_getReg(rn, c)?
 			}
-			offset = if i_bit {
-				rm = get_gpr_0_3(op)?
-				if rm == rn {
-					return Err(UNPREDICTABLE)
-				} else {
-					pre_shift = match rm {
-						R15 => return Err(UNPREDICTABLE)
-						_ => cpu_getReg(rm, c)?
-					}
-					shift_imm = U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 7, 5))
-					data_processing_shift_by_immediate(
-						arm_data_processing_get_shift_type(op),
-						pre_shift,
-						shift_imm,
-						cpsr_getC(c.cpsr),
-					).val
-				}
-			} else {
-				Bits.get_seg_of_u32_certain(op, 0, 12)
-			}
+			if (offset_src == Reg(rn)) return Err(UNPREDICTABLE)
+			offset = sdt_offset(offset_src)?
 			adjusted = if u_bit {
 				U32.plus_wrap(base, offset)
 			} else {
