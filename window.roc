@@ -1,5 +1,5 @@
 app [Model, program] {
-	roc: "nightly-2026-11-20-3b29392",
+	roc: "0.1.0-RC1",
 	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.12.3/default-5dNxpAJgNbQLwNCvyiSS44ReCG5bm2v34uKzFQH97rWC.tar.zst",
 }
 
@@ -14,7 +14,9 @@ import rr.Files
 import rr.Task
 
 import src/Machine
+import src/Save
 import src/SRAM
+import src/EEPROM
 import src/Bus
 import src/Bits
 
@@ -80,7 +82,8 @@ init! = App.init(
 		dir = io.files().working_directory!()?
 		bios = dir.read_bytes!("bios.bin")?
 		rom = dir.read_bytes!("game.gba")?
-		save = load_save!(dir)?
+		kind = Save.detect_save_type(rom)
+		save = load_save!(dir, kind)?
 		machine = Machine.init(bios, rom, save)?
 
 		texture = Assets.generate_color_texture!({
@@ -239,25 +242,44 @@ render! = |model, frame| {
 	Ok({})
 }
 
-load_save! : Files.Dir => Try(SRAM, _)
-load_save! = |dir| {
+load_save! : Files.Dir, Save.Kind => Try(Save, _)
+load_save! = |dir, kind| {
 	match dir.read_bytes!("game.sav") {
-		Err(NotFound) => Ok(SRAM.init())
+		Err(NotFound) => {
+			match kind {
+				# Test ROMs? Well let us just shove SRAM into it to make sure it does not panic upon basic testings
+				SRAM | Unrecognized => Ok(SRAM(SRAM.init()))
+				EEPROM => Ok(EEPROM(EEPROM.init()))
+				FLASH => Err(NotYet)
+			}
+		}
 		Err(e) => Err(e)
 		Ok(save) => {
-			match dir.read_bytes!("game.sav.meta") {
-				Err(NotFound) => Ok(SRAM.from_save(save)?)
-				Err(e) => Err(e)
+			bytes = match dir.read_bytes!("game.sav.meta") {
+				Err(NotFound) => save
+				Err(e) => return Err(e)
 				Ok(meta) => {
-					ecc = decode_save_meta(meta)?
-					SRAM.from_save(
-						SRAM.repair_save(
+					ecc = decode_save_meta(meta, save.len())?
+					match kind {
+						SRAM | Unrecognized => SRAM.repair_save(
 							save,
 							ecc,
 							Bits.golay_init_corrections()?,
-						)?,
-					)
+						)?
+						EEPROM => EEPROM.repair_save(
+							save,
+							ecc,
+							Bits.golay_init_corrections()?,
+						)?
+						FLASH => return Err(NotYet)
+					}
 				}
+			}
+			match kind {
+				SRAM | Unrecognized => Ok(SRAM(SRAM.from_save(bytes)?))
+				EEPROM => Ok(EEPROM(EEPROM.from_save(bytes)?))
+				# Before you ask why the hell I dont just intercept FLASH in top level, well this seemly dumb way allow to happy ctrl CV later
+				FLASH => Err(NotYet)
 			}
 		}
 	}
@@ -278,23 +300,26 @@ write_save! = |dir, cxt| {
 start_save! : Model, App.Input(Msg) => Try(Model, [InvalidEccLength])
 start_save! = |model, input| {
 	if (model.save_status == Saving) return Ok(model)
-	sram = model.machine.get_sram()
-	bytes = sram.get_bytes()
-	saved = sram.get_saved()
+	save = model.machine.get_save()
+	bytes = match save.bytes_for_save() {
+		None => return Ok(model)
+		Some(payload) => payload
+	}
+	saved = save.get_saved()
 	new_ecc = SRAM.gen_ecc_of_save(bytes)
 	match (model.save_status, saved) {
 		(Idle, Some(info)) if info.ecc == new_ecc => {
 			return Ok({
 				..model,
-				machine: Machine.mark_sram_saved(model.machine, { ..info, time: input.time.monotonic_nanos }),
+				machine: Machine.mark_saved(model.machine, { ..info, time: input.time.monotonic_nanos }),
 			})
 		}
 		_ => {}
 	}
 	cxt = {
 		save: bytes,
-		pending_meta: encode_save_meta(new_ecc, Pending)?,
-		complete_meta: encode_save_meta(new_ecc, Complete)?,
+		pending_meta: encode_save_meta(new_ecc, Pending, bytes.len())?,
+		complete_meta: encode_save_meta(new_ecc, Complete, bytes.len())?,
 	}
 	Task.spawn!(
 		input,
@@ -373,20 +398,21 @@ apply_save_message = |model, msg| {
 		SaveFinished(Ok(info)) => {
 			..model,
 			save_status: Idle,
-			machine: Machine.mark_sram_saved(model.machine, info),
+			machine: Machine.mark_saved(model.machine, info),
 		}
 		SaveFinished(Err(e)) => { ..model, save_status: Failed(e) }
 	}
 }
 
-encode_save_meta : List(U8), [Pending, Complete] -> Try(List(U8), [InvalidEccLength])
-encode_save_meta = |ecc, state| {
-	if (ecc.len() != 32769) return Err(InvalidEccLength)
+encode_save_meta : List(U8), [Pending, Complete], U64 -> Try(List(U8), [InvalidEccLength])
+encode_save_meta = |ecc, state, byte_len| {
+	if (ecc.len() != ecc_len_for(byte_len)) return Err(InvalidEccLength)
 	header = "BGSV".to_utf8().append(1).append(if (state == Pending) 0 else 1)
 	Ok(header.concat(ecc))
 }
 
-decode_save_meta : List(U8) -> Try(
+decode_save_meta : List(U8),
+U64 -> Try(
 	List(U8),
 	[
 		InvalidMetaLength,
@@ -397,8 +423,8 @@ decode_save_meta : List(U8) -> Try(
 		OutOfBounds,
 	],
 )
-decode_save_meta = |meta| {
-	if (meta.len() != 32775) return Err(InvalidMetaLength)
+decode_save_meta = |meta, len_of_save| {
+	if (meta.len() != (ecc_len_for(len_of_save) + 6)) return Err(InvalidMetaLength)
 	if (meta.take_first(4) != "BGSV".to_utf8()) return Err(InvalidMetaMagic)
 	if (meta.get(4)? != 1) return Err(UnsupportedMetaVersion)
 	if (meta.get(5)? == 0) return Err(IncompleteSave)
@@ -411,9 +437,12 @@ save_due = |model, time| {
 	match model.save_status {
 		Saving => False
 		Failed(_) => time - model.last_save_attempt_ns >= 1_000_000_000
-		Idle => match model.machine.get_sram().get_saved() {
+		Idle => match model.machine.get_save().get_saved() {
 			None => True
 			Some(info) => time - info.time >= 1_000_000_000
 		}
 	}
 }
+
+ecc_len_for : U64 -> U64
+ecc_len_for = |byte_len| ((byte_len + 2) // 3) * 3

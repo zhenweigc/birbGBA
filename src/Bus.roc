@@ -4,7 +4,9 @@ import SystemRegs
 import Bits
 import BusSignals
 import DisplayRegs
+import Save
 import SRAM
+import EEPROM
 
 ReadResult(val_type, type) : {
 	val : val_type,
@@ -27,7 +29,8 @@ Bus := {
 	bios : List(U8),
 	io_regs : IoRegs,
 	signal : BusSignals,
-	sram : SRAM,
+	save : Save,
+	eeprom_window_base : [None, Some(U32)],
 }.{
 	MemoryView : {
 		ewram : List(U8),
@@ -39,6 +42,7 @@ Bus := {
 		bios : List(U8),
 		display : DisplayRegs,
 		wait_cnt : U16,
+		eeprom_window_base : [None, Some(U32)],
 	}
 
 	ReadPurpose : [Fetch, CpuData, Dma(U8)]
@@ -51,8 +55,8 @@ Bus := {
 
 	WritePurpose : [CpuData, Dma(U8)]
 
-	init : List(U8), List(U8), SRAM -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
-	init = |bios, rom, sram| {
+	init : List(U8), List(U8), Save -> Try(Bus, [ROMSizeTooLarge, InvalidBIOSSize])
+	init = |bios, rom, save| {
 		if rom.len() > 0x02000000 {
 			Err(ROMSizeTooLarge)
 		} else if bios.len() != 0x4000 {
@@ -68,7 +72,13 @@ Bus := {
 				bios: bios,
 				io_regs: IoRegs.init(),
 				signal: BusSignals.init(),
-				sram: sram,
+				save: save,
+				eeprom_window_base: match save {
+					SRAM(_) => None
+					# https://problemkaputt.de/gbatek.htm#gbacartbackupeeprom
+					EEPROM(_) if rom.len() <= 0x01000000 => Some(0x0D000000)
+					EEPROM(_) => Some(0x0DFFFF00)
+				},
 			})
 		}
 	}
@@ -88,6 +98,7 @@ Bus := {
 				bios: bus.bios,
 				display: bus.io_regs.display,
 				wait_cnt: SystemRegs.get_waitcnt(bus.io_regs.system),
+				eeprom_window_base: bus.eeprom_window_base,
 			},
 		)
 	}
@@ -96,7 +107,7 @@ Bus := {
 	restore_memory_view = |(bus, mv)| { ..bus, ewram: mv.ewram, iwram: mv.iwram }
 
 	set_sram_info : Bus, { time : U64, ecc : List(U8) } -> Bus
-	set_sram_info = |bus, saved| { ..bus, sram: SRAM.set_saved(bus.sram, Some(saved)) }
+	set_sram_info = |bus, saved| { ..bus, save: Save.mark_saved(bus.save, Some(saved)) }
 
 	read_bios_word : List(U8), U32, ReadContext -> Try(U32, [OutOfBounds, MissingBIOSLatch])
 	read_bios_word = |bios, addr, cxt| {
@@ -163,7 +174,7 @@ Bus := {
 					Unchanged,
 				)
 			}
-			GamePakRAM => (SRAM.read8(bus.sram, relative_addr)?, U8.highest, Unchanged, Unchanged)
+			GamePakRAM => (Save.read_gamepak_ram8(bus.save, relative_addr)?, U8.highest, Unchanged, Unchanged)
 			Unused => (0, 0, Unchanged, Unchanged)
 		}
 		shift = addr.to_u8_wrap().bitwise_and(0b11) * 8
@@ -289,7 +300,7 @@ Bus := {
 				io_regs: IoRegs.write8(bus.io_regs, relative_addr, cxt)?,
 				signal: new_signal,
 			})
-			GamePakRAM => Ok({ ..bus, sram: SRAM.write8(bus.sram, relative_addr, cxt)?, signal: new_signal })
+			GamePakRAM => Ok({ ..bus, save: Save.write_gamepak_ram8(bus.save, relative_addr, cxt)?, signal: new_signal })
 			Unused => Ok({ ..bus, signal: new_signal })
 		}
 	}
@@ -324,14 +335,27 @@ Bus := {
 			}
 			OAM => (read_le16(bus.oam, relative_addr)?, U16.highest, Unchanged, Unchanged)
 			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
-				value = if relative_addr.to_u64() + 2 <= bus.gamepak_rom.len() {
-					read_le16(bus.gamepak_rom, relative_addr)?
-				} else {
-					# Out of bound addr -> ROM will not WB value
-					# So the CPU will just read the low 16 bits of Halfword addr back.
-					addr.shr_wrap(1).to_u16_wrap()
+				match bus.save {
+					EEPROM(chip) if hits_eeprom(bus.eeprom_window_base, addr) => {
+						(eeprom_nxt, bit) = EEPROM.read16(chip)?
+						(
+							bit,
+							U16.highest,
+							Updated(Box.box({ ..bus, save: EEPROM(eeprom_nxt) })),
+							Unchanged,
+						)
+					}
+					_ => {
+						value = if relative_addr.to_u64() + 2 <= bus.gamepak_rom.len() {
+							read_le16(bus.gamepak_rom, relative_addr)?
+						} else {
+							# Out of bound addr -> ROM will not WB value
+							# So the CPU will just read the low 16 bits of Halfword addr back.
+							addr.shr_wrap(1).to_u16_wrap()
+						}
+						(value, U16.highest, Unchanged, Unchanged)
+					}
 				}
-				(value, U16.highest, Unchanged, Unchanged)
 			}
 			SystemROM => {
 				word = read_bios_word(bus.bios, relative_addr, cxt)?
@@ -354,7 +378,7 @@ Bus := {
 			GamePakRAM => {
 				# There is no real R16 for SRAM in GBA hardware, so the return result is just duplicated
 				# https://problemkaputt.de/gbatek-gba-unpredictable-things.htm
-				byte = SRAM.read8(bus.sram, relative_addr)?.to_u16()
+				byte = Save.read_gamepak_ram8(bus.save, relative_addr)?.to_u16()
 				(byte.shl_wrap(8).bitwise_or(byte), U16.highest, Unchanged, Unchanged)
 			}
 			Unused => (0, 0, Unchanged, Unchanged)
@@ -371,6 +395,7 @@ Bus := {
 	read_view16 : MemoryView, U32, ReadContext -> Try(ViewReadResult(U16), _)
 	read_view16 = |mv, addr, cxt| {
 		if (addr.mod_by(2) == 1) return Err(MisalignedAddress(addr))
+		if (hits_eeprom(mv.eeprom_window_base, addr)) return Ok(NeedsSlow)
 		{ region, relative_addr } = MemoryRegion.memory_map_decode(addr)
 		(device_val, device_mask, bios_latch_update) = match region {
 			CPUExternalRAM => (read_le16(mv.ewram, relative_addr)?, U16.highest, Unchanged)
@@ -462,7 +487,13 @@ Bus := {
 				oam: write_le16(bus.oam, relative_addr, cxt)?,
 				signal: new_signal,
 			})
-			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => Ok({ ..bus, signal: new_signal })
+			GamePakROMWS0 | GamePakROMWS1 | GamePakROMWS2 => {
+				match bus.save {
+					EEPROM(chip) if hits_eeprom(bus.eeprom_window_base, addr) =>
+						Ok({ ..bus, save: EEPROM(EEPROM.write16(chip, cxt)?), signal: new_signal })
+					_ => Ok({ ..bus, signal: new_signal })
+				}
+			}
 			SystemROM => Ok({ ..bus, signal: new_signal })
 			IORegs => Ok({
 				..bus,
@@ -480,7 +511,7 @@ Bus := {
 						addr.bitwise_or(addr_low.to_u32()),
 						cxt,
 					),
-					sram: SRAM.write8(bus.sram, offset, byte)?,
+					save: Save.write_gamepak_ram8(bus.save, offset, byte)?,
 				})
 			}
 			Unused => Ok({ ..bus, signal: new_signal })
@@ -543,7 +574,7 @@ Bus := {
 				)
 			}
 			GamePakRAM => {
-				byte = SRAM.read8(bus.sram, relative_addr)?.to_u32()
+				byte = Save.read_gamepak_ram8(bus.save, relative_addr)?.to_u32()
 				(
 					byte.shl_wrap(24).bitwise_or(byte.shl_wrap(16)).bitwise_or(byte.shl_wrap(8)).bitwise_or(byte),
 					U32.highest,
@@ -684,7 +715,7 @@ Bus := {
 						addr.bitwise_or(addr_low.to_u32()),
 						cxt,
 					),
-					sram: SRAM.write8(bus.sram, offset, byte)?,
+					save: Save.write_gamepak_ram8(bus.save, offset, byte)?,
 				})
 			}
 			Unused => Ok({ ..bus, signal: new_signal })
@@ -792,6 +823,15 @@ Bus := {
 		wait_cnt = SystemRegs.get_waitcnt(bus.io_regs.system)
 		access_cycles(wait_cnt, width, addr, kind)
 	}
+
+	hint_eeprom_size : Bus, U32, U32 -> Bus
+	hint_eeprom_size = |bus, dest_addr, halfword_count| {
+		match bus.save {
+			EEPROM(chip) if hits_eeprom(bus.eeprom_window_base, dest_addr) =>
+				{ ..bus, save: EEPROM(EEPROM.hint_size_from_dma(chip, halfword_count)) }
+			_ => bus
+		}
+	}
 }
 
 # cond directly stolen from mGBA
@@ -799,6 +839,17 @@ is_vram_hole : U16, U32 -> Bool
 is_vram_hole = |mode, addr| {
 	window_offset = (addr - 0x6000000).mod_by(0x20000)
 	mode >= 3 and window_offset >= 0x18000 and window_offset < 0x1c000
+}
+
+hits_eeprom : [None, Some(U32)], U32 -> Bool
+hits_eeprom = |eeprom_window_base, addr| {
+	match eeprom_window_base {
+		None => False
+		# Note that what determines the write-in result is the passed in val
+		# if you fall in the range of base to 0xE000000,
+		# behavior should be the same as long as val + pre-write state is the same
+		Some(base) => base <= addr and addr < 0xE000000
+	}
 }
 
 write_le16 : List(U8), U32, U16 -> Try(List(U8), [OutOfBounds])

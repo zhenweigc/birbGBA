@@ -12,7 +12,9 @@ import DmaRegs
 import SoundRegs
 import IoRegs
 import KeyRegs
+import Save
 import SRAM
+import EEPROM
 
 Machine :: {
 	bus : Bus,
@@ -27,10 +29,10 @@ Machine :: {
 	next_lcd_event : [EnterHBlank, NextScanline, VideoDMARequest],
 	video_dma_running : Bool,
 }.{
-	init : List(U8), List(U8), SRAM -> Try(Machine, _)
-	init = |bios, rom, sram| {
+	init : List(U8), List(U8), Save -> Try(Machine, _)
+	init = |bios, rom, save| {
 		Ok({
-			bus: Bus.init(bios, rom, sram)?,
+			bus: Bus.init(bios, rom, save)?,
 			cpu: Cpu.init(),
 			ppu: Ppu.init(),
 			power_state: Running,
@@ -57,11 +59,11 @@ Machine :: {
 	get_cpu : Machine -> Cpu
 	get_cpu = |m| m.cpu
 
-	get_sram : Machine -> SRAM
-	get_sram = |m| m.bus.sram
+	get_save : Machine -> Save
+	get_save = |m| m.bus.save
 
-	mark_sram_saved : Machine, { time : U64, ecc : List(U8) } -> Machine
-	mark_sram_saved = |m, info| { ..m, bus: Bus.set_sram_info(m.bus, info) }
+	mark_saved : Machine, { time : U64, ecc : List(U8) } -> Machine
+	mark_saved = |m, info| { ..m, bus: Bus.set_sram_info(m.bus, info) }
 
 	process_next_event : Machine -> Try((Machine, U8), _)
 	process_next_event = |m| {
@@ -780,7 +782,18 @@ dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind
 			val_with_width_considered,
 		)
 	}
-	finish_dma_write(after_read_m, width, reg.dest_addr, val, req_write_kind, selection)
+	finish_dma_write(
+		if reg.first_unit and width == W16 {
+			{ ..after_read_m, bus: Bus.hint_eeprom_size(after_read_m.bus, reg.dest_addr, reg.remaining) }
+		} else {
+			after_read_m
+		},
+		width,
+		reg.dest_addr,
+		val,
+		req_write_kind,
+		selection,
+	)
 }
 
 dma_transfer_unit : Machine, [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)

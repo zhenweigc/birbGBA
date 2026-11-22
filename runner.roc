@@ -1,4 +1,7 @@
-app [main!] { pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst" }
+app [main!] {
+	pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
+	roc: "0.1.0-RC1",
+}
 
 import pf.Path
 import pf.Stdout
@@ -6,7 +9,9 @@ import pf.OsStr
 import src/Machine
 import src/Cpu
 import src/ARM7TDMI
+import src/Save
 import src/SRAM
+import src/EEPROM
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
@@ -20,8 +25,12 @@ main! = |args| {
 	bios = bios_path.read_bytes!()?
 	rom = rom_path.read_bytes!()?
 	num_of_actions = U32.from_str(OsStr.to_str_try(budget_arg)?)?
-
-	m = Machine.init(bios, rom, SRAM.init())?
+	save = match Save.detect_save_type(rom) {
+		SRAM | Unrecognized => SRAM(SRAM.init())
+		EEPROM => EEPROM(EEPROM.init())
+		FLASH => return Err(NotYet)
+	}
+	m = Machine.init(bios, rom, save)?
 	done = Machine.run_with_budget(m, num_of_actions)?
 	c = Machine.get_cpu(done)
 

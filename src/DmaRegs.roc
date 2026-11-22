@@ -15,6 +15,7 @@ DMAReg : {
 	phase : [Disabled, Waiting, Pending],
 	ready_at : [None, At(U64)],
 	data_latch : U32,
+	first_unit : Bool,
 }
 
 DmaRegs :: {
@@ -264,7 +265,7 @@ DmaRegs :: {
 			if Bits.get_ith_bit_u16_certain(reg.cnt_h, 15)
 				and Bits.get_seg_of_u16_certain(reg.cnt_h, 12, 2) == 3
 				and reg.phase == Waiting {
-				{ ..reg, phase: Pending, ready_at: None, remaining: 4 }
+				{ ..reg, phase: Pending, ready_at: None, remaining: 4, first_unit: True }
 			} else {
 				reg
 			}
@@ -445,6 +446,7 @@ DmaRegs :: {
 				source_addr: new_source,
 				dest_addr: new_dest,
 				remaining: new_remaining,
+				first_unit: False,
 			}
 			Ok((put_back(new_reg), 0))
 		} else {
@@ -471,6 +473,7 @@ DmaRegs :: {
 					},
 					phase: Waiting,
 					ready_at: None,
+					first_unit: True,
 				}
 			} else {
 				{
@@ -481,6 +484,7 @@ DmaRegs :: {
 					cnt_h: reg.cnt_h.bitwise_and(0b111_1111_1111_1111),
 					phase: Disabled,
 					ready_at: None,
+					first_unit: False,
 				}
 			}
 			Ok((
@@ -558,6 +562,7 @@ dma_init = || {
 		phase: Disabled,
 		ready_at: None,
 		data_latch: 0,
+		first_unit: False,
 	}
 }
 
@@ -579,6 +584,7 @@ write_cnt_h = |reg, new_cnt_h, zero_count| {
 			remaining: if (reg.cnt_l != 0) reg.cnt_l.to_u32() else zero_count,
 			phase: if (new_cnt_h.bitwise_and(0b11_0000_0000_0000) == 0) Pending else Waiting,
 			ready_at: None,
+			first_unit: True,
 		}
 		_ => { ..reg, cnt_h: new_cnt_h }
 	}

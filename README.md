@@ -1,7 +1,9 @@
 # An Early Stage GBA emulator, in ROC
 
 ## Goal
-Rn it will just being able to run some offical ROMs, without crashing during playthrough of course.
+BirbGBA can now run some offcial roms without crashing, however, there is no sound. And I am not very confident on its perf in all scenes.
+
+Hence, the next step will be add support for FLASH save, add sound, and more perf optimization.
 
 ## Controls
 
@@ -18,11 +20,10 @@ Alt: switch layouts · P: pause/resume · Esc: save and exit.
 ![Cult of GBA's BIOS running in birbGBA](docs/images/progress.png)
 
 With the minimal RocRay frontend, birbGBA can run cult-of-GBA BIOS, EmiBIOS and the official BIOS without explicit crashing.
+
 No sound rn though.
 
-Running-speed has been optimized to a minimum acceptable scale via batched CPU execution and reduced state copying.
-
-BirbGBA passed ArmWrestler test suites, but are still not able run mGBA's suite due to lots of IO behaviors are just implemented.
+BirbGBA passed ArmWrestler test suites, and most of gba-tests' test roms.
 
 ## Behavior references:
 - ARM DDI 0100I Architecture Reference Manual
@@ -33,6 +34,7 @@ BirbGBA passed ArmWrestler test suites, but are still not able run mGBA's suite 
 - [Cult-of-GBA BIOS](https://github.com/Cult-of-GBA/BIOS)
 - [EmiBIOS](https://github.com/coolbho3k/emibios)
 - [ArmWrestler](https://github.com/destoer/armwrestler-gba-fixed)
+- [gba-tests](https://github.com/jsmolka/gba-tests)
 - EmuDev & GBADev Discord
 - Many more tech blogs, will write them in later
 
