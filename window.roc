@@ -1,5 +1,5 @@
 app [Model, program] {
-	roc: "0.1.0-RC1",
+	roc: "nightly-2026-11-22-3350b1c",
 	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.12.3/default-5dNxpAJgNbQLwNCvyiSS44ReCG5bm2v34uKzFQH97rWC.tar.zst",
 }
 
@@ -17,6 +17,7 @@ import src/Machine
 import src/Save
 import src/SRAM
 import src/EEPROM
+import src/FLASH
 import src/Bus
 import src/Bits
 
@@ -250,7 +251,7 @@ load_save! = |dir, kind| {
 				# Test ROMs? Well let us just shove SRAM into it to make sure it does not panic upon basic testings
 				SRAM | Unrecognized => Ok(SRAM(SRAM.init()))
 				EEPROM => Ok(EEPROM(EEPROM.init()))
-				FLASH => Err(NotYet)
+				FLASH(size) => Ok(FLASH(FLASH.init(size)))
 			}
 		}
 		Err(e) => Err(e)
@@ -271,15 +272,18 @@ load_save! = |dir, kind| {
 							ecc,
 							Bits.golay_init_corrections()?,
 						)?
-						FLASH => return Err(NotYet)
+						FLASH(_) => FLASH.repair_save(
+							save,
+							ecc,
+							Bits.golay_init_corrections()?,
+						)?
 					}
 				}
 			}
 			match kind {
 				SRAM | Unrecognized => Ok(SRAM(SRAM.from_save(bytes)?))
 				EEPROM => Ok(EEPROM(EEPROM.from_save(bytes)?))
-				# Before you ask why the hell I dont just intercept FLASH in top level, well this seemly dumb way allow to happy ctrl CV later
-				FLASH => Err(NotYet)
+				FLASH(size) => Ok(FLASH(FLASH.from_save(size, bytes)?))
 			}
 		}
 	}

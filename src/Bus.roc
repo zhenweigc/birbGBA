@@ -74,7 +74,7 @@ Bus := {
 				signal: BusSignals.init(),
 				save: save,
 				eeprom_window_base: match save {
-					SRAM(_) => None
+					SRAM(_) | FLASH(_) => None
 					# https://problemkaputt.de/gbatek.htm#gbacartbackupeeprom
 					EEPROM(_) if rom.len() <= 0x01000000 => Some(0x0D000000)
 					EEPROM(_) => Some(0x0DFFFF00)

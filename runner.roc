@@ -1,6 +1,6 @@
 app [main!] {
 	pf: platform "https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst",
-	roc: "0.1.0-RC1",
+	roc: "nightly-2026-11-22-3350b1c",
 }
 
 import pf.Path
@@ -12,6 +12,7 @@ import src/ARM7TDMI
 import src/Save
 import src/SRAM
 import src/EEPROM
+import src/FLASH
 
 main! : List(OsStr) => Try({}, _)
 main! = |args| {
@@ -28,7 +29,7 @@ main! = |args| {
 	save = match Save.detect_save_type(rom) {
 		SRAM | Unrecognized => SRAM(SRAM.init())
 		EEPROM => EEPROM(EEPROM.init())
-		FLASH => return Err(NotYet)
+		FLASH(size) => FLASH(FLASH.init(size))
 	}
 	m = Machine.init(bios, rom, save)?
 	done = Machine.run_with_budget(m, num_of_actions)?

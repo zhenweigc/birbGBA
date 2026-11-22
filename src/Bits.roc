@@ -29,6 +29,9 @@ Bits :: {}.{
 	bits_match_32 : U32, U32, U32 -> Bool
 	bits_match_32 = |i, mask, target| U32.bitwise_and(i, mask) == target
 
+	bits_match_64 : U64, U64, U64 -> Bool
+	bits_match_64 = |i, mask, target| U64.bitwise_and(i, mask) == target
+
 	replace_byte : U16, Bool, U8 -> U16
 	replace_byte = |old_val, isHi, incoming_val| {
 		if isHi {
