@@ -1,5 +1,5 @@
 app [Model, program] {
-	roc: "nightly-2026-11-22-3350b1c",
+	roc: "nightly-2026-11-23-b5c77fc",
 	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.12.3/default-5dNxpAJgNbQLwNCvyiSS44ReCG5bm2v34uKzFQH97rWC.tar.zst",
 }
 

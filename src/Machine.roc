@@ -24,6 +24,7 @@ Machine :: {
 	power_state : [Running, Halted, Stopped],
 	# DMA Channels with lower priority are paused until channels with higher priority have completed.
 	dma_owner : [None, Channel(U8)],
+	dma_used_gamepak : Bool,
 	now : U64,
 	next_lcd_at : U64,
 	next_lcd_event : [EnterHBlank, NextScanline, VideoDMARequest],
@@ -37,6 +38,7 @@ Machine :: {
 			ppu: Ppu.init(),
 			power_state: Running,
 			dma_owner: None,
+			dma_used_gamepak: False,
 			now: 0,
 			next_lcd_at: 1007,
 			next_lcd_event: EnterHBlank,
@@ -848,12 +850,23 @@ deal_with_dma = |m| {
 			}
 		}
 		Transfer(selection, reg, _) => {
+			prior = m.dma_owner
 			DmaRegs.validate_transfer(reg, selection, Starting)?
-			advanced = if (m.dma_owner == None) Machine.advance_to(m, m.now + 1)? else m
+			advanced = if (prior == None) Machine.advance_to(m, m.now + 1)? else m
 			match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
 				Transfer(next_selection, next_reg, next_width) => {
-					access_kind = if (m.dma_owner == Channel(next_selection)) Sequential else NonSequential
-					dma_transfer_selected(advanced, next_selection, next_reg, next_width, access_kind, access_kind)
+					access_kind = if (prior == Channel(next_selection)) Sequential else NonSequential
+					src_on_gamepak = next_reg.source_addr >= 0x8000000
+					dest_on_gamepak = next_reg.dest_addr >= 0x8000000
+					# Stolen from NBA, only the first Game Pak access in an uninterrupted DMA run requests N
+					# Source reads first, so Game Pak -> Pak is N, S
+					did_access_rom = access_kind == Sequential and !next_reg.first_unit and advanced.dma_used_gamepak
+					read_kind =
+						if (!did_access_rom and src_on_gamepak) NonSequential else Sequential
+					write_kind =
+						if (!did_access_rom and !src_on_gamepak and dest_on_gamepak) NonSequential else Sequential
+					ready = { ..advanced, dma_used_gamepak: did_access_rom or src_on_gamepak or dest_on_gamepak }
+					dma_transfer_selected(ready, next_selection, next_reg, next_width, read_kind, write_kind)
 				}
 				None => {
 					# Well this can occur now, like this:

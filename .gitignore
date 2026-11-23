@@ -2,6 +2,9 @@
 *.bin
 /runner
 /window
+/window.dev
+/window.old
+/window.size
 /birbgba
 /runner.exe
 /window.exe
