@@ -368,7 +368,14 @@ walk_memory_execution_state = |before_dma, state| {
 		Complete(outcome) => complete_execution(m, outcome)
 		R(request) => {
 			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)
-			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
+			plan = Cpu.plan_cpu_data_access_fields(
+				m.cpu.hot.gamepak_prefetch,
+				SystemRegs.get_waitcnt(m.bus.io_regs.system),
+				ARM7TDMI.getPC(m.cpu.hot.core),
+				request.addr,
+				cycles,
+			)
+			io_delay_applied_machine = Machine.advance_to(m, m.now + plan.cycles)?
 			cxt = Cpu.data_read_context(
 				request.core,
 				io_delay_applied_machine.cpu.hot.pipeline,
@@ -395,14 +402,30 @@ walk_memory_execution_state = |before_dma, state| {
 				raw_val,
 				request.continuation,
 			)?
-			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus }), next_execution)
+
+			# The plan uses the FIFO state from the start of the read
+			# As reads succeeds, put planned FIFO state to the machine returned by advance_to
+			cpu_after_wait = io_delay_applied_machine.cpu
+			next_cpu = { ..cpu_after_wait, hot: { ..cpu_after_wait.hot, gamepak_prefetch: plan.next_prefetch } }
+			walk_memory_execution_state(
+				mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: new_bus, cpu: next_cpu }),
+				next_execution,
+			)
 		}
 		W(request) => {
 			cur_addr = ARM7TDMI.getPC(m.cpu.hot.core)
 			req_bios = Bus.requires_bios(request.width, request.addr)
 			cycles = Bus.base_access_cycles(m.bus, request.width, request.addr, request.access_kind)
-			io_delay_applied_machine = Machine.advance_to(m, m.now + cycles)?
+			plan = Cpu.plan_cpu_data_access_fields(
+				m.cpu.hot.gamepak_prefetch,
+				SystemRegs.get_waitcnt(m.bus.io_regs.system),
+				ARM7TDMI.getPC(m.cpu.hot.core),
+				request.addr,
+				cycles,
+			)
+			io_delay_applied_machine = Machine.advance_to(m, m.now + plan.cycles)?
 
+			before_waitcnt = SystemRegs.get_waitcnt(io_delay_applied_machine.bus.io_regs.system)
 			post_write_bus = if req_bios and cur_addr > 0x3FFF {
 				io_delay_applied_machine.bus
 			} else {
@@ -418,13 +441,25 @@ walk_memory_execution_state = |before_dma, state| {
 				request.core,
 				request.continuation,
 			)?
-			walk_memory_execution_state(mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus }), next_execution)
+
+			cpu_after_wait = io_delay_applied_machine.cpu
+			next_prefetch = note_prefetch_turned_off(
+				plan.next_prefetch,
+				before_waitcnt,
+				SystemRegs.get_waitcnt(final_bus.io_regs.system),
+			)
+			next_cpu = { ..cpu_after_wait, hot: { ..cpu_after_wait.hot, gamepak_prefetch: next_prefetch } }
+			walk_memory_execution_state(
+				mark_fetch_nonsequential({ ..io_delay_applied_machine, bus: final_bus, cpu: next_cpu }),
+				next_execution,
+			)
 		}
 	}
 }
 
 complete_execution : Machine, ARM7TDMI.Execution_outcome -> Try(Machine, _)
 complete_execution = |m, outcome| {
+	waitcnt = if (outcome.remaining_cycles > 0) SystemRegs.get_waitcnt(m.bus.io_regs.system) else 0.U16
 	# You might think this is retarded branching, but eh, this does save us from some useless memcpy :)
 	cycle_consumed_machine = if (outcome.remaining_cycles == 0) m else Machine.advance_to(m, m.now + outcome.remaining_cycles)?
 	completed = if outcome.remaining_cycles > 0 {
@@ -432,7 +467,15 @@ complete_execution = |m, outcome| {
 			..cycle_consumed_machine,
 			cpu: {
 				..cycle_consumed_machine.cpu,
-				hot: { ..cycle_consumed_machine.cpu.hot, core: outcome.core },
+				hot: {
+					..cycle_consumed_machine.cpu.hot,
+					core: outcome.core,
+					gamepak_prefetch: Cpu.advance_prefetch_fields(
+						cycle_consumed_machine.cpu.hot.gamepak_prefetch,
+						waitcnt,
+						outcome.remaining_cycles,
+					),
+				},
 			},
 		})
 	} else {
@@ -658,10 +701,32 @@ timed_read = |m, width, addr, req_kind, purpose| {
 	# Should be handled by walk_memory_execution_state() rather than here.
 	if (purpose == CpuData) return Err(MissingCpuReadContext)
 	bus_width = to_bus_width(width)
-	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
+	cart_fetch = purpose == Fetch and addr >= 0x8000000 and addr < 0xE000000
+	plan = if cart_fetch {
+		waitcnt = SystemRegs.get_waitcnt(m.bus.io_regs.system)
+		match width {
+			W16 => Cpu.plan_fetch16_fields(m.cpu.hot.gamepak_prefetch, waitcnt, addr, req_kind)
+			W32 => Cpu.plan_fetch32_fields(m.cpu.hot.gamepak_prefetch, waitcnt, addr, req_kind)
+		}
+	} else {
+		base = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
+		f = m.cpu.hot.gamepak_prefetch
+		match purpose {
+			# DMA addr -> Bus conflict with prefetch?
+			# Cpu PC -> if stops rn does it have extra cycle cost? @NBA
+			Dma(_) => Cpu.plan_cpu_data_access_fields(
+				f,
+				SystemRegs.get_waitcnt(m.bus.io_regs.system),
+				ARM7TDMI.getPC(m.cpu.hot.core),
+				addr,
+				base,
+			)
+			_ => { cycles: base, next_prefetch: f }
+		}
+	}
 	advance_to_with(
 		m,
-		m.now + cycles_needed,
+		m.now + plan.cycles,
 		|advanced| {
 			latch = BusSignals.get_bios_latch(advanced.bus.signal)
 			cxt = {
@@ -672,6 +737,7 @@ timed_read = |m, width, addr, req_kind, purpose| {
 				bios_latch: latch,
 				bios_readable: purpose == Fetch and addr < 0x4000,
 			}
+			cpu = { ..advanced.cpu, hot: { ..advanced.cpu.hot, gamepak_prefetch: plan.next_prefetch } }
 			intermediate = match width {
 				W16 => {
 					inner = Bus.read16(advanced.bus, addr, purpose, cxt)?
@@ -681,16 +747,28 @@ timed_read = |m, width, addr, req_kind, purpose| {
 			}
 			match intermediate.state {
 				Unchanged => Ok((
-					{ ..advanced, bus: { ..advanced.bus, signal: intermediate.signal } },
+					{ ..advanced, cpu, bus: { ..advanced.bus, signal: intermediate.signal } },
 					intermediate.val,
 				))
 				Updated(x) => Ok((
-					{ ..advanced, bus: { ..Box.unbox(x), signal: intermediate.signal } },
+					{ ..advanced, cpu, bus: { ..Box.unbox(x), signal: intermediate.signal } },
 					intermediate.val,
 				)) # Again, side effect of reading
 			}
 		},
 	)
+}
+
+# During these DMA cycles:
+# 1. Dma is working without touching GAMEPAK
+# 2. Prefetcher of PAK can fill its FIFO during those same cycles
+advance_dma_cart_idle : Machine, U64 -> Try(Machine, _)
+advance_dma_cart_idle = |m, cycles| {
+	advanced_pref =
+		Cpu.advance_prefetch_fields(m.cpu.hot.gamepak_prefetch, SystemRegs.get_waitcnt(m.bus.io_regs.system), cycles)
+	advanced = Machine.advance_to(m, m.now + cycles)?
+	hot = { ..advanced.cpu.hot, gamepak_prefetch: advanced_pref }
+	Ok({ ..advanced, cpu: { ..advanced.cpu, hot } })
 }
 
 dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
@@ -718,10 +796,20 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
 	bus_width = to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, aligned_addr, req_kind)
+	f = m.cpu.hot.gamepak_prefetch
+	waitcnt = SystemRegs.get_waitcnt(m.bus.io_regs.system)
+	# Source read done, plan the write using the FIFO state it left behind
+	# addr < 0x2000000 -> game pak free
+	plan = if aligned_addr < 0x2000000 {
+		{ cycles: cycles_needed, next_prefetch: Cpu.advance_prefetch_fields(f, waitcnt, cycles_needed) }
+	} else {
+		Cpu.plan_cpu_data_access_fields(f, waitcnt, ARM7TDMI.getPC(m.cpu.hot.core), aligned_addr, cycles_needed)
+	}
 	advance_to_with(
 		m,
-		m.now + cycles_needed,
+		m.now + plan.cycles,
 		|advanced| {
+			before_waitcnt = SystemRegs.get_waitcnt(advanced.bus.io_regs.system)
 			new_bus = match width {
 				W16 => Bus.write16(advanced.bus, aligned_addr, 0, val.to_u16_wrap(), Dma(selection))?
 				W32 => Bus.write32(advanced.bus, aligned_addr, 0, val, Dma(selection))?
@@ -729,6 +817,12 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 			scheduled_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
 			(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(scheduled_dma_rgs, selection)?
 			new_sys_rgs = SystemRegs.hardware_request_interrupts(new_bus.io_regs.system, irq_mask)
+
+			next_prefetch = note_prefetch_turned_off(
+				plan.next_prefetch,
+				before_waitcnt,
+				SystemRegs.get_waitcnt(new_sys_rgs),
+			)
 			Ok({
 				..advanced,
 				dma_owner: Channel(selection),
@@ -740,6 +834,7 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 						system: new_sys_rgs,
 					},
 				},
+				cpu: { ..advanced.cpu, hot: { ..advanced.cpu.hot, gamepak_prefetch: next_prefetch } },
 			})
 		},
 	)
@@ -751,7 +846,7 @@ dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind
 	(after_read_m, val) = if reg.source_addr < 0x2000000 {
 		# Trying to read BIOS/Unused zone? Kind UB
 		# Luckily NBA tells us how to handle it.
-		advanced = Machine.advance_to(m, m.now + 1)?
+		advanced = advance_dma_cart_idle(m, 1)?
 		latch_val = if width == W32 {
 			reg.data_latch
 		} else {
@@ -838,7 +933,7 @@ no_dma = |m| (m.power_state == Stopped or
 deal_with_dma : Machine -> Try(Machine, _)
 deal_with_dma = |m| {
 	release_dma : Machine -> Try(Machine, _)
-	release_dma = |m_in| Ok(mark_fetch_nonsequential({ ..Machine.advance_to(m_in, m_in.now + 1)?, dma_owner: None }))
+	release_dma = |m_in| Ok(mark_fetch_nonsequential({ ..advance_dma_cart_idle(m_in, 1)?, dma_owner: None }))
 	match DmaRegs.get_reg_ready_to_io(m.bus.io_regs.dmas, m.now) {
 		None => {
 			match m.dma_owner {
@@ -852,7 +947,7 @@ deal_with_dma = |m| {
 		Transfer(selection, reg, _) => {
 			prior = m.dma_owner
 			DmaRegs.validate_transfer(reg, selection, Starting)?
-			advanced = if (prior == None) Machine.advance_to(m, m.now + 1)? else m
+			advanced = if (prior == None) advance_dma_cart_idle(m, 1)? else m
 			match DmaRegs.get_reg_ready_to_io(advanced.bus.io_regs.dmas, advanced.now) {
 				Transfer(next_selection, next_reg, next_width) => {
 					access_kind = if (prior == Channel(next_selection)) Sequential else NonSequential
@@ -1039,4 +1134,13 @@ advance_to_with = |m, target, finish_func| {
 		},
 		now: target,
 	})
+}
+
+note_prefetch_turned_off : CpuTypes.PrefetchFields, U16, U16 -> CpuTypes.PrefetchFields
+note_prefetch_turned_off = |cur_f, before, after| {
+	if before.bitwise_and(0x4000) != 0 and after.bitwise_and(0x4000) == 0 {
+		{ ..cur_f, force_next_rom_fetch_nonseq: True }
+	} else {
+		cur_f
+	}
 }

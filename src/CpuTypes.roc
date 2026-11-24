@@ -5,6 +5,23 @@ import Bus
 CpuTypes :: {}.{
 	FetchedCode : [Opcode(U32), Unmapped(U32)] # The 2nd option is really a placeholder for open bus
 
+	# GamePak read, Idle -> no read in flight rn
+	PrefetchInFlight : [Idle, Filling({ addr : U32, cycles_left : U64 })]
+
+	# https://problemkaputt.de/gbatek-gba-gamepak-prefetch.htm
+	# Thank god at most 8 halfwords can be prefetched
+	GamePakPrefetch : [
+		Nothing,
+		Stream({ head_addr : U32, ready_count : U8, in_flight : PrefetchInFlight }),
+	]
+
+	PrefetchFields : {
+		head_addr : U32, # == 0 -> Nothing, as 0 not in game PAK addr
+		ready_count : U8,
+		fill_left : U8, # 0 -> Idle
+		force_next_rom_fetch_nonseq : Bool,
+	}
+
 	ReadyPipeline : {
 		first : FetchedCode,
 		second : FetchedCode,
@@ -13,12 +30,13 @@ CpuTypes :: {}.{
 
 	Pipeline : [Empty, Ready(ReadyPipeline)]
 
-	FetchState : { now : U64, signal : BusSignals }
+	FetchState : { now : U64, signal : BusSignals, gamepak_prefetch : PrefetchFields }
 
 	EngineState : {
 		now : U64,
 		signal : BusSignals,
 		pipeline : Pipeline,
+		gamepak_prefetch : PrefetchFields,
 	}
 
 	FetchResult(state_type) : [
@@ -26,7 +44,7 @@ CpuTypes :: {}.{
 		Fetched({ state : state_type, code : FetchedCode }),
 	]
 
-	HotState : { core : ARM7TDMI, pipeline : Pipeline }
+	HotState : { core : ARM7TDMI, pipeline : Pipeline, gamepak_prefetch : PrefetchFields }
 
 	Suspended : [None, Resume(Box(ARM7TDMI.Execution_state))]
 
