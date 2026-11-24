@@ -34,6 +34,9 @@ IoRegs := {
 		}
 	}
 
+	get_keyinputs : IoRegs -> U16
+	get_keyinputs = |rgs| KeyRegs.get_keyinputs(rgs.keys)
+
 	read8 : IoRegs, U32 -> Try(ReadResult(U8, IoRegs), [UnsupportedIORegOffset(U32), OutOfBounds])
 	read8 = |rgs, addr| {
 		match addr {

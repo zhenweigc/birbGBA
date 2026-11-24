@@ -21,6 +21,9 @@ KeyRegs :: { keyinput : U16, keycnt : U16, last_irq_pressed : [None, Some(U16)] 
 		last_irq_pressed: None,
 	}
 
+	get_keyinputs : KeyRegs -> U16
+	get_keyinputs = |rgs| rgs.keyinput
+
 	set_pressed : KeyRegs, U16 -> KeyRegs
 	set_pressed = |rgs, pressed| {
 		# https://mgba-emu.github.io/gbatek/#gbakeypadinput

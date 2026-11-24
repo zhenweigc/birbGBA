@@ -44,6 +44,7 @@ Bus := {
 		display : DisplayRegs,
 		wait_cnt : U16,
 		eeprom_window_base : [None, Some(U32)],
+		keyinputs : U16,
 	}
 
 	ReadPurpose : [Fetch, CpuData, Dma(U8)]
@@ -100,6 +101,7 @@ Bus := {
 				display: bus.io_regs.display,
 				wait_cnt: SystemRegs.get_waitcnt(bus.io_regs.system),
 				eeprom_window_base: bus.eeprom_window_base,
+				keyinputs: IoRegs.get_keyinputs(bus.io_regs),
 			},
 		)
 	}
@@ -220,6 +222,8 @@ Bus := {
 				value = word.shr_wrap(offset).to_u8_wrap()
 				(value, U8.highest, if (cxt.bios_readable) Updated(word) else Unchanged)
 			}
+			IORegs if relative_addr == 0x130 or relative_addr == 0x131 =>
+				(mv.keyinputs.shr_wrap(relative_addr.bitwise_and(0b1).to_u8_wrap().times(8)).to_u8_wrap(), U8.highest, Unchanged)
 			IORegs => {
 				if (relative_addr >= 0x60) return Ok(NeedsSlow)
 				rtn = DisplayRegs.read_bus8(mv.display, relative_addr)?
@@ -426,6 +430,7 @@ Bus := {
 				value = word.shr_wrap(offset).to_u16_wrap()
 				(value, U16.highest, if (cxt.bios_readable) Updated(word) else Unchanged)
 			}
+			IORegs if relative_addr == 0x130 => (mv.keyinputs, U16.highest, Unchanged) # No point of exiting fast path for keys
 			IORegs => {
 				if (relative_addr >= 0x60) return Ok(NeedsSlow)
 				rtn = DisplayRegs.read_bus16(mv.display, relative_addr)?
