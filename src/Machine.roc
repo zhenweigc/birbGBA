@@ -458,11 +458,22 @@ walk_memory_execution_state = |before_dma, state| {
 	}
 }
 
+# So, DMA owning the bus and CPU computation can go on at the same time
+# end_at fixed as time spent in DMA also counts toward those cycles
+# Cannot believe I missed this
+advance_cpu_internal_until : Machine, U64 -> Try(Machine, _)
+advance_cpu_internal_until = |m, end_at| {
+	if (m.now >= end_at or m.power_state == Stopped) return Ok(m)
+	if (!no_dma(m)) return advance_cpu_internal_until(deal_with_dma(m)?, end_at)
+	next_at = next_cpu_event_at(m)
+	if (end_at <= next_at) return advance_dma_cart_idle(m, end_at - m.now)
+	advance_cpu_internal_until(advance_dma_cart_idle(m, next_at - m.now)?, end_at)
+}
+
 complete_execution : Machine, ARM7TDMI.Execution_outcome -> Try(Machine, _)
 complete_execution = |m, outcome| {
-	waitcnt = if (outcome.remaining_cycles > 0) SystemRegs.get_waitcnt(m.bus.io_regs.system) else 0.U16
-	# You might think this is retarded branching, but eh, this does save us from some useless memcpy :)
-	cycle_consumed_machine = if (outcome.remaining_cycles == 0) m else Machine.advance_to(m, m.now + outcome.remaining_cycles)?
+	cycle_consumed_machine =
+		if (outcome.remaining_cycles == 0) m else advance_cpu_internal_until(m, m.now + outcome.remaining_cycles)?
 	completed = if outcome.remaining_cycles > 0 {
 		mark_fetch_nonsequential({
 			..cycle_consumed_machine,
@@ -471,11 +482,6 @@ complete_execution = |m, outcome| {
 				hot: {
 					..cycle_consumed_machine.cpu.hot,
 					core: outcome.core,
-					gamepak_prefetch: Cpu.advance_prefetch_fields(
-						cycle_consumed_machine.cpu.hot.gamepak_prefetch,
-						waitcnt,
-						outcome.remaining_cycles,
-					),
 				},
 			},
 		})
