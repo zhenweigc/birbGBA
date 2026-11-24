@@ -1,4 +1,5 @@
 import Bits
+import BusTypes
 
 DMAReg : {
 	sad_l : U16,
@@ -370,7 +371,7 @@ DmaRegs :: {
 		or single_reg_has_ready(rgs.dma2.phase, rgs.dma2.ready_at, given_now)
 		or single_reg_has_ready(rgs.dma3.phase, rgs.dma3.ready_at, given_now)
 
-	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, [W16, W32])]
+	get_reg_ready_to_io : DmaRegs, U64 -> [None, Transfer(U8, DMAReg, BusTypes.HalfOrWord)]
 	get_reg_ready_to_io = |rgs, given_now| {
 		var $num = 0.U8
 		while $num < 4 {

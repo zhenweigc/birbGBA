@@ -2,6 +2,7 @@ import MemoryRegion
 import IoRegs
 import SystemRegs
 import Bits
+import BusTypes
 import BusSignals
 import DisplayRegs
 import Save
@@ -728,7 +729,7 @@ Bus := {
 		region == 0x2 or region == 0x3
 	}
 
-	write_view_ram : List(U8), [W8, W16, W32], U32, U32 -> Try(List(U8), _)
+	write_view_ram : List(U8), BusTypes.Width, U32, U32 -> Try(List(U8), _)
 	write_view_ram = |memory, width, addr, cxt| {
 		if ((width == W16 and addr.mod_by(2) > 0) or (width == W32 and addr.mod_by(4) > 0))
 			return Err(MisalignedAddress(addr))
@@ -750,7 +751,7 @@ Bus := {
 		}
 	}
 
-	write_view : MemoryView, [W8, W16, W32], U32, U32 -> Try(MemoryView, _)
+	write_view : MemoryView, BusTypes.Width, U32, U32 -> Try(MemoryView, _)
 	write_view = |mv, width, addr, cxt| {
 		if ((width == W16 and addr.mod_by(2) > 0) or (width == W32 and addr.mod_by(4) > 0))
 			return Err(MisalignedAddress(addr))
@@ -762,7 +763,7 @@ Bus := {
 		}
 	}
 
-	requires_bios : [W8, W16, W32], U32 -> Bool
+	requires_bios : BusTypes.Width, U32 -> Bool
 	requires_bios = |width, addr| {
 		match width {
 			W8 => addr == 0x4000300 or addr == 0x4000301
@@ -773,7 +774,7 @@ Bus := {
 	# Stolen from mGBA and NoCashGBA author's tech manual
 	# https://mgba-emu.github.io/gbatek/gba.html#gbamemorymap
 	# https://mgba-emu.github.io/gbatek/gba.html#gbasystemcontrol
-	access_cycles : U16, [W8, W16, W32], U32, [NonSequential, Sequential] -> U64
+	access_cycles : U16, BusTypes.Width, U32, [NonSequential, Sequential] -> U64
 	access_cycles = |wait_cnt, width, addr, kind| {
 		region = MemoryRegion.memory_map_decode(addr).region
 		match region {
@@ -818,7 +819,7 @@ Bus := {
 		}
 	}
 
-	base_access_cycles : Bus, [W8, W16, W32], U32, [NonSequential, Sequential] -> U64
+	base_access_cycles : Bus, BusTypes.Width, U32, [NonSequential, Sequential] -> U64
 	base_access_cycles = |bus, width, addr, kind| {
 		wait_cnt = SystemRegs.get_waitcnt(bus.io_regs.system)
 		access_cycles(wait_cnt, width, addr, kind)

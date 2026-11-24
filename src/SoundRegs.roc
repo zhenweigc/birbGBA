@@ -1,3 +1,4 @@
+import BusTypes
 import SoundState
 
 SoundRegs :: {
@@ -53,7 +54,7 @@ SoundRegs :: {
 }
 
 # No point of unbox if the write in section explicitly returns same rgs
-unchanged_write : U32, [W8, W16, W32], Bool -> Bool
+unchanged_write : U32, BusTypes.Width, Bool -> Bool
 unchanged_write = |addr, width, master_off| {
 	match width {
 		W8 => match addr {

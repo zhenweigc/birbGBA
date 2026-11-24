@@ -1,6 +1,7 @@
 import Bits
 import Bus
 import BusSignals
+import BusTypes
 import Cpu
 import CpuTypes
 import ARM7TDMI
@@ -693,14 +694,11 @@ earlier_event = |t1, t2| {
 	}
 }
 
-to_bus_width : [W16, W32] -> [W8, W16, W32] # All these just to calm down the compiler
-to_bus_width = |w| w
-
-timed_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
+timed_read : Machine, BusTypes.HalfOrWord, U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
 timed_read = |m, width, addr, req_kind, purpose| {
 	# Should be handled by walk_memory_execution_state() rather than here.
 	if (purpose == CpuData) return Err(MissingCpuReadContext)
-	bus_width = to_bus_width(width)
+	bus_width = BusTypes.to_bus_width(width)
 	cart_fetch = purpose == Fetch and addr >= 0x8000000 and addr < 0xE000000
 	plan = if cart_fetch {
 		waitcnt = SystemRegs.get_waitcnt(m.bus.io_regs.system)
@@ -771,15 +769,15 @@ advance_dma_cart_idle = |m, cycles| {
 	Ok({ ..advanced, cpu: { ..advanced.cpu, hot } })
 }
 
-dma_read : Machine, [W16, W32], U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
+dma_read : Machine, BusTypes.HalfOrWord, U32, [NonSequential, Sequential], Bus.ReadPurpose -> Try((Machine, U32), _)
 dma_read = |m, width, addr, req_kind, purpose| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
 	timed_read(m, width, aligned_addr, req_kind, purpose) # Machine + read val
 }
 
-timed_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], Bus.WritePurpose -> Try(Machine, _)
+timed_write : Machine, BusTypes.HalfOrWord, U32, U32, [NonSequential, Sequential], Bus.WritePurpose -> Try(Machine, _)
 timed_write = |m, width, addr, val, req_kind, purpose| {
-	bus_width = to_bus_width(width)
+	bus_width = BusTypes.to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, addr, req_kind)
 	advanced = Machine.advance_to(m, m.now + cycles_needed)?
 	new_bus = match width {
@@ -791,10 +789,10 @@ timed_write = |m, width, addr, val, req_kind, purpose| {
 }
 
 # Write one DMA unit and complete it using the post-write register state, saves RC and memcpy :)
-finish_dma_write : Machine, [W16, W32], U32, U32, [NonSequential, Sequential], U8 -> Try(Machine, _)
+finish_dma_write : Machine, BusTypes.HalfOrWord, U32, U32, [NonSequential, Sequential], U8 -> Try(Machine, _)
 finish_dma_write = |m, width, addr, val, req_kind, selection| {
 	aligned_addr = if (width == W16) addr.bitwise_and(0xFFFFFFFE) else addr.bitwise_and(0xFFFFFFFC)
-	bus_width = to_bus_width(width)
+	bus_width = BusTypes.to_bus_width(width)
 	cycles_needed = Bus.base_access_cycles(m.bus, bus_width, aligned_addr, req_kind)
 	f = m.cpu.hot.gamepak_prefetch
 	waitcnt = SystemRegs.get_waitcnt(m.bus.io_regs.system)
@@ -840,7 +838,7 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 	)
 }
 
-dma_transfer_selected : Machine, U8, DmaRegs.Reg, [W16, W32], [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
+dma_transfer_selected : Machine, U8, DmaRegs.Reg, BusTypes.HalfOrWord, [NonSequential, Sequential], [NonSequential, Sequential] -> Try(Machine, _)
 dma_transfer_selected = |m, selection, reg, width, req_read_kind, req_write_kind| {
 	DmaRegs.validate_transfer(reg, selection, Starting)?
 	(after_read_m, val) = if reg.source_addr < 0x2000000 {
@@ -975,7 +973,7 @@ deal_with_dma = |m| {
 }
 
 # Turns out ARM 7 of GBA is a 3 level pipeline
-fetch_opcode : Machine, U32, [W16, W32], [NonSequential, Sequential] -> Try((Machine, CpuTypes.FetchedCode), _)
+fetch_opcode : Machine, U32, BusTypes.HalfOrWord, [NonSequential, Sequential] -> Try((Machine, CpuTypes.FetchedCode), _)
 fetch_opcode = |m, addr, width, req_kind| {
 	if addr >= 0x4000 and addr < 0x100_0000 { # Unmapped reigon right after BIOS
 		alignment = if (width == W16) 2 else 4

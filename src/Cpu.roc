@@ -2,6 +2,7 @@ import Bits
 import ARM7TDMI
 import Bus
 import BusSignals
+import BusTypes
 import MemoryRegion
 import CpuTypes
 
@@ -49,7 +50,7 @@ Cpu := {
 
 	# Cpu got the opcode from a new or already in-flight Game Pak read
 	# Start prefetching right after that opcode
-	start_prefetch_stream_after_rom_fetch : U16, U32, [W16, W32] -> CpuTypes.GamePakPrefetch
+	start_prefetch_stream_after_rom_fetch : U16, U32, BusTypes.HalfOrWord -> CpuTypes.GamePakPrefetch
 	start_prefetch_stream_after_rom_fetch = |waitcnt, fetched_addr, width| {
 		nxt_addr = if (width == W16) fetched_addr + 2 else fetched_addr + 4
 		match start_prefetch_fill(waitcnt, nxt_addr) {
@@ -567,7 +568,7 @@ Cpu := {
 	fetch_opcode : Bus.MemoryView,
 	CpuTypes.FetchState,
 	U32,
-	[W16, W32],
+	BusTypes.HalfOrWord,
 	[NonSequential, Sequential],
 	U64 -> Try(
 		CpuTypes.FetchResult(CpuTypes.FetchState),
@@ -702,12 +703,9 @@ init_hot = || {
 	}
 }
 
-to_bus_width : [W16, W32] -> [W8, W16, W32]
-to_bus_width = |w| w
-
-fetch_cycles : U16, U32, [W16, W32], [NonSequential, Sequential] -> U64
+fetch_cycles : U16, U32, BusTypes.HalfOrWord, [NonSequential, Sequential] -> U64
 fetch_cycles = |wait_cnt, addr, width, req_kind| {
-	if (addr >= 0x4000 and addr < 0x100_0000) 1 else Bus.access_cycles(wait_cnt, to_bus_width(width), addr, req_kind)
+	if (addr >= 0x4000 and addr < 0x100_0000) 1 else Bus.access_cycles(wait_cnt, BusTypes.to_bus_width(width), addr, req_kind)
 }
 
 finish_block : ARM7TDMI, CpuTypes.EngineState, U32, CpuTypes.BlockExit, Bus.MemoryView, [None, At(U64)] -> CpuTypes.BlockResult
