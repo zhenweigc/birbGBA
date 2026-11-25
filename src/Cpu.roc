@@ -6,7 +6,7 @@ import BusTypes
 import MemoryRegion
 import CpuTypes
 
-BlockPhase : [Fetch, Execute(ARM7TDMI.Execution_state)]
+BlockPhase : [Fetch, AfterDataAccess(ARM7TDMI.Execution_state)]
 
 # Cpu execution engine for mergable opcode blocks
 Cpu := {
@@ -274,242 +274,325 @@ Cpu := {
 			event_at,
 			dma_scheduled_at,
 		| {
-			match phase {
+			(engine_at_dispatch, execution_state) = match phase {
 				Fetch => {
-					match limits.target {
-						At(t) if engine.now >= t =>
-							return Ok(finish_block(core, engine, actions_completed, Boundary(ReachedTarget), current_mv, dma_scheduled_at))
-						_ => {}
+					stop = match limits.target {
+						At(t) if engine.now >= t => Stop(ReachedTarget)
+						_ if actions_completed >= limits.budget => Stop(BudgetExhausted)
+						_ if (irq_asserted and core.cpsr.bitwise_and(0b1000_0000) == 0)
+							or engine.now >= event_at => Stop(NeedsSlow)
+						_ => Continue
 					}
-					if (actions_completed >= limits.budget)
-						return Ok(finish_block(core, engine, actions_completed, Boundary(BudgetExhausted), current_mv, dma_scheduled_at))
-					if ((irq_asserted and core.cpsr.bitwise_and(0b1000_0000) == 0)
-						or engine.now >= event_at)
-						return Ok(finish_block(core, engine, actions_completed, Boundary(NeedsSlow), current_mv, dma_scheduled_at))
+					match stop {
+						Stop(reason) => return Ok(
+							finish_block(core, engine, actions_completed, Boundary(reason), current_mv, dma_scheduled_at),
+						)
+						Continue => {}
+					}
 
 					match take_opcode(current_mv, engine, ARM7TDMI.getPC(core), core.is_thumb(), event_at)? {
-						NeedsSlow => Ok(finish_block(core, engine, actions_completed, Boundary(NeedsSlow), current_mv, dma_scheduled_at))
-						Fetched({ code: Unmapped(addr), .. }) => Err(UnmappedInstructionFetch(addr))
+						NeedsSlow => return Ok(
+							finish_block(
+								core,
+								engine,
+								actions_completed,
+								Boundary(NeedsSlow),
+								current_mv,
+								dma_scheduled_at,
+							),
+						)
+						Fetched({ code: Unmapped(addr), .. }) => return Err(UnmappedInstructionFetch(addr))
 						Fetched({ code: Opcode(opcode), state: fetched_state }) => {
-							# seems retarded branching? saves extra copying in generated code.
 							if core.is_thumb() {
-								loop(
-									current_mv,
-									core,
-									fetched_state,
-									Execute(
-										ARM7TDMI.execute_thumb_opcode(core, opcode.to_u16_wrap())?,
-									),
-									actions_completed,
-									event_at,
-									dma_scheduled_at,
-								)
+								(fetched_state, ARM7TDMI.execute_thumb_opcode(core, opcode.to_u16_wrap())?)
 							} else {
-								loop(
-									current_mv,
-									core,
-									fetched_state,
-									Execute(
-										ARM7TDMI.execute_arm_opcode(core, opcode)?,
-									),
-									actions_completed,
-									event_at,
-									dma_scheduled_at,
-								)
+								(fetched_state, ARM7TDMI.execute_arm_opcode(core, opcode)?)
 							}
 						}
 					}
 				}
-				Execute(state) => {
-					if (engine.now >= event_at)
-						return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-					match state {
-						W(request) => {
-							# Only supports RAM reigon fast write
-							if (!Bus.supports_view_write(request.addr))
-								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-							cycles_needed =
-								Bus.access_cycles(current_mv.wait_cnt, request.width, request.addr, request.access_kind)
-							if (cycles_needed >= event_at - engine.now)
-								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-
-							first_dma_write = limits.schedule_dma and dma_scheduled_at == None
-							write_at = engine.now + cycles_needed
-							if (first_dma_write and write_at > U64.highest - 2)
-								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-							# the write_view_ram method uses much smaller param and returns a List rathe than full mv
-							# And yes, it does save memcpy amount comparing to passing full MV.
-							new_mv = if request.addr.shr_wrap(24) == 2 {
-								{
-									..current_mv,
-									ewram: Bus.write_view_ram(current_mv.ewram, request.width, request.addr, request.val)?,
-								}
-							} else {
-								{
-									..current_mv,
-									iwram: Bus.write_view_ram(current_mv.iwram, request.width, request.addr, request.val)?,
-								}
-							}
-							new_signal = match request.width {
-								W8 => BusSignals.record_write8(engine.signal, request.addr, request.val.to_u8_wrap())
-								W16 => BusSignals.record_write16(engine.signal, CpuData, request.addr, request.val.to_u16_wrap())
-								W32 => BusSignals.record_write32(engine.signal, CpuData, request.addr, request.val)
-							}
-							after_write = {
-								now: write_at,
-								signal: new_signal,
-								pipeline: mark_fetch_nonsequential(engine.pipeline),
-								gamepak_prefetch: advance_prefetch_fields(
-									engine.gamepak_prefetch,
-									current_mv.wait_cnt,
-									cycles_needed,
-								),
-							}
-							next_execution =
-								ARM7TDMI.resume_write(request.core, request.continuation)?
-							loop(
-								new_mv,
+				AfterDataAccess(state) => (engine, state)
+			}
+			if (engine_at_dispatch.now >= event_at)
+				return Ok(
+					finish_block(
+						core,
+						engine_at_dispatch,
+						actions_completed,
+						Pending(execution_state),
+						current_mv,
+						dma_scheduled_at,
+					),
+				)
+			match execution_state {
+				W(request) => {
+					# Only supports RAM reigon fast write
+					if (!Bus.supports_view_write(request.addr))
+						return Ok(
+							finish_block(
 								core,
-								after_write,
-								Execute(next_execution),
+								engine_at_dispatch,
 								actions_completed,
-								if (first_dma_write) event_at.min(write_at + 2) else event_at,
-								if (first_dma_write) At(write_at) else dma_scheduled_at,
-							)
-						}
-						Complete(outcome) => {
-							if outcome.remaining_cycles >= event_at - engine.now {
-								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-							}
-
-							completed = { ..engine, now: engine.now + outcome.remaining_cycles }
-							marked = if outcome.remaining_cycles > 0 {
-								{
-									..completed,
-									pipeline: mark_fetch_nonsequential(completed.pipeline),
-									gamepak_prefetch: advance_prefetch_fields(
-										completed.gamepak_prefetch,
-										current_mv.wait_cnt,
-										outcome.remaining_cycles,
-									),
-								}
-							} else {
-								completed
-							}
-							after = match outcome.pc_status {
-								PCSequential => marked
-								PCWritten => {
-									match reload_pipeline(
-										current_mv,
-										{ now: marked.now, signal: marked.signal, gamepak_prefetch: marked.gamepak_prefetch },
-										ARM7TDMI.getPC(outcome.core),
-										outcome.core.is_thumb(),
-										event_at,
-									)? {
-										# Return the original state so the slow path charges completion cycles only once.
-										NeedsSlow =>
-											return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Reloaded(access, pipeline) => {
-											now: access.now,
-											signal: access.signal,
-											pipeline: Ready(pipeline),
-											gamepak_prefetch: access.gamepak_prefetch,
-										}
-									}
-								}
-							}
-							loop(current_mv, outcome.core, after, Fetch, actions_completed + 1, event_at, dma_scheduled_at)
-						}
-						R(request) => {
-							base_cycles = Bus.access_cycles(current_mv.wait_cnt, request.width, request.addr, request.access_kind)
-							plan = plan_cpu_data_access_fields(
-								engine.gamepak_prefetch,
-								current_mv.wait_cnt,
-								ARM7TDMI.getPC(core),
-								request.addr,
-								base_cycles,
-							)
-							if plan.cycles >= event_at - engine.now {
-								return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-							}
-
-							cxt = data_read_context(request.core, engine.pipeline, engine.signal)
-							(raw_val, signal) = match request.width {
-								W8 => {
-									match Bus.read_view8(current_mv, request.addr, cxt)? {
-										NeedsSlow =>
-											return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Value(result) => {
-											after_b_latch = match result.bios_latch_update {
-												Unchanged => engine.signal
-												Updated(word) => BusSignals.set_bios_latch(engine.signal, word)
-											}
-											after_access = BusSignals.record_read8(
-												after_b_latch,
-												request.addr,
-												result.val,
-											)
-											(result.val.to_u32(), after_access)
-										}
-									}
-								}
-								W16 => {
-									match Bus.read_view16(current_mv, request.addr, cxt)? {
-										NeedsSlow =>
-											return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Value(result) => {
-											after_b_latch = match result.bios_latch_update {
-												Unchanged => engine.signal
-												Updated(word) => BusSignals.set_bios_latch(engine.signal, word)
-											}
-											after_access = BusSignals.record_read16(
-												after_b_latch,
-												CpuData,
-												request.addr,
-												result.val,
-											)
-											(result.val.to_u32(), after_access)
-										}
-									}
-								}
-								W32 => {
-									match Bus.read_view32(current_mv, request.addr, cxt)? {
-										NeedsSlow => return Ok(finish_block(core, engine, actions_completed, Pending(state), current_mv, dma_scheduled_at))
-										Value(result) => {
-											after_b_latch = match result.bios_latch_update {
-												Unchanged => engine.signal
-												Updated(word) => BusSignals.set_bios_latch(engine.signal, word)
-											}
-											after_access = BusSignals.record_read32(
-												after_b_latch,
-												CpuData,
-												request.addr,
-												result.val,
-											)
-											(result.val, after_access)
-										}
-									}
-								}
-							}
-							after_read = {
-								now: engine.now + plan.cycles,
-								signal,
-								pipeline: mark_fetch_nonsequential(engine.pipeline),
-								gamepak_prefetch: plan.next_prefetch,
-							}
-							next_execution =
-								ARM7TDMI.resume_read(request.core, raw_val, request.continuation)?
-							loop(
+								Pending(execution_state),
 								current_mv,
-								core,
-								after_read,
-								Execute(next_execution),
-								actions_completed,
-								event_at,
 								dma_scheduled_at,
-							)
+							),
+						)
+					cycles_needed =
+						Bus.access_cycles(current_mv.wait_cnt, request.width, request.addr, request.access_kind)
+					if (cycles_needed >= event_at - engine_at_dispatch.now)
+						return Ok(
+							finish_block(
+								core,
+								engine_at_dispatch,
+								actions_completed,
+								Pending(execution_state),
+								current_mv,
+								dma_scheduled_at,
+							),
+						)
+
+					first_dma_write = limits.schedule_dma and dma_scheduled_at == None
+					write_at = engine_at_dispatch.now + cycles_needed
+					if (first_dma_write and write_at > U64.highest - 2)
+						return Ok(
+							finish_block(
+								core,
+								engine_at_dispatch,
+								actions_completed,
+								Pending(execution_state),
+								current_mv,
+								dma_scheduled_at,
+							),
+						)
+					# the write_view_ram method uses much smaller param and returns a List rathe than full mv
+					# And yes, it does save memcpy amount comparing to passing full MV.
+					new_mv = if request.addr.shr_wrap(24) == 2 {
+						{
+							..current_mv,
+							ewram: Bus.write_view_ram(current_mv.ewram, request.width, request.addr, request.val)?,
+						}
+					} else {
+						{
+							..current_mv,
+							iwram: Bus.write_view_ram(current_mv.iwram, request.width, request.addr, request.val)?,
 						}
 					}
+					new_signal = match request.width {
+						W8 => BusSignals.record_write8(engine_at_dispatch.signal, request.addr, request.val.to_u8_wrap())
+						W16 => BusSignals.record_write16(engine_at_dispatch.signal, CpuData, request.addr, request.val.to_u16_wrap())
+						W32 => BusSignals.record_write32(engine_at_dispatch.signal, CpuData, request.addr, request.val)
+					}
+					after_write = {
+						now: write_at,
+						signal: new_signal,
+						pipeline: mark_fetch_nonsequential(engine_at_dispatch.pipeline),
+						gamepak_prefetch: advance_prefetch_fields(
+							engine_at_dispatch.gamepak_prefetch,
+							current_mv.wait_cnt,
+							cycles_needed,
+						),
+					}
+					next_execution =
+						ARM7TDMI.resume_write(request.core, request.continuation)?
+					loop(
+						new_mv,
+						core,
+						after_write,
+						AfterDataAccess(next_execution),
+						actions_completed,
+						if (first_dma_write) event_at.min(write_at + 2) else event_at,
+						if (first_dma_write) At(write_at) else dma_scheduled_at,
+					)
+				}
+				Complete(outcome) => {
+					if outcome.remaining_cycles >= event_at - engine_at_dispatch.now {
+						return Ok(
+							finish_block(
+								core,
+								engine_at_dispatch,
+								actions_completed,
+								Pending(execution_state),
+								current_mv,
+								dma_scheduled_at,
+							),
+						)
+					}
+
+					completed = {
+						..engine_at_dispatch,
+						now: engine_at_dispatch.now + outcome.remaining_cycles,
+					}
+					marked = if outcome.remaining_cycles > 0 {
+						{
+							..completed,
+							pipeline: mark_fetch_nonsequential(completed.pipeline),
+							gamepak_prefetch: advance_prefetch_fields(
+								completed.gamepak_prefetch,
+								current_mv.wait_cnt,
+								outcome.remaining_cycles,
+							),
+						}
+					} else {
+						completed
+					}
+					after = match outcome.pc_status {
+						PCSequential => marked
+						PCWritten => {
+							match reload_pipeline(
+								current_mv,
+								{ now: marked.now, signal: marked.signal, gamepak_prefetch: marked.gamepak_prefetch },
+								ARM7TDMI.getPC(outcome.core),
+								outcome.core.is_thumb(),
+								event_at,
+							)? {
+								# Return the original state so the slow path charges completion cycles only once.
+								NeedsSlow => return Ok(
+									finish_block(
+										core,
+										engine_at_dispatch,
+										actions_completed,
+										Pending(execution_state),
+										current_mv,
+										dma_scheduled_at,
+									),
+								)
+								Reloaded(access, pipeline) => {
+									now: access.now,
+									signal: access.signal,
+									pipeline: Ready(pipeline),
+									gamepak_prefetch: access.gamepak_prefetch,
+								}
+							}
+						}
+					}
+					loop(current_mv, outcome.core, after, Fetch, actions_completed + 1, event_at, dma_scheduled_at)
+				}
+				R(request) => {
+					base_cycles =
+						Bus.access_cycles(current_mv.wait_cnt, request.width, request.addr, request.access_kind)
+					plan = plan_cpu_data_access_fields(
+						engine_at_dispatch.gamepak_prefetch,
+						current_mv.wait_cnt,
+						ARM7TDMI.getPC(core),
+						request.addr,
+						base_cycles,
+					)
+					if plan.cycles >= event_at - engine_at_dispatch.now {
+						return Ok(
+							finish_block(
+								core,
+								engine_at_dispatch,
+								actions_completed,
+								Pending(execution_state),
+								current_mv,
+								dma_scheduled_at,
+							),
+						)
+					}
+
+					cxt =
+						data_read_context(request.core, engine_at_dispatch.pipeline, engine_at_dispatch.signal)
+					(raw_val, signal) = match request.width {
+						W8 => {
+							match Bus.read_view8(current_mv, request.addr, cxt)? {
+								NeedsSlow =>
+									return Ok(
+										finish_block(
+											core,
+											engine_at_dispatch,
+											actions_completed,
+											Pending(execution_state),
+											current_mv,
+											dma_scheduled_at,
+										),
+									)
+								Value(result) => {
+									after_b_latch = match result.bios_latch_update {
+										Unchanged => engine_at_dispatch.signal
+										Updated(word) => BusSignals.set_bios_latch(engine_at_dispatch.signal, word)
+									}
+									after_access = BusSignals.record_read8(
+										after_b_latch,
+										request.addr,
+										result.val,
+									)
+									(result.val.to_u32(), after_access)
+								}
+							}
+						}
+						W16 => {
+							match Bus.read_view16(current_mv, request.addr, cxt)? {
+								NeedsSlow => return Ok(
+									finish_block(
+										core,
+										engine_at_dispatch,
+										actions_completed,
+										Pending(execution_state),
+										current_mv,
+										dma_scheduled_at,
+									),
+								)
+								Value(result) => {
+									after_b_latch = match result.bios_latch_update {
+										Unchanged => engine_at_dispatch.signal
+										Updated(word) => BusSignals.set_bios_latch(engine_at_dispatch.signal, word)
+									}
+									after_access = BusSignals.record_read16(
+										after_b_latch,
+										CpuData,
+										request.addr,
+										result.val,
+									)
+									(result.val.to_u32(), after_access)
+								}
+							}
+						}
+						W32 => {
+							match Bus.read_view32(current_mv, request.addr, cxt)? {
+								NeedsSlow => return Ok(
+									finish_block(
+										core,
+										engine_at_dispatch,
+										actions_completed,
+										Pending(execution_state),
+										current_mv,
+										dma_scheduled_at,
+									),
+								)
+								Value(result) => {
+									after_b_latch = match result.bios_latch_update {
+										Unchanged => engine_at_dispatch.signal
+										Updated(word) => BusSignals.set_bios_latch(engine_at_dispatch.signal, word)
+									}
+									after_access = BusSignals.record_read32(
+										after_b_latch,
+										CpuData,
+										request.addr,
+										result.val,
+									)
+									(result.val, after_access)
+								}
+							}
+						}
+					}
+					after_read = {
+						now: engine_at_dispatch.now + plan.cycles,
+						signal,
+						pipeline: mark_fetch_nonsequential(engine_at_dispatch.pipeline),
+						gamepak_prefetch: plan.next_prefetch,
+					}
+					next_execution =
+						ARM7TDMI.resume_read(request.core, raw_val, request.continuation)?
+					loop(
+						current_mv,
+						core,
+						after_read,
+						AfterDataAccess(next_execution),
+						actions_completed,
+						event_at,
+						dma_scheduled_at,
+					)
 				}
 			}
 		}
@@ -666,7 +749,7 @@ Cpu := {
 		first_opcode =
 			match fetch_opcode(
 				mv,
-				{ now: fs.now, signal: fs.signal, gamepak_prefetch: fs.gamepak_prefetch },
+				fs,
 				cur_pc,
 				width,
 				NonSequential,
