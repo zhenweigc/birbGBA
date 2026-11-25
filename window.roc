@@ -1,6 +1,6 @@
 app [Model, program] {
-	roc: "nightly-2026-11-24-ff5e544",
-	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.12.3/default-5dNxpAJgNbQLwNCvyiSS44ReCG5bm2v34uKzFQH97rWC.tar.zst",
+	roc: "nightly-2026-11-25-d5a4f1e",
+	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.13.0/default-8yWQXdFMfK8erQff7bMEjF6KjrwFR6sTq9EY4LURGgBw.tar.zst",
 }
 
 import rr.App
@@ -82,7 +82,7 @@ init! = App.init(
 	|io| {
 		dir = io.files().working_directory!()?
 		bios = dir.read_bytes!("bios.bin")?
-		rom = dir.read_bytes!("game.gba")?
+		rom = dir.read_bytes_with!({ path: "game.gba", max_bytes: 64 * 1024 * 1024 })? # Thx Luke
 		kind = Save.detect_save_type(rom)
 		save = load_save!(dir, kind)?
 		machine = Machine.init(bios, rom, save)?
