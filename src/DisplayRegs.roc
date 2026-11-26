@@ -1,4 +1,5 @@
 import Bits
+import PpuTypes
 
 DisplayRegs :: {
 	dispcnt : U16,
@@ -650,10 +651,10 @@ DisplayRegs :: {
 	}
 
 	get_text_bgs : DisplayRegs -> {
-		bg0 : { cnt : U16, hofs : U16, vofs : U16 },
-		bg1 : { cnt : U16, hofs : U16, vofs : U16 },
-		bg2 : { cnt : U16, hofs : U16, vofs : U16 },
-		bg3 : { cnt : U16, hofs : U16, vofs : U16 },
+		bg0 : PpuTypes.TextBgRegs,
+		bg1 : PpuTypes.TextBgRegs,
+		bg2 : PpuTypes.TextBgRegs,
+		bg3 : PpuTypes.TextBgRegs,
 	}
 	get_text_bgs = |rgs| {
 		{

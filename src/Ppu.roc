@@ -1,4 +1,5 @@
 import Bits
+import PpuTypes
 
 PreparedObj := {
 	attr0 : U16,
@@ -17,9 +18,28 @@ LayerCandidate := {
 
 AffineParams := { pa : I32, pb : I32, pc : I32, pd : I32, x : I32, y : I32 }
 
-Ppu :: { framebuffer : List(U16) }.{
+Mode0TileRow : { next_addr : U64, halfwords_left : U8 }
+
+Mode0BgFetchState : {
+	entry : U16,
+	row : Mode0TileRow,
+	raw : U16,
+	pixels_left : U8,
+}
+
+Mode0BgStepResult : { index : U8, state : Mode0BgFetchState, latch : U16 }
+
+empty_mode0_bg_fetch_state : Mode0BgFetchState
+empty_mode0_bg_fetch_state = {
+	entry: 0,
+	row: { next_addr: 0, halfwords_left: 0 },
+	raw: 0,
+	pixels_left: 0,
+}
+
+Ppu :: { framebuffer : List(U16), bg_vram_latch : U16 }.{
 	init : () -> Ppu
-	init = || { framebuffer: List.repeat(0, 240 * 160) }
+	init = || { framebuffer: List.repeat(0, 240 * 160), bg_vram_latch: 0 }
 
 	get_framebuffer : Ppu -> List(U16)
 	get_framebuffer = |ppu| ppu.framebuffer
@@ -30,10 +50,10 @@ Ppu :: { framebuffer : List(U16) }.{
 	List(U8),
 	U64,
 	{
-		bg0 : { cnt : U16, hofs : U16, vofs : U16 },
-		bg1 : { cnt : U16, hofs : U16, vofs : U16 },
-		bg2 : { cnt : U16, hofs : U16, vofs : U16 },
-		bg3 : { cnt : U16, hofs : U16, vofs : U16 },
+		bg0 : PpuTypes.TextBgRegs,
+		bg1 : PpuTypes.TextBgRegs,
+		bg2 : PpuTypes.TextBgRegs,
+		bg3 : PpuTypes.TextBgRegs,
 	},
 	AffineParams,
 	AffineParams,
@@ -76,6 +96,7 @@ Ppu :: { framebuffer : List(U16) }.{
 			Err(InvalidScanline(row_num))
 		} else {
 			var $new_fb = ppu.framebuffer
+			var $bg_latch = ppu.bg_vram_latch
 			starting_idx = 240 * row_num
 			var $i = 0.U64
 			if Bits.get_ith_bit_u16_certain(dispcnt, 7) {
@@ -96,6 +117,14 @@ Ppu :: { framebuffer : List(U16) }.{
 					_ => 0
 				}
 				active_bg_mask = Bits.get_seg_of_u16_certain(dispcnt, 8, 4).bitwise_and(valid_bg_mask)
+				bgs = [bg_regs.bg0, bg_regs.bg1, bg_regs.bg2, bg_regs.bg3]
+				mode0_line = if mode == 0 and active_bg_mask != 0 {
+					# Is it in mode 0 + at least one bg is on?
+					mode0_fetch_scanline(vram, bgs, active_bg_mask, row_num, mosaic, ppu.bg_vram_latch)?
+				} else {
+					{ indices: [], latch: ppu.bg_vram_latch } # If no then nothing burger
+				}
+				$bg_latch = mode0_line.latch
 				fast_single_bg = if effect_mode == 0
 					and dispcnt.bitwise_and(0xF000) == 0 {
 					match active_bg_mask {
@@ -117,23 +146,34 @@ Ppu :: { framebuffer : List(U16) }.{
 						layer_mask = select_windows_mask(dispcnt, windows, $i, False)
 						$new_fb = $new_fb.set(
 							starting_idx.plus_wrap($i),
-							if (effect_mode >= 2 and Bits.get_ith_bit_u16_certain(layer_mask, 5)
-								and Bits.get_ith_bit_u16_certain(effects.bldcnt, 5)) adjusted_backdrop_color else backdrop_color?,
+							if effect_mode >= 2 and Bits.get_ith_bit_u16_certain(layer_mask, 5)
+								and Bits.get_ith_bit_u16_certain(effects.bldcnt, 5) {
+								adjusted_backdrop_color
+							}
+							else {
+								backdrop_color?
+							},
 						)?
 						$i = $i + 1
 					}
 				} else if fast_single_bg {
-					selected_bg = match active_bg_mask {
-						1 => bg_regs.bg0
-						2 => bg_regs.bg1
-						4 => bg_regs.bg2
-						_ => bg_regs.bg3
+					bg_id = match active_bg_mask {
+						1 => 0.U64
+						2 => 1
+						4 => 2
+						_ => 3
 					}
+					selected_bg = bgs.get(bg_id)?
 					is_text = mode == 0
 						or (mode == 1 and (active_bg_mask == 1 or active_bg_mask == 2))
 					if is_text {
 						while $i < 240 {
-							pixel = sample_text_bg(vram, paletteram, selected_bg, $i, row_num)?
+							pixel = if mode == 0 {
+								palette_index = mode0_line.indices.get($i * 4 + bg_id)?
+								bg_palette_pixel(paletteram, palette_index)?
+							} else {
+								sample_text_bg(vram, paletteram, selected_bg, $i, row_num)?
+							}
 							color = match pixel {
 								Color(c) => c
 								Transparent => backdrop_color?
@@ -166,7 +206,6 @@ Ppu :: { framebuffer : List(U16) }.{
 						}
 					}
 				} else {
-					bgs = [bg_regs.bg0, bg_regs.bg1, bg_regs.bg2, bg_regs.bg3]
 					objs = prepare_obj_line(oam, dispcnt, row_num)?
 					mosaic_h = Bits.get_seg_of_u16_certain(mosaic, 0, 4).plus_wrap(1)
 					mosaic_v = Bits.get_seg_of_u16_certain(mosaic, 4, 4).plus_wrap(1)
@@ -192,7 +231,8 @@ Ppu :: { framebuffer : List(U16) }.{
 					}
 					while $i < 240 {
 						mosaic_x = $i.minus_wrap($i.mod_by(mosaic_h.to_u64()))
-						obj_layer = sample_obj_layer(vram, paletteram, dispcnt, objs, $i, row_num, obj_mosaic_dy)?
+						obj_layer =
+							sample_obj_layer(vram, paletteram, dispcnt, objs, $i, row_num, obj_mosaic_dy)?
 						if !obj_layer.mosaic_on
 							or !$obj_latch.mosaic_on
 							or obj_layer.priority < $obj_latch.priority
@@ -203,15 +243,21 @@ Ppu :: { framebuffer : List(U16) }.{
 						var $top = { pixel: Transparent, priority: 4, layer: 5 }
 						var $second = $top
 						dx = ($i - mosaic_x).to_i32_wrap()
-						(sample_bg2_fixed_x, sample_bg2_fixed_y) = affine_sample_position(bg2, $bg2_fixed_x, $bg2_fixed_y, bg2_mosaic_on, dx)
-						(sample_bg3_fixed_x, sample_bg3_fixed_y) = affine_sample_position(bg3, $bg3_fixed_x, $bg3_fixed_y, bg3_mosaic_on, dx)
+						(sample_bg2_fixed_x, sample_bg2_fixed_y) =
+							affine_sample_position(bg2, $bg2_fixed_x, $bg2_fixed_y, bg2_mosaic_on, dx)
+						(sample_bg3_fixed_x, sample_bg3_fixed_y) =
+							affine_sample_position(bg3, $bg3_fixed_x, $bg3_fixed_y, bg3_mosaic_on, dx)
 						if mode <= 2 {
 							var $j = if (mode == 2) 2.U64 else 0.U64 # Iterating BGs
 							while $j < (if (mode == 1) 3 else 4) {
 								if Bits.get_ith_bit_u16_certain(dispcnt, (8 + $j).to_u8_wrap())
 									and Bits.get_ith_bit_u16_certain(layer_mask, $j.to_u8_wrap()) {
 									bg = bgs.get($j)?
-									bg_pixel = if $j == 2 and (mode == 1 or mode == 2) {
+									bg_pixel = if mode == 0 {
+										sample_x = if (Bits.get_ith_bit_u16_certain(bg.cnt, 6)) mosaic_x else $i
+										palette_index = mode0_line.indices.get(sample_x * 4 + $j)?
+										bg_palette_pixel(paletteram, palette_index)?
+									} else if $j == 2 {
 										sample_affine_bg(vram, paletteram, bg.cnt, sample_bg2_fixed_x, sample_bg2_fixed_y)?
 									} else if mode == 2 and $j == 3 {
 										sample_affine_bg(vram, paletteram, bg.cnt, sample_bg3_fixed_x, sample_bg3_fixed_y)?
@@ -295,13 +341,13 @@ Ppu :: { framebuffer : List(U16) }.{
 					$i = $i + 2
 				}
 			}
-			Ok({ ..ppu, framebuffer: $new_fb })
+			Ok({ ..ppu, framebuffer: $new_fb, bg_vram_latch: $bg_latch })
 		}
 	}
 
 	sample_text_bg : List(U8),
 	List(U8),
-	{ cnt : U16, hofs : U16, vofs : U16 },
+	PpuTypes.TextBgRegs,
 	U64,
 	U64 -> Try(
 		[Transparent, Color(U16)],
@@ -310,27 +356,19 @@ Ppu :: { framebuffer : List(U16) }.{
 	sample_text_bg = |vram, paletteram, bg, screen_x, screen_y| {
 		is_8bpp = Bits.get_ith_bit_u16_certain(bg.cnt, 7)
 		if (screen_x > 239 or screen_y > 159) return Err(OutOfBounds)
-		tile_base = Bits.get_seg_of_u16_certain(bg.cnt, 2, 2) * (16 * 1024)
-		map_base = Bits.get_seg_of_u16_certain(bg.cnt, 8, 5) * (2 * 1024)
 		width = if (Bits.get_ith_bit_u16_certain(bg.cnt, 14)) 512 else 256
 		height = if (Bits.get_ith_bit_u16_certain(bg.cnt, 15)) 512 else 256
 		source_x = screen_x.plus_wrap(bg.hofs.to_u64()).mod_by(width)
 		source_y = screen_y.plus_wrap(bg.vofs.to_u64()).mod_by(height)
 		(tile_x, tile_y) = (source_x // 8, source_y // 8)
 		(pixel_x, pixel_y) = (source_x.mod_by(8), source_y.mod_by(8))
-		block = ((tile_y // 32).times_wrap(width // 256)).plus_wrap(tile_x // 32)
-		within_block = tile_y.mod_by(32).times_wrap(32).plus_wrap(tile_x.mod_by(32))
-		entry_offset = map_base.to_u64().plus_wrap(block.times_wrap(32 * 32 * 2)).plus_wrap(within_block.times_wrap(2))
+		entry_offset = mode0_map_entry_offset(bg.cnt, tile_x, tile_y)
 		if (entry_offset.plus_wrap(1) >= 65536) return Err(OutOfBounds)
 		entry = read_u16_le(vram, entry_offset)?
-		tile_num = Bits.get_seg_of_u16_certain(entry, 0, 10)
 		flip_x = Bits.get_ith_bit_u16_certain(entry, 10)
-		flip_y = Bits.get_ith_bit_u16_certain(entry, 11)
-		palette_num = Bits.get_seg_of_u16_certain(entry, 12, 4)
 		sample_x = if (flip_x) 7 - pixel_x else pixel_x
-		sample_y = if (flip_y) 7 - pixel_y else pixel_y
-		pixel_index = tile_num.to_u64().times_wrap(64).plus_wrap(sample_y.times_wrap(8)).plus_wrap(sample_x)
-		pixel_offset = if (is_8bpp) tile_base.to_u64().plus_wrap(pixel_index) else tile_base.to_u64().plus_wrap(pixel_index // 2)
+		row_offset = mode0_tile_row_offset(bg.cnt, entry, pixel_y)
+		pixel_offset = row_offset + (if (is_8bpp) sample_x else sample_x // 2)
 		if (pixel_offset >= 65536) return Err(OutOfBounds)
 		raw_idx = vram.get(pixel_offset)?
 		final_idx = if is_8bpp {
@@ -340,15 +378,211 @@ Ppu :: { framebuffer : List(U16) }.{
 			Bits.get_seg_of_u8_certain(raw_idx, lsb, 4)
 		}
 		if (final_idx == 0) return Ok(Transparent)
-		p_idx = if is_8bpp {
-			final_idx.to_u64()
-		} else {
-			palette_num.times_wrap(16).plus_wrap(final_idx.to_u16()).to_u64()
-		}
+		p_idx = mode0_palette_index(is_8bpp, entry, final_idx).to_u64()
 		p_offset = p_idx.times_wrap(2)
 		color = read_rgb555(paletteram, p_offset)?
 		Ok(Color(color))
 	}
+}
+
+is_mode0_tilemap_fetch_cycle : U64, U16 -> Bool
+is_mode0_tilemap_fetch_cycle = |cycle, hofs| {
+	step = cycle // 4 + (hofs.mod_by(8).to_u64())
+	cycle < 1007 and step >= 8 and step.mod_by(8) == 0
+}
+
+mode0_map_entry_offset : U16, U64, U64 -> U64
+mode0_map_entry_offset = |bgcnt, tile_x, tile_y| {
+	map_base = Bits.get_seg_of_u16_certain(bgcnt, 8, 5) * (2 * 1024)
+	width = if (Bits.get_ith_bit_u16_certain(bgcnt, 14)) 512 else 256
+	block = ((tile_y // 32).times_wrap(width // 256)).plus_wrap(tile_x // 32)
+	within_block = tile_y.mod_by(32).times_wrap(32).plus_wrap(tile_x.mod_by(32))
+	map_base.to_u64().plus_wrap(block.times_wrap(32 * 32 * 2)).plus_wrap(within_block.times_wrap(2))
+}
+
+mode0_tile_row_offset : U16, U16, U64 -> U64
+mode0_tile_row_offset = |bgcnt, entry, pixel_y| {
+	is_8bpp = Bits.get_ith_bit_u16_certain(bgcnt, 7)
+	tile_base = Bits.get_seg_of_u16_certain(bgcnt, 2, 2) * (16 * 1024)
+	tile_num = Bits.get_seg_of_u16_certain(entry, 0, 10).to_u64()
+	flip_y = Bits.get_ith_bit_u16_certain(entry, 11)
+	sample_y = if (flip_y) 7 - pixel_y else pixel_y
+	bytes_per_row = if (is_8bpp) 8 else 4.U64
+	tile_base.to_u64() + (tile_num * 8 + sample_y) * bytes_per_row
+}
+
+mode0_map_fetch_position : U64, PpuTypes.TextBgRegs, U64 -> { entry_offset : U64, pixel_y : U64 }
+mode0_map_fetch_position = |cycle, bg, sample_line| {
+	width_tiles = if (Bits.get_ith_bit_u16_certain(bg.cnt, 14)) 64 else 32.U64
+	height_tiles = if (Bits.get_ith_bit_u16_certain(bg.cnt, 15)) 64 else 32.U64
+
+	step = cycle // 4 + bg.hofs.mod_by(8).to_u64()
+	# The first tilemap fetch is at step 8.
+	tiles_since_first_fetch = (step - 8) // 8
+	unwrapped_tile_x = bg.hofs.to_u64() // 8 + tiles_since_first_fetch
+	y = sample_line.plus_wrap(bg.vofs.to_u64())
+	tile_x = unwrapped_tile_x.mod_by(width_tiles)
+	tile_y = (y // 8).mod_by(height_tiles)
+
+	{ entry_offset: mode0_map_entry_offset(bg.cnt, tile_x, tile_y), pixel_y: y.mod_by(8) }
+}
+
+mode0_begin_tile_row : U16, U16, U64 -> { next_addr : U64, halfwords_left : U8 }
+mode0_begin_tile_row = |bgcnt, entry, pixel_y| {
+	row_start = mode0_tile_row_offset(bgcnt, entry, pixel_y)
+	is_8bpp = Bits.get_ith_bit_u16_certain(bgcnt, 7)
+	flip_x = Bits.get_ith_bit_u16_certain(entry, 10)
+	match (is_8bpp, flip_x) { # horizontally flipped tile starts at the last halfword and is read backwards
+		(True, True) => { next_addr: row_start.plus_wrap(6), halfwords_left: 4 }
+		(True, False) => { next_addr: row_start, halfwords_left: 4 }
+		(False, True) => { next_addr: row_start.plus_wrap(2), halfwords_left: 2 }
+		(False, False) => { next_addr: row_start, halfwords_left: 2 }
+	}
+}
+
+mode0_fetch_tilemap_entry : List(U8),
+U64,
+PpuTypes.TextBgRegs,
+U64,
+Mode0BgFetchState,
+U16 -> Try(
+	{ state : Mode0BgFetchState, latch : U16 },
+	[OutOfBounds],
+)
+mode0_fetch_tilemap_entry = |vram, cycle, bg, sample_line, state, prev_latch| {
+	# Better call s_mode0_tilemap_fetch() to make sure you're reading tilemaps
+	pos = mode0_map_fetch_position(cycle, bg, sample_line)
+	entry = fetch_mode0_bg_halfword(vram, pos.entry_offset, prev_latch)?
+	if (cycle >= 1004) return Ok({ state, latch: entry })
+	row = mode0_begin_tile_row(bg.cnt, entry, pos.pixel_y)
+	Ok({ state: { ..state, entry, row, pixels_left: 0 }, latch: entry })
+}
+
+mode0_fetch_tile_halfword : List(U8), Mode0TileRow, Bool, U16 -> Try({ raw : U16, row : Mode0TileRow }, [OutOfBounds])
+mode0_fetch_tile_halfword = |vram, row, flip_x, prev_latch| {
+	raw = fetch_mode0_bg_halfword(vram, row.next_addr, prev_latch)?
+	# Caller please make sure halfwords_left != 0
+	if (row.halfwords_left == 1) return Ok({ raw, row: { ..row, halfwords_left: 0 } })
+	Ok({
+		row: {
+			next_addr: if (flip_x) row.next_addr.minus_wrap(2) else row.next_addr.plus_wrap(2),
+			halfwords_left: row.halfwords_left - 1,
+		},
+		raw,
+	})
+}
+
+mode0_unpack_tile_pixel : U16, U16, U16, U8 -> U8
+mode0_unpack_tile_pixel = |bgcnt, entry, raw, pixel_in_halfword| {
+	is_8bpp = Bits.get_ith_bit_u16_certain(bgcnt, 7)
+	flip_x = Bits.get_ith_bit_u16_certain(entry, 10)
+	if is_8bpp {
+		byte_index = if (flip_x) 1 - pixel_in_halfword else pixel_in_halfword
+		raw.shr_wrap(byte_index * 8).to_u8_wrap()
+	} else {
+		half_byte_index = if (flip_x) 3 - pixel_in_halfword else pixel_in_halfword
+		Bits.get_seg_of_u16_certain(raw, half_byte_index * 4, 4).to_u8_wrap()
+	}
+}
+
+mode0_palette_index : Bool, U16, U8 -> U8
+mode0_palette_index = |is_8bpp, entry, pixel| {
+	if (pixel == 0 or is_8bpp) return pixel
+	Bits.get_seg_of_u16_certain(entry, 12, 4).to_u8_wrap().times_wrap(16).plus_wrap(pixel)
+}
+
+mode0_next_bg_pixel : List(U8),
+U16,
+Mode0BgFetchState,
+U16 -> Try(
+	Mode0BgStepResult,
+	[OutOfBounds],
+)
+mode0_next_bg_pixel = |vram, bgcnt, state, prev_latch| {
+	is_8bpp = Bits.get_ith_bit_u16_certain(bgcnt, 7)
+	pixels_per_halfword = if (is_8bpp) 2.U8 else 4.U8
+	(state_for_pixel, next_latch) = match (state.pixels_left, (state.row).halfwords_left) {
+		(0, 0) => return Ok({ index: 0, state, latch: prev_latch })
+		(0, _) => {
+			flip_x = Bits.get_ith_bit_u16_certain(state.entry, 10)
+			fetched =
+				mode0_fetch_tile_halfword(vram, state.row, flip_x, prev_latch)?
+			(
+				{ ..state, row: fetched.row, raw: fetched.raw, pixels_left: pixels_per_halfword },
+				fetched.raw,
+			)
+		}
+		(_, _) => (state, prev_latch)
+	}
+	pixel_in_halfword = pixels_per_halfword - state_for_pixel.pixels_left
+	pixel = mode0_unpack_tile_pixel(bgcnt, state_for_pixel.entry, state_for_pixel.raw, pixel_in_halfword)
+	index = mode0_palette_index(is_8bpp, state_for_pixel.entry, pixel)
+
+	Ok({
+		index,
+		state: { ..state_for_pixel, pixels_left: state_for_pixel.pixels_left - 1 },
+		latch: next_latch,
+	})
+}
+
+mode0_step_bg_slot : List(U8),
+U64,
+PpuTypes.TextBgRegs,
+U64,
+Mode0BgFetchState,
+U16 -> Try(
+	Mode0BgStepResult,
+	[OutOfBounds],
+)
+mode0_step_bg_slot = |vram, cycle, bg, sample_line, state, prev_latch| {
+	pixel_step = mode0_next_bg_pixel(vram, bg.cnt, state, prev_latch)?
+	if (!is_mode0_tilemap_fetch_cycle(cycle, bg.hofs)) return Ok(pixel_step)
+	tilemap_step =
+		mode0_fetch_tilemap_entry(vram, cycle, bg, sample_line, pixel_step.state, pixel_step.latch)?
+	Ok({ index: pixel_step.index, state: tilemap_step.state, latch: tilemap_step.latch })
+}
+
+mode0_fetch_scanline : List(U8),
+List(PpuTypes.TextBgRegs),
+U16,
+U64,
+U16,
+U16 -> Try(
+	{ indices : List(U8), latch : U16 },
+	[OutOfBounds],
+)
+mode0_fetch_scanline = |vram, bgs, active_bg_mask, row_num, mosaic, initial_latch| {
+	# Given this row num, what 4 pixel per bg give?
+	mosaic_v = Bits.get_seg_of_u16_certain(mosaic, 4, 4).plus_wrap(1)
+	mosaic_y = row_num.minus_wrap(row_num.mod_by(mosaic_v.to_u64()))
+
+	var $states = List.repeat(empty_mode0_bg_fetch_state, 4)
+	var $latch = initial_latch
+	var $indices = List.repeat(0.U8, 240 * 4)
+	var $cycle = 1.U64
+
+	while $cycle <= 1232 {
+		bg_id = $cycle.mod_by(4)
+		# Is bro awake?
+		if Bits.get_ith_bit_u16_certain(active_bg_mask, bg_id.to_u8_wrap()) {
+			rgs = bgs.get(bg_id)?
+			sample_line = if (Bits.get_ith_bit_u16_certain(rgs.cnt, 6)) mosaic_y else row_num
+			{ index, state, latch } =
+				mode0_step_bg_slot(vram, $cycle, rgs, sample_line, $states.get(bg_id)?, $latch)?
+			$states = $states.set(bg_id, state)?
+			$latch = latch
+			# 4 cycles -> 1 dot, 1 slot per BG
+			# 0..7 dots -> no tilemap read yet for BGs with no horizontal scroll
+			# 8th dot -> reading first tilemap entry
+			# 9..248 -> giving pixel of different bgs for x = dot - 9
+			dot = $cycle // 4
+			if dot >= 9 and dot < 249 {
+				$indices = $indices.set((dot - 9) * 4 + bg_id, index)?
+			}
+		}
+		$cycle = $cycle + 1
+	}
+	Ok({ indices: $indices, latch: $latch })
 }
 
 decode_size : U16, U16 -> Try((U64, U64), [OutOfBounds, ProhibitedCode])
@@ -840,6 +1074,14 @@ resolve_color = |
 	}
 }
 
+fetch_mode0_bg_halfword : List(U8), U64, U16 -> Try(U16, [OutOfBounds])
+fetch_mode0_bg_halfword = |vram, aligned_offset, prev_latch| {
+	# You cannot read OBJ bro in mode 0 bro, so the same latch story
+	# NBA really figured out anything
+	if (aligned_offset >= 0x10000) return Ok(prev_latch)
+	read_u16_le(vram, aligned_offset)
+}
+
 read_u16_le_masked : List(U8), U64, U16 -> Try(U16, [OutOfBounds])
 read_u16_le_masked = |lst, idx, mask| {
 	Ok((List.get(lst, idx)?.to_u16()
@@ -851,6 +1093,12 @@ read_u16_le = |lst, idx| read_u16_le_masked(lst, idx, 0xFFFF)
 
 read_rgb555 : List(U8), U64 -> Try(U16, [OutOfBounds])
 read_rgb555 = |lst, idx| read_u16_le_masked(lst, idx, 0b111_1111_1111_1111)
+
+bg_palette_pixel : List(U8), U8 -> Try([Transparent, Color(U16)], [OutOfBounds])
+bg_palette_pixel = |paletteram, palette_index| {
+	if (palette_index == 0) return Ok(Transparent)
+	Ok(Color(read_rgb555(paletteram, palette_index.to_u64() * 2)?))
+}
 
 affine_row_start : AffineParams, Bool, I32 -> (I32, I32)
 affine_row_start = |affine, mosaic_on, dy| {
