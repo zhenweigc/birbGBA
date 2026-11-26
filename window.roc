@@ -1,6 +1,6 @@
 app [Model, program] {
-	roc: "nightly-2026-11-25-d5a4f1e",
-	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.13.0/default-8yWQXdFMfK8erQff7bMEjF6KjrwFR6sTq9EY4LURGgBw.tar.zst",
+	roc: "nightly-2026-11-26-890d6c8",
+	rr: platform "https://github.com/lukewilliamboswell/roc-ray/releases/download/0.13.1/default-8QntQnkNftNUXPXxWjhxrzjqcvZ22MeLRbjFbDSfQzqT.tar.zst",
 }
 
 import rr.App

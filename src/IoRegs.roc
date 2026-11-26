@@ -62,9 +62,9 @@ IoRegs := {
 					reg: catch_read_side_effect(rgs, intermediate.reg),
 				})
 			}
-			offset if offset >= 0x200 =>
+			offset if offset >= 0x200 and offset < 0x804 =>
 				Ok({ val: SystemRegs.read8(rgs.system, addr)?, device_mask: 0xFF, reg: Unchanged })
-			_ => Err(UnsupportedIORegOffset(addr))
+			_ => Ok({ val: 0, device_mask: 0, reg: Unchanged })
 		}
 	}
 
@@ -92,9 +92,9 @@ IoRegs := {
 			}
 			offset if offset >= 0x130 and offset < 0x134 =>
 				Ok({ val: KeyRegs.read16(rgs.keys, addr)?, device_mask: 0xFFFF, reg: Unchanged })
-			offset if offset >= 0x200 =>
+			offset if offset >= 0x200 and offset < 0x804 =>
 				Ok({ val: SystemRegs.read16(rgs.system, addr)?, device_mask: 0xFFFF, reg: Unchanged })
-			_ => Err(UnsupportedIORegOffset(addr))
+			_ => Ok({ val: 0, device_mask: 0, reg: Unchanged })
 		}
 	}
 
@@ -123,9 +123,9 @@ IoRegs := {
 					reg: catch_read_side_effect(rgs, intermediate.reg),
 				})
 			}
-			offset if offset >= 0x200 =>
+			offset if offset >= 0x200 and offset < 0x804 =>
 				Ok({ val: SystemRegs.read32(rgs.system, addr)?, device_mask: 0xFFFFFFFF, reg: Unchanged })
-			_ => Err(UnsupportedIORegOffset(addr))
+			_ => Ok({ val: 0, device_mask: 0, reg: Unchanged })
 		}
 	}
 
@@ -154,10 +154,10 @@ IoRegs := {
 			offset if offset >= 0x134 and offset < 0x200 => {
 				Ok({ ..rgs, serials: SerialRegs.write8(rgs.serials, addr, val)? })
 			}
-			offset if offset >= 0x200 => {
+			offset if offset >= 0x200 and offset < 0x804 => {
 				Ok({ ..rgs, system: SystemRegs.write8(rgs.system, addr, val)? })
 			}
-			_ => Err(UnsupportedIORegOffset(addr))
+			_ => Ok(rgs)
 		}
 	}
 
@@ -186,10 +186,10 @@ IoRegs := {
 			offset if offset >= 0x134 and offset < 0x200 => {
 				Ok({ ..rgs, serials: SerialRegs.write16(rgs.serials, addr, val)? })
 			}
-			offset if offset >= 0x200 => {
+			offset if offset >= 0x200 and offset < 0x804 => {
 				Ok({ ..rgs, system: SystemRegs.write16(rgs.system, addr, val)? })
 			}
-			_ => Err(UnsupportedIORegOffset(addr))
+			_ => Ok(rgs)
 		}
 	}
 
@@ -218,10 +218,10 @@ IoRegs := {
 			offset if offset >= 0x134 and offset < 0x200 => {
 				Ok({ ..rgs, serials: SerialRegs.write32(rgs.serials, addr, val)? })
 			}
-			offset if offset >= 0x200 => {
+			offset if offset >= 0x200 and offset < 0x804 => {
 				Ok({ ..rgs, system: SystemRegs.write32(rgs.system, addr, val)? })
 			}
-			_ => Err(UnsupportedIORegOffset(addr))
+			_ => Ok(rgs)
 		}
 	}
 
