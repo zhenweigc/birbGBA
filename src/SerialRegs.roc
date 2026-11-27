@@ -21,6 +21,7 @@ SerialRegs :: {
 	joytrans_l : U16,
 	joytrans_h : U16,
 	joystat : U16,
+	completion : [None, Pending(U64), At(U64)],
 }.{
 	init : () -> SerialRegs
 	init = || {
@@ -38,7 +39,40 @@ SerialRegs :: {
 			joytrans_l: 0,
 			joytrans_h: 0,
 			joystat: 0,
+			completion: None,
 		}
+	}
+
+	get_completion_at : SerialRegs -> [None, At(U64)]
+	get_completion_at = |rgs| {
+		match rgs.completion {
+			None | Pending(_) => None
+			At(x) => At(x)
+		}
+	}
+
+	schedule_pending : SerialRegs, U64 -> SerialRegs
+	schedule_pending = |rgs, given_now| {
+		# Very similar to that of DmaRegs
+		# Pending -> Req for schedule, At -> scheduled
+		match rgs.completion {
+			None | At(_) => rgs
+			Pending(x) => { ..rgs, completion: At(x.plus_wrap(given_now)) }
+		}
+	}
+
+	complete_at : SerialRegs, U64 -> (SerialRegs, U16)
+	complete_at = |rgs, given_now| {
+		if (rgs.completion != At(given_now)) return (rgs, 0)
+		new_siocnt = rgs.siocnt.bitwise_and(0b1111_1111_0111_1111)
+		(
+			match mode_decode(rgs.rcnt, rgs.siocnt) {
+				EightBit => { ..rgs, siocnt: new_siocnt, completion: None, siodata8: rgs.siodata8.bitwise_or(0xFF) }
+				ThirtyTwoBit => { ..rgs, siocnt: new_siocnt, completion: None, siodata32_l: 0xFFFF, siodata32_h: 0xFFFF }
+				_ => return ({ ..rgs, completion: None }, 0)
+			},
+			if (Bits.get_ith_bit_u16_certain(rgs.siocnt, 14)) 0x80 else 0,
+		)
 	}
 
 	read8 : SerialRegs, U32 -> Try(ReadResult(U8, SerialRegs), [UnsupportedIORegOffset(U32)])
@@ -213,15 +247,34 @@ SerialRegs :: {
 			0x126 => Ok({ ..rgs, siomulti3: val })
 			0x128 => {
 				mode = mode_decode(rgs.rcnt, val)
-				Ok({
-					..rgs,
-					siocnt: match mode {
-						EightBit | ThirtyTwoBit => val.bitwise_and(0b0101_0000_1000_1011).bitwise_or(0b100) # P130
-						SixteenBit => val.bitwise_and(0b110_0000_1000_0011) # 138
-						UART => val.bitwise_and(0b111_1111_1000_1111) # 144
-						_ => val.bitwise_and(0b111_1111_1111_1111) # according to mGBA gotta kick out bit 15
-					},
-				})
+				new_siocnt = match mode {
+					EightBit | ThirtyTwoBit => val.bitwise_and(0b0101_0000_1000_1011).bitwise_or(0b100) # P130
+					SixteenBit => val.bitwise_and(0b110_0000_1000_0011) # 138
+					UART => val.bitwise_and(0b111_1111_1000_1111) # 144
+					_ => val.bitwise_and(0b111_1111_1111_1111) # according to mGBA gotta kick out bit 15
+				}
+				started = !Bits.get_ith_bit_u16_certain(rgs.siocnt, 7)
+					and Bits.get_ith_bit_u16_certain(new_siocnt, 7)
+				cancelled = (Bits.get_ith_bit_u16_certain(rgs.siocnt, 7)
+					and !Bits.get_ith_bit_u16_certain(new_siocnt, 7))
+					and (mode == EightBit or mode == ThirtyTwoBit)
+				self_counting = started and (mode == EightBit or mode == ThirtyTwoBit)
+					and Bits.get_ith_bit_u16_certain(new_siocnt, 0)
+				if self_counting {
+					transfer_cycles = match mode {
+						EightBit => 8.U64
+						_ => 32.U64
+					}.times_wrap(if (Bits.get_ith_bit_u16_certain(new_siocnt, 1)) 8 else 64)
+					Ok({
+						..rgs,
+						siocnt: new_siocnt,
+						completion: Pending(transfer_cycles),
+					})
+				} else if cancelled {
+					Ok({ ..rgs, siocnt: new_siocnt, completion: None })
+				} else {
+					Ok({ ..rgs, siocnt: new_siocnt })
+				}
 			}
 			0x12A => Ok({ ..rgs, siodata8: val })
 			offset if offset >= 0x12C and offset < 0x130 => Ok(rgs)

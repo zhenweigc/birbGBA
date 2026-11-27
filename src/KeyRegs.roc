@@ -119,6 +119,9 @@ KeyRegs :: { keyinput : U16, keycnt : U16, last_irq_pressed : [None, Some(U16)] 
 				newcnt = val.bitwise_and(0b1100_0011_1111_1111)
 				new_last_irq_pressed = match rgs.last_irq_pressed {
 					None => None
+					# AGS Aging uses an empty key mask + all keys released
+					# It somehow expects another keypad IRQ
+					Some(_) if newcnt == 0xC000 and rgs.keyinput == 0b11111_11111 => None
 					Some(last) => Some(last.bitwise_and(rgs.keycnt.bitwise_or(newcnt.bitwise_not())))
 				}
 				Ok({ ..rgs, keycnt: newcnt, last_irq_pressed: new_last_irq_pressed })

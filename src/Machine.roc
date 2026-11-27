@@ -11,6 +11,7 @@ import DisplayRegs
 import TimerRegs
 import DmaRegs
 import SoundRegs
+import SerialRegs
 import IoRegs
 import KeyRegs
 import Save
@@ -72,9 +73,12 @@ Machine :: {
 			Ok((m, 0))
 		} else {
 			timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-			at = match timer_at {
-				None => m.next_lcd_at
-				At(t) => t.min(m.next_lcd_at)
+			serial_at = SerialRegs.get_completion_at(m.bus.io_regs.serials)
+			at = match (timer_at, serial_at) {
+				(None, None) => m.next_lcd_at
+				(At(t), None) => t.min(m.next_lcd_at)
+				(None, At(t)) => t.min(m.next_lcd_at)
+				(At(t1), At(t2)) => t1.min(m.next_lcd_at).min(t2)
 			}
 			process_event_at(m, at, timer_at)
 		}
@@ -202,16 +206,21 @@ run_halted_until = |m, target, num_of_actions| {
 		None => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
 		At(t) => t
 	}
-	if (first <= m.now or first >= m.next_lcd_at or first > target or first > U64.highest - 2) return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+	lcd_or_serial_at = match SerialRegs.get_completion_at(m.bus.io_regs.serials) {
+		None => m.next_lcd_at
+		At(t) => t.min(m.next_lcd_at)
+	}
+	if first <= m.now or first >= lcd_or_serial_at or first > target or first > U64.highest - 2 {
+		return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
+	}
 	# Ordinary ticks schedule pending DMA at the FIRST tick.
 	# Query that deadline here; advance_to performs the actual update.
 	scheduled = DmaRegs.schedule_pending(m.bus.io_regs.dmas, first)
-	lcd_limit = target.min(m.next_lcd_at - 1)
+	limit_before_dma = target.min(lcd_or_serial_at - 1)
 	limit = match DmaRegs.next_ready_at(scheduled) {
-		# No DMA -> Just focus on lcd
-		None => lcd_limit
+		None => limit_before_dma
 		# DMA is a thing but later than timer events
-		At(dma_at) if dma_at > first => lcd_limit.min(dma_at - 1)
+		At(dma_at) if dma_at > first => limit_before_dma.min(dma_at - 1)
 		_ => return run_halted_until(run_one_action(m)?, target, num_of_actions - 1)
 	}
 	match TimerRegs.halt_batch_span(m.bus.io_regs.timers, limit, num_of_actions) {
@@ -434,8 +443,19 @@ walk_memory_execution_state = |before_dma, state| {
 					W32 => io_delay_applied_machine.bus.write32(request.addr, request.addr_low, request.val, CpuData)?
 				}
 			}
-			scheduled_dma_rgs = DmaRegs.schedule_pending(post_write_bus.io_regs.dmas, io_delay_applied_machine.now)
-			final_bus = { ..post_write_bus, io_regs: { ..post_write_bus.io_regs, dmas: scheduled_dma_rgs } }
+			scheduled_dma_rgs =
+				DmaRegs.schedule_pending(post_write_bus.io_regs.dmas, io_delay_applied_machine.now)
+			final_bus = if request.addr == 0x4000128 {
+				scheduled_serial_rgs =
+					SerialRegs.schedule_pending(post_write_bus.io_regs.serials, io_delay_applied_machine.now)
+				{
+					..post_write_bus,
+					io_regs: { ..post_write_bus.io_regs, dmas: scheduled_dma_rgs, serials: scheduled_serial_rgs },
+				}
+			} else {
+				{ ..post_write_bus, io_regs: { ..post_write_bus.io_regs, dmas: scheduled_dma_rgs } }
+			}
+
 			next_execution = ARM7TDMI.resume_write(
 				request.core,
 				request.continuation,
@@ -544,6 +564,20 @@ process_event_at = |m, at, timer_at| {
 				},
 				0,
 			)
+		}
+		if SerialRegs.get_completion_at($cur_machine.bus.io_regs.serials) == At(at) {
+			(serial_rgs, irq) = SerialRegs.complete_at($cur_machine.bus.io_regs.serials, at)
+			$cur_machine = {
+				..$cur_machine,
+				bus: {
+					..$cur_machine.bus,
+					io_regs: {
+						..$cur_machine.bus.io_regs,
+						serials: serial_rgs,
+						system: SystemRegs.hardware_request_interrupts($cur_machine.bus.io_regs.system, irq),
+					},
+				},
+			}
 		}
 		# LCD processing
 		if $cur_machine.next_lcd_at == at {
@@ -661,13 +695,16 @@ process_lcd_event = |m, at| {
 
 next_cpu_event_at : Machine -> U64
 next_cpu_event_at = |m| {
-	next_lcd_time = m.next_lcd_at
+	next_serial_time = SerialRegs.get_completion_at(m.bus.io_regs.serials)
 	next_timer_time = TimerRegs.next_event_at(m.bus.io_regs.timers)
 	next_dma_time = DmaRegs.next_ready_at(m.bus.io_regs.dmas)
-	match (next_timer_time, next_dma_time) {
-		(None, None) => next_lcd_time
-		(At(t), None) | (None, At(t)) => next_lcd_time.min(t)
-		(At(x), At(y)) => next_lcd_time.min(x).min(y)
+	earliest_non_lcd_time =
+		next_serial_time |> earlier_event(next_timer_time) |> earlier_event(next_dma_time)
+
+	next_lcd_time = m.next_lcd_at
+	match earliest_non_lcd_time {
+		None => next_lcd_time
+		At(t) => next_lcd_time.min(t)
 	}
 }
 
@@ -683,7 +720,11 @@ next_cpu_block_event_at = |m| {
 			DmaRegs.next_ready_at(DmaRegs.schedule_pending(m.bus.io_regs.dmas, t))
 		}
 	}
-	match earlier_event(next_dma_time, TimerRegs.next_batch_boundary_at(m.bus.io_regs.timers)) {
+	next_serial_time = SerialRegs.get_completion_at(m.bus.io_regs.serials)
+	timer_boundary = TimerRegs.next_batch_boundary_at(m.bus.io_regs.timers)
+	earliest =
+		next_serial_time |> earlier_event(timer_boundary) |> earlier_event(next_dma_time)
+	match earliest {
 		At(t) => m.next_lcd_at.min(t)
 		None => m.next_lcd_at
 	}
@@ -816,6 +857,11 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 				W16 => Bus.write16(advanced.bus, aligned_addr, 0, val.to_u16_wrap(), Dma(selection))?
 				W32 => Bus.write32(advanced.bus, aligned_addr, 0, val, Dma(selection))?
 			}
+			scheduled_serials_rgs = if aligned_addr == 0x04000128 {
+				SerialRegs.schedule_pending(new_bus.io_regs.serials, advanced.now)
+			} else {
+				new_bus.io_regs.serials
+			}
 			scheduled_dma_rgs = DmaRegs.schedule_pending(new_bus.io_regs.dmas, advanced.now)
 			(new_dma_rgs, irq_mask) = DmaRegs.complete_unit(scheduled_dma_rgs, selection)?
 			new_sys_rgs = SystemRegs.hardware_request_interrupts(new_bus.io_regs.system, irq_mask)
@@ -834,6 +880,7 @@ finish_dma_write = |m, width, addr, val, req_kind, selection| {
 						..new_bus.io_regs,
 						dmas: new_dma_rgs,
 						system: new_sys_rgs,
+						serials: scheduled_serials_rgs,
 					},
 				},
 				cpu: { ..advanced.cpu, hot: { ..advanced.cpu.hot, gamepak_prefetch: next_prefetch } },
@@ -1086,10 +1133,16 @@ advance_to_with = |m, target, finish_func| {
 
 	# Well, under the newest nightly 11-11, returning to the good old one func recursion is better now
 	# Man WIP langs...
-	process_event_or_batch : Machine, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
-	process_event_or_batch = |given_m, given_target, given_at, given_timer_at| {
-		if given_at > given_m.now and given_at < given_m.next_lcd_at {
-			limit = given_target.min(given_m.next_lcd_at - 1)
+	process_event_or_batch : Machine, U64, U64, U64, [None, At(U64)] -> Try((Machine, U8), _)
+	process_event_or_batch = |
+		given_m,
+		given_target,
+		given_at,
+		lcd_or_serial_at,
+		given_timer_at,
+	| {
+		if given_at > given_m.now and given_at < lcd_or_serial_at {
+			limit = given_target.min(lcd_or_serial_at - 1)
 			if given_at < limit {
 				match TimerRegs.try_batch_ticks_to_known_next(given_m.bus.io_regs.timers, limit, given_at) {
 					NoBatch => {}
@@ -1112,13 +1165,17 @@ advance_to_with = |m, target, finish_func| {
 	}
 	if (m.power_state == Stopped) return finish_func(m)
 	if (target < m.now) return Err(WrongEventTime)
-	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
-	at = match timer_at {
+	lcd_or_serial_at = match SerialRegs.get_completion_at(m.bus.io_regs.serials) {
 		None => m.next_lcd_at
 		At(t) => t.min(m.next_lcd_at)
 	}
+	timer_at = TimerRegs.next_event_at(m.bus.io_regs.timers)
+	at = match timer_at {
+		None => lcd_or_serial_at
+		At(t) => t.min(lcd_or_serial_at)
+	}
 	if at <= target {
-		(processed, _) = process_event_or_batch(m, target, at, timer_at)?
+		(processed, _) = process_event_or_batch(m, target, at, lcd_or_serial_at, timer_at)?
 		return advance_to_with(processed, target, finish_func)
 	}
 	finish_func({
