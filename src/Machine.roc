@@ -51,10 +51,8 @@ Machine :: {
 	get_framebuffer = |m| Ppu.get_framebuffer(m.ppu)
 
 	# Pretty much a visual debugging function, maybe can be used for screenshot support
-	get_video_snapshot : Machine -> Try({ dispcnt : U16, vram : List(U8) }, _)
-	get_video_snapshot = |m| {
-		Ok({ dispcnt: DisplayRegs.read16(m.bus.io_regs.display, 0)?, vram: m.bus.vram })
-	}
+	get_video_snapshot : Machine -> { dispcnt : U16, vram : List(U8) }
+	get_video_snapshot = |m| { dispcnt: DisplayRegs.get_dispcnt(m.bus.io_regs.display), vram: m.bus.vram }
 
 	get_time : Machine -> U64 # slop method
 	get_time = |m| m.now
@@ -606,7 +604,7 @@ process_lcd_event = |m, at| {
 						DmaRegs.schedule_pending(DmaRegs.trigger_blank(m.bus.io_regs.dmas, HBlank), at),
 						Ppu.render_scanline(
 							m.ppu,
-							DisplayRegs.read16(m.bus.io_regs.display, 0)?,
+							DisplayRegs.get_dispcnt(m.bus.io_regs.display),
 							m.bus.vram,
 							m.bus.paletteram,
 							new_vcount.to_u64(),

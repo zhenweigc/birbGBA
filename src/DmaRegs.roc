@@ -34,42 +34,39 @@ DmaRegs :: {
 	get_open_bus_latch : DmaRegs -> U32
 	get_open_bus_latch = |rgs| rgs.open_bus_latch
 
-	read8 : DmaRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
-	read8 = |rgs, addr| {
+	read_bus8 : DmaRegs, U32 -> Try({ val : U8, device_mask : U8 }, [UnsupportedIORegOffset(U32)])
+	read_bus8 = |rgs, addr| {
 		match addr {
-			0x0B8 | 0x0B9 | 0x0C4 | 0x0C5 | 0x0D0 | 0x0D1 | 0x0DC | 0x0DD => Ok(0)
-			0x0BA => Ok(rgs.dma0.cnt_h.to_u8_wrap())
-			0x0BB => Ok(rgs.dma0.cnt_h.shr_wrap(8).to_u8_wrap())
-			0x0C6 => Ok(rgs.dma1.cnt_h.to_u8_wrap())
-			0x0C7 => Ok(rgs.dma1.cnt_h.shr_wrap(8).to_u8_wrap())
-			0x0D2 => Ok(rgs.dma2.cnt_h.to_u8_wrap())
-			0x0D3 => Ok(rgs.dma2.cnt_h.shr_wrap(8).to_u8_wrap())
-			0x0DE => Ok(rgs.dma3.cnt_h.to_u8_wrap())
-			0x0DF => Ok(rgs.dma3.cnt_h.shr_wrap(8).to_u8_wrap())
-			_ => Err(UnsupportedIORegOffset(addr))
+			offset if (offset >= 0xB0 and offset < 0xB8)
+				or (offset >= 0xBC and offset < 0xC4)
+				or (offset >= 0xC8 and offset < 0xD0)
+				or (offset >= 0xD4 and offset < 0xDC)
+				or (offset >= 0xE0 and offset < 0x100) => Ok({ val: 0, device_mask: 0 })
+			_ => Ok({ val: read8(rgs, addr)?, device_mask: U8.highest })
 		}
 	}
 
-	read16 : DmaRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
-	read16 = |rgs, addr| {
+	read_bus16 : DmaRegs, U32 -> Try({ val : U16, device_mask : U16 }, [UnsupportedIORegOffset(U32)])
+	read_bus16 = |rgs, addr| {
 		match addr {
-			0x0B8 | 0x0C4 | 0x0D0 | 0x0DC => Ok(0)
-			0x0BA => Ok(rgs.dma0.cnt_h)
-			0x0C6 => Ok(rgs.dma1.cnt_h)
-			0x0D2 => Ok(rgs.dma2.cnt_h)
-			0x0DE => Ok(rgs.dma3.cnt_h)
-			_ => Err(UnsupportedIORegOffset(addr))
+			offset if ((offset >= 0xB0 and offset < 0xB8)
+				or (offset >= 0xBC and offset < 0xC4)
+				or (offset >= 0xC8 and offset < 0xD0)
+				or (offset >= 0xD4 and offset < 0xDC)
+				or (offset >= 0xE0 and offset < 0x100)) and offset.mod_by(2) == 0 => Ok({ val: 0, device_mask: 0 })
+			_ => Ok({ val: read16(rgs, addr)?, device_mask: U16.highest })
 		}
 	}
 
-	read32 : DmaRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
-	read32 = |rgs, addr| {
+	read_bus32 : DmaRegs, U32 -> Try({ val : U32, device_mask : U32 }, [UnsupportedIORegOffset(U32)])
+	read_bus32 = |rgs, addr| {
 		match addr {
-			0x0B8 => Ok(rgs.dma0.cnt_h.to_u32().shl_wrap(16))
-			0x0C4 => Ok(rgs.dma1.cnt_h.to_u32().shl_wrap(16))
-			0x0D0 => Ok(rgs.dma2.cnt_h.to_u32().shl_wrap(16))
-			0x0DC => Ok(rgs.dma3.cnt_h.to_u32().shl_wrap(16))
-			_ => Err(UnsupportedIORegOffset(addr))
+			offset if ((offset >= 0xB0 and offset < 0xB8)
+				or (offset >= 0xBC and offset < 0xC4)
+				or (offset >= 0xC8 and offset < 0xD0)
+				or (offset >= 0xD4 and offset < 0xDC)
+				or (offset >= 0xE0 and offset < 0x100)) and offset.mod_by(4) == 0 => Ok({ val: 0, device_mask: 0 })
+			_ => Ok({ val: read32(rgs, addr)?, device_mask: U32.highest })
 		}
 	}
 
@@ -564,6 +561,45 @@ dma_init = || {
 		ready_at: None,
 		data_latch: 0,
 		first_unit: False,
+	}
+}
+
+read8 : DmaRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
+read8 = |rgs, addr| {
+	match addr {
+		0x0B8 | 0x0B9 | 0x0C4 | 0x0C5 | 0x0D0 | 0x0D1 | 0x0DC | 0x0DD => Ok(0)
+		0x0BA => Ok(rgs.dma0.cnt_h.to_u8_wrap())
+		0x0BB => Ok(rgs.dma0.cnt_h.shr_wrap(8).to_u8_wrap())
+		0x0C6 => Ok(rgs.dma1.cnt_h.to_u8_wrap())
+		0x0C7 => Ok(rgs.dma1.cnt_h.shr_wrap(8).to_u8_wrap())
+		0x0D2 => Ok(rgs.dma2.cnt_h.to_u8_wrap())
+		0x0D3 => Ok(rgs.dma2.cnt_h.shr_wrap(8).to_u8_wrap())
+		0x0DE => Ok(rgs.dma3.cnt_h.to_u8_wrap())
+		0x0DF => Ok(rgs.dma3.cnt_h.shr_wrap(8).to_u8_wrap())
+		_ => Err(UnsupportedIORegOffset(addr))
+	}
+}
+
+read16 : DmaRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
+read16 = |rgs, addr| {
+	match addr {
+		0x0B8 | 0x0C4 | 0x0D0 | 0x0DC => Ok(0)
+		0x0BA => Ok(rgs.dma0.cnt_h)
+		0x0C6 => Ok(rgs.dma1.cnt_h)
+		0x0D2 => Ok(rgs.dma2.cnt_h)
+		0x0DE => Ok(rgs.dma3.cnt_h)
+		_ => Err(UnsupportedIORegOffset(addr))
+	}
+}
+
+read32 : DmaRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
+read32 = |rgs, addr| {
+	match addr {
+		0x0B8 => Ok(rgs.dma0.cnt_h.to_u32().shl_wrap(16))
+		0x0C4 => Ok(rgs.dma1.cnt_h.to_u32().shl_wrap(16))
+		0x0D0 => Ok(rgs.dma2.cnt_h.to_u32().shl_wrap(16))
+		0x0DC => Ok(rgs.dma3.cnt_h.to_u32().shl_wrap(16))
+		_ => Err(UnsupportedIORegOffset(addr))
 	}
 }
 

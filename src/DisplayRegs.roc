@@ -124,37 +124,6 @@ DisplayRegs :: {
 		}
 	}
 
-	read8 : DisplayRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
-	read8 = |rgs, addr| {
-		match addr {
-			0 => Ok(rgs.dispcnt.to_u8_wrap())
-			0x1 => Ok(rgs.dispcnt.shr_wrap(8).to_u8_wrap())
-			0x2 => Ok(rgs.green_swap.to_u8_wrap())
-			0x3 => Ok(rgs.green_swap.shr_wrap(8).to_u8_wrap())
-			0x4 => Ok(rgs.dispstat.to_u8_wrap())
-			0x5 => Ok(rgs.dispstat.shr_wrap(8).to_u8_wrap())
-			0x6 => Ok(rgs.vcount.to_u8_wrap())
-			0x7 => Ok(rgs.vcount.shr_wrap(8).to_u8_wrap())
-			0x008 => Ok(rgs.bg0cnt.to_u8_wrap())
-			0x009 => Ok(rgs.bg0cnt.shr_wrap(8).to_u8_wrap())
-			0x00A => Ok(rgs.bg1cnt.to_u8_wrap())
-			0x00B => Ok(rgs.bg1cnt.shr_wrap(8).to_u8_wrap())
-			0x00C => Ok(rgs.bg2cnt.to_u8_wrap())
-			0x00D => Ok(rgs.bg2cnt.shr_wrap(8).to_u8_wrap())
-			0x00E => Ok(rgs.bg3cnt.to_u8_wrap())
-			0x00F => Ok(rgs.bg3cnt.shr_wrap(8).to_u8_wrap())
-			0x48 => Ok(rgs.winin.to_u8_wrap())
-			0x49 => Ok(rgs.winin.shr_wrap(8).to_u8_wrap())
-			0x4A => Ok(rgs.winout.to_u8_wrap())
-			0x4B => Ok(rgs.winout.shr_wrap(8).to_u8_wrap())
-			0x50 => Ok(rgs.bldcnt.to_u8_wrap())
-			0x51 => Ok(rgs.bldcnt.shr_wrap(8).to_u8_wrap())
-			0x52 => Ok(rgs.bldalpha.to_u8_wrap())
-			0x53 => Ok(rgs.bldalpha.shr_wrap(8).to_u8_wrap())
-			_ => Err(UnsupportedIORegOffset(addr))
-		}
-	}
-
 	# The fast and slow paths share this helper so their open-bus masks stay in sync
 	# elsewise passing openbus masking becomes a big hassle
 	read_bus16 : DisplayRegs, U32 -> Try({ val : U16, device_mask : U16 }, [UnsupportedIORegOffset(U32)])
@@ -168,25 +137,6 @@ DisplayRegs :: {
 		}
 	}
 
-	read16 : DisplayRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
-	read16 = |rgs, addr| {
-		match addr {
-			0 => Ok(rgs.dispcnt)
-			0x2 => Ok(rgs.green_swap)
-			0x4 => Ok(rgs.dispstat)
-			0x6 => Ok(rgs.vcount)
-			0x008 => Ok(rgs.bg0cnt)
-			0x00A => Ok(rgs.bg1cnt)
-			0x00C => Ok(rgs.bg2cnt)
-			0x00E => Ok(rgs.bg3cnt)
-			0x48 => Ok(rgs.winin)
-			0x4A => Ok(rgs.winout)
-			0x50 => Ok(rgs.bldcnt)
-			0x52 => Ok(rgs.bldalpha)
-			_ => Err(UnsupportedIORegOffset(addr))
-		}
-	}
-
 	read_bus32 : DisplayRegs, U32 -> Try({ val : U32, device_mask : U32 }, [UnsupportedIORegOffset(U32)])
 	read_bus32 = |rgs, addr| {
 		match addr {
@@ -195,18 +145,6 @@ DisplayRegs :: {
 				or (offset >= 0x54 and offset < 0x60)) and offset.mod_by(4) == 0 =>
 				Ok({ val: 0, device_mask: 0 })
 			_ => Ok({ val: read32(rgs, addr)?, device_mask: U32.highest })
-		}
-	}
-
-	read32 : DisplayRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
-	read32 = |rgs, addr| {
-		match addr {
-			0x0 | 0x4 | 0x8 | 0xC | 0x48 | 0x50 => {
-				low = read16(rgs, addr)?.to_u32()
-				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
-				Ok(low + hi)
-			}
-			_ => Err(UnsupportedIORegOffset(addr))
 		}
 	}
 
@@ -615,6 +553,9 @@ DisplayRegs :: {
 		)
 	}
 
+	get_dispcnt : DisplayRegs -> U16
+	get_dispcnt = |rgs| rgs.dispcnt
+
 	get_bg_mode : DisplayRegs -> U16
 	get_bg_mode = |rgs| rgs.dispcnt.bitwise_and(0b111)
 
@@ -754,6 +695,68 @@ DisplayRegs :: {
 	reload_bg3_reference = |rgs| {
 		i32s = get_bg3_affine(rgs)
 		{ ..rgs, bg3_internal_x: i32s.x, bg3_internal_y: i32s.y }
+	}
+}
+
+read8 : DisplayRegs, U32 -> Try(U8, [UnsupportedIORegOffset(U32)])
+read8 = |rgs, addr| {
+	match addr {
+		0 => Ok(rgs.dispcnt.to_u8_wrap())
+		0x1 => Ok(rgs.dispcnt.shr_wrap(8).to_u8_wrap())
+		0x2 => Ok(rgs.green_swap.to_u8_wrap())
+		0x3 => Ok(rgs.green_swap.shr_wrap(8).to_u8_wrap())
+		0x4 => Ok(rgs.dispstat.to_u8_wrap())
+		0x5 => Ok(rgs.dispstat.shr_wrap(8).to_u8_wrap())
+		0x6 => Ok(rgs.vcount.to_u8_wrap())
+		0x7 => Ok(rgs.vcount.shr_wrap(8).to_u8_wrap())
+		0x008 => Ok(rgs.bg0cnt.to_u8_wrap())
+		0x009 => Ok(rgs.bg0cnt.shr_wrap(8).to_u8_wrap())
+		0x00A => Ok(rgs.bg1cnt.to_u8_wrap())
+		0x00B => Ok(rgs.bg1cnt.shr_wrap(8).to_u8_wrap())
+		0x00C => Ok(rgs.bg2cnt.to_u8_wrap())
+		0x00D => Ok(rgs.bg2cnt.shr_wrap(8).to_u8_wrap())
+		0x00E => Ok(rgs.bg3cnt.to_u8_wrap())
+		0x00F => Ok(rgs.bg3cnt.shr_wrap(8).to_u8_wrap())
+		0x48 => Ok(rgs.winin.to_u8_wrap())
+		0x49 => Ok(rgs.winin.shr_wrap(8).to_u8_wrap())
+		0x4A => Ok(rgs.winout.to_u8_wrap())
+		0x4B => Ok(rgs.winout.shr_wrap(8).to_u8_wrap())
+		0x50 => Ok(rgs.bldcnt.to_u8_wrap())
+		0x51 => Ok(rgs.bldcnt.shr_wrap(8).to_u8_wrap())
+		0x52 => Ok(rgs.bldalpha.to_u8_wrap())
+		0x53 => Ok(rgs.bldalpha.shr_wrap(8).to_u8_wrap())
+		_ => Err(UnsupportedIORegOffset(addr))
+	}
+}
+
+read16 : DisplayRegs, U32 -> Try(U16, [UnsupportedIORegOffset(U32)])
+read16 = |rgs, addr| {
+	match addr {
+		0 => Ok(rgs.dispcnt)
+		0x2 => Ok(rgs.green_swap)
+		0x4 => Ok(rgs.dispstat)
+		0x6 => Ok(rgs.vcount)
+		0x008 => Ok(rgs.bg0cnt)
+		0x00A => Ok(rgs.bg1cnt)
+		0x00C => Ok(rgs.bg2cnt)
+		0x00E => Ok(rgs.bg3cnt)
+		0x48 => Ok(rgs.winin)
+		0x4A => Ok(rgs.winout)
+		0x50 => Ok(rgs.bldcnt)
+		0x52 => Ok(rgs.bldalpha)
+		_ => Err(UnsupportedIORegOffset(addr))
+	}
+}
+
+read32 : DisplayRegs, U32 -> Try(U32, [UnsupportedIORegOffset(U32)])
+read32 = |rgs, addr| {
+	match addr {
+		0x0 | 0x4 | 0x8 | 0xC | 0x48 | 0x50 => {
+			low = read16(rgs, addr)?.to_u32()
+			hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
+			Ok(low + hi)
+		}
+		_ => Err(UnsupportedIORegOffset(addr))
 	}
 }
 

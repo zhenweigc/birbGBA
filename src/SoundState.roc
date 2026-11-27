@@ -240,7 +240,7 @@ SoundState :: {
 			0x86 | 0x87 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110).to_u8_wrap())
 			0x89 => Ok(rgs.sound_bias.shr_wrap(8).to_u8_wrap().bitwise_and(0b1100_0011))
-			0x8A | 0x8B => Ok(0)
+			offset if offset >= 0x8A and offset < 0x90 => Ok(0)
 			offset if offset >= 0x90 and offset < 0xA0 => {
 				idx = wave_ram_index(rgs, offset)
 				rgs.wave_ram.get(idx)
@@ -336,7 +336,7 @@ SoundState :: {
 			)
 			0x86 => Ok(0)
 			0x88 => Ok(rgs.sound_bias.bitwise_and(0b1100_0011_1111_1110))
-			0x8A => Ok(0)
+			0x8A | 0x8C | 0x8E => Ok(0)
 			offset if offset >= 0x90 and offset < 0xA0 and offset.mod_by(2) == 0 => {
 				lo = read8(rgs, offset)?.to_u16()
 				hi = read8(rgs, offset + 1)?.to_u16()
@@ -349,7 +349,7 @@ SoundState :: {
 	read32 : SoundState, U32 -> Try(U32, [UnsupportedIORegOffset(U32), OutOfBounds])
 	read32 = |rgs, addr| {
 		match addr {
-			0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 | 0x78 | 0x7C | 0x80 | 0x84 | 0x88 | 0x90 | 0x94 | 0x98 | 0x9c => {
+			0x60 | 0x64 | 0x68 | 0x6C | 0x70 | 0x74 | 0x78 | 0x7C | 0x80 | 0x84 | 0x88 | 0x8C | 0x90 | 0x94 | 0x98 | 0x9c => {
 				low = read16(rgs, addr)?.to_u32()
 				hi = read16(rgs, addr.plus_wrap(2))?.to_u32().shl_wrap(16)
 				Ok(low + hi)
@@ -498,7 +498,7 @@ SoundState :: {
 				adjusted_val = Bits.replace_byte(old_val, isHi, val)
 				write16(rgs, 0x88, adjusted_val)
 			}
-			0x8A | 0x8B => Ok(rgs)
+			offset if offset >= 0x8A and offset < 0x90 => Ok(rgs)
 			offset if offset >= 0x90 and offset < 0xA0 => {
 				idx = wave_ram_index(rgs, offset)
 				Ok({ ..rgs, wave_ram: rgs.wave_ram.set(idx, val)? })
@@ -680,7 +680,7 @@ SoundState :: {
 			}
 			0x86 => Ok(rgs)
 			0x88 => Ok({ ..rgs, sound_bias: val.bitwise_and(0b1100_0011_1111_1110) })
-			0x8A => Ok(rgs)
+			0x8A | 0x8C | 0x8E => Ok(rgs)
 			offset if offset >= 0x90 and offset < 0xA0 and offset.mod_by(2) == 0 => {
 				write8(write8(rgs, offset, val.to_u8_wrap())?, offset + 1, val.shr_wrap(8).to_u8_wrap())
 			}
@@ -709,6 +709,7 @@ SoundState :: {
 			0x80 => write16(write16(rgs, 0x80, lo)?, 0x82, hi)
 			0x84 => write16(write16(rgs, 0x84, lo)?, 0x86, 0)
 			0x88 => write16(write16(rgs, 0x88, lo)?, 0x8A, 0)
+			0x8C => Ok(rgs)
 			0x68 => write16(write16(rgs, 0x68, lo)?, 0x6A, 0)
 			0x6C => write16(write16(rgs, 0x6C, lo)?, 0x6E, 0)
 			offset if offset >= 0x90 and offset < 0xA0 and offset.mod_by(4) == 0 => write16(write16(rgs, offset, lo)?, offset + 2, hi)
