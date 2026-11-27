@@ -893,14 +893,14 @@ arm_instructions_execute = |op, c| {
 			Multiply => Ok(
 				arm_instructions_settle({
 					core: arm_multiply_execute(op, c)?,
-					pc_status: PCSequential,
+					pc_status: if (get_gpr_16_19(op)? == R15) PCWritten else PCSequential,
 					remaining_cycles: multiply_cycles(op, c, False)?,
 				}),
 			)
 			MultiplyLong => Ok(
 				arm_instructions_settle({
 					core: arm_multiply_long_execute(op, c)?,
-					pc_status: PCSequential,
+					pc_status: if (get_gpr_16_19(op)? == R15 or get_gpr_12_15(op)? == R15) PCWritten else PCSequential,
 					remaining_cycles: multiply_cycles(op, c, True)?,
 				}),
 			)
@@ -1234,36 +1234,32 @@ arm_multiply_decode = |op| {
 }
 
 # Do not confuse with multiply Long
-arm_multiply_execute : U32,
-ARM7TDMI -> Try(
-	ARM7TDMI,
-	[WTFisThis, UB_multiply_use_of_R15, InvalidMode],
-)
+arm_multiply_execute : U32, ARM7TDMI -> Try(ARM7TDMI, [WTFisThis, InvalidMode])
 arm_multiply_execute = |op, c| {
-	catch_R15 = |gpr| match gpr {
-		R15 => Err(UB_multiply_use_of_R15)
-		x => Ok(x)
-	}
-	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?)?
-	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 8, 4)))?)?
-	rd = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?)?
-	rm_val = cpu_getReg(rm, c)?
-	rs_val = cpu_getReg(rs, c)?
+	rm = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?
+	rs = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 8, 4)))?
+	rd = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?
+	pc_plus_12 = pc_inc(c.regs.r15, 12)
+	rm_val = if (rm != R15) cpu_getReg(rm, c)? else pc_plus_12
+	rs_val = if (rs != R15) cpu_getReg(rs, c)? else pc_plus_12
 	# Note, rd == rm was banned in ISA but again on real hardware it is ok.
 	# Also, NBA seems to recompute c flag despite technically ROM should not
 	# use c flag result after mul according to the manual? Gonna slack off for now.
+	# Update to the comment above, well no it is not worth it.
 	res = if arm_multiply_decode(op) == MLA {
-		rn = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?)?
-		rn_val = cpu_getReg(rn, c)?
+		rn = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?
+		rn_val = if (rn != R15) cpu_getReg(rn, c)? else pc_plus_12
 		U32.plus_wrap(U32.times_wrap(rm_val, rs_val), rn_val)
 	} else {
 		U32.times_wrap(rm_val, rs_val)
 	}
-	if arm_s_flag(op) {
-		Ok({ ..cpu_setReg(rd, c, res)?, cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(res, 31)), res == 0) })
-	} else {
-		cpu_setReg(rd, c, res)
-	}
+	regs_val_set_core = cpu_setReg(rd, c, if (rd == R15) res.bitwise_and(0xFFFFFFFC) else res)?
+
+	if (!arm_s_flag(op)) return Ok(regs_val_set_core)
+	Ok({
+		..regs_val_set_core,
+		cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(res, 31)), res == 0),
+	})
 }
 
 arm_multiplyLong_decode : U32 -> ArmMultiplyLongOpCode
@@ -1276,56 +1272,58 @@ arm_multiplyLong_decode = |op| {
 	}
 }
 
-arm_multiply_long_execute : U32,
-ARM7TDMI -> Try(
-	ARM7TDMI,
-	[
-		WTFisThis,
-		UB_multiplyLong_rd_same_hi_lo,
-		UB_multiplyLong_same_rdlo_rm,
-		UB_multiplyLong_use_of_R15,
-		InvalidMode,
-	],
-)
+arm_multiply_long_execute : U32, ARM7TDMI -> Try(ARM7TDMI, [WTFisThis, InvalidMode])
 arm_multiply_long_execute = |op, c| {
-	catch_R15 = |gpr| match gpr {
-		R15 => Err(UB_multiplyLong_use_of_R15)
-		x => Ok(x)
-	}
-	rm = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?)?
-	rs = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 8, 4)))?)?
-	rdhi = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?)?
-	rdlo = catch_R15(gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?)?
-	rm_val = cpu_getReg(rm, c)?
-	rs_val = cpu_getReg(rs, c)?
-	if rdhi == rdlo {
-		Err(UB_multiplyLong_rd_same_hi_lo)
-	} else if rdlo == rm {
-		Err(UB_multiplyLong_same_rdlo_rm)
+	# ISA clearly said c flag should not be relied in mul long
+	# Checked how NBA handle C flag, not worth it to put the multiplier tracker in
+	rm = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 0, 4)))?
+	rs = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 8, 4)))?
+	rdhi = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 16, 4)))?
+	rdlo = gpr_from_idx(U32.to_u8_wrap(Bits.get_seg_of_u32_certain(op, 12, 4)))?
+
+	pc_plus_12 = pc_inc(c.regs.r15, 12)
+	rm_val = if (rm != R15) cpu_getReg(rm, c)? else pc_plus_12
+	rs_val = if (rs != R15) cpu_getReg(rs, c)? else pc_plus_12
+	rdhi_val = if (rdhi != R15) cpu_getReg(rdhi, c)? else pc_plus_12
+	rdlo_val = if (rdlo != R15) cpu_getReg(rdlo, c)? else pc_plus_12
+	m = arm_multiplyLong_decode(op)
+	res = if m == UMLAL {
+		U64.plus_wrap(
+			U64.times(U32.to_u64(rm_val), U32.to_u64(rs_val)),
+			U64.bitwise_or(
+				U64.shl_wrap(U32.to_u64(rdhi_val), 32),
+				U32.to_u64(rdlo_val),
+			),
+		)
+	} else if m == SMLAL {
+		I64.to_u64_wrap(
+			I64.plus_wrap(
+				I64.times(I32.to_i64(U32.to_i32_wrap(rm_val)), I32.to_i64(U32.to_i32_wrap(rs_val))),
+				I64.bitwise_or(
+					I64.shl_wrap(U32.to_i64(rdhi_val), 32),
+					U32.to_i64(rdlo_val),
+				),
+			),
+		)
+	} else if m == UMULL {
+		U64.times(U32.to_u64(rm_val), U32.to_u64(rs_val))
 	} else {
-		rdhi_val = cpu_getReg(rdhi, c)?
-		rdlo_val = cpu_getReg(rdlo, c)?
-		m = arm_multiplyLong_decode(op)
-		res = if m == UMLAL {
-			U64.plus_wrap(U64.times(U32.to_u64(rm_val), U32.to_u64(rs_val)), U64.bitwise_or(U64.shl_wrap(U32.to_u64(rdhi_val), 32), U32.to_u64(rdlo_val)))
-		} else if m == SMLAL {
-			I64.to_u64_wrap(I64.plus_wrap(I64.times(I32.to_i64(U32.to_i32_wrap(rm_val)), I32.to_i64(U32.to_i32_wrap(rs_val))), I64.bitwise_or(I64.shl_wrap(U32.to_i64(rdhi_val), 32), U32.to_i64(rdlo_val))))
-		} else if m == UMULL {
-			U64.times(U32.to_u64(rm_val), U32.to_u64(rs_val))
-		} else {
-			I64.to_u64_wrap(I64.times(I32.to_i64(U32.to_i32_wrap(rm_val)), I32.to_i64(U32.to_i32_wrap(rs_val))))
-		}
-		hi = U64.to_u32_wrap(U64.shr_wrap(res, 32))
-		lo = U64.to_u32_wrap(res)
-		if arm_s_flag(op) {
-			Ok({
-				..cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)?,
-				cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)),
-			})
-		} else {
-			cpu_setReg(rdlo, cpu_setReg(rdhi, c, hi)?, lo)
-		}
+		I64.to_u64_wrap(I64.times(I32.to_i64(U32.to_i32_wrap(rm_val)), I32.to_i64(U32.to_i32_wrap(rs_val))))
 	}
+	hi = U64.to_u32_wrap(U64.shr_wrap(res, 32))
+	lo = U64.to_u32_wrap(res)
+	regs_val_set_core =
+		cpu_setReg(
+			rdhi, # lo first then hi s.t. when rdhi == rdlo -> Hi val is kept
+			cpu_setReg(rdlo, c, if (rdlo == R15) lo.bitwise_and(0xFFFFFFFC) else lo)?,
+			if (rdhi == R15) hi.bitwise_and(0xFFFFFFFC) else hi,
+		)?
+
+	if (!arm_s_flag(op)) return Ok(regs_val_set_core)
+	Ok({
+		..regs_val_set_core,
+		cpsr: cpsr_setZ(cpsr_setN(c.cpsr, Bits.get_ith_bit_u32_certain(hi, 31)), (hi == 0) and (lo == 0)),
+	})
 }
 
 arm_branch_execute : U32, ARM7TDMI -> Try(ARM7TDMI, [InvalidMode, Branch_Type_Unknown])
@@ -2654,7 +2652,6 @@ ARM7TDMI -> Try(
 	Execution_outcome,
 	[
 		WTFisThis,
-		UB_multiply_use_of_R15,
 		InvalidMode,
 		ImpossibleFormatOpCombination(Thumb_ALUOpCode),
 		UNPREDICTABLE,
@@ -3656,7 +3653,7 @@ cpsr_setNZCV = |old_cpsr, alu_op_res| {
 multiply_cycles : U32, ARM7TDMI, Bool -> Try(U64, [InvalidMode, WTFisThis])
 multiply_cycles = |op, c, isLong| {
 	rs = arm_data_processing_get_rs(op)?
-	rs_val = cpu_getReg(rs, c)?
+	rs_val = if (rs == R15) pc_inc(c.regs.r15, 12) else cpu_getReg(rs, c)?
 	accumulate = Bits.get_ith_bit_u32_certain(op, 21)
 	# Signed negative in 2-comp?
 	allow_ones = if (isLong) Bits.get_ith_bit_u32_certain(op, 22) else True
